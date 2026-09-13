@@ -40,11 +40,19 @@ The core is looked for as `--core`, then `$SCVA_DLL_DIR/SCCore.dll`, then
 ## Build
 
     make linux      # native, no wine
-    make windows    # Windows PE binaries
-    make            # both
+    make windows    # 64-bit Windows PE binaries
+    make windows32  # 32-bit Windows PE binaries, for a 32-bit SCCore.dll
+    make            # linux and windows
 
 Both produce byte-identical audio, verified over a 5,840,640-frame render. The
 Windows binaries run unchanged on Windows.
+
+`make windows32` builds `scva_render32.exe` and `scva_engine32.exe` from the
+same sources, for people whose SOUND Canvas VA install is the 32-bit one. It
+needs the i686 mingw toolchain and is not part of `make`, because a 64-bit
+process cannot host a 32-bit DLL: pick the build that matches your core. The
+32-bit core is the same engine - the same MIDI renders to within 109 dB of the
+64-bit core, which is float rounding, not a musical difference.
 
 ## Render a MIDI file
 
