@@ -5,6 +5,8 @@
 #                   running under box86 on 32-bit ARM
 #   make lv2        the LV2 instrument plugin (needs lv2-dev)
 #   make lv2-32     the same, 32-bit, for a 32-bit SCCore.dll
+#   make clap       CLAP plugin for Windows (64-bit) and for Linux
+#   make clap-win32 CLAP plugin for 32-bit Windows
 #   make windows    64-bit Windows PE binaries via mingw-w64
 #   make windows32  32-bit Windows PE binaries, for the 32-bit SCCore.dll
 #   make            linux and windows
@@ -16,6 +18,8 @@
 #
 MINGW  ?= x86_64-w64-mingw32-gcc
 MINGW32 ?= i686-w64-mingw32-gcc
+# header-only, MIT: https://github.com/free-audio/clap
+CLAP_DIR ?= /usr/include
 CC     ?= cc
 CFLAGS ?= -O2 -Wall -Wextra
 BUILD  := build
@@ -36,6 +40,8 @@ linux: $(LINUX_BINS)
 linux32: $(LINUX32_BINS)
 lv2: $(LV2_BUNDLE)/scva.so
 lv2-32: $(LV2_BUNDLE32)/scva.so
+clap: $(BUILD)/scva.clap $(BUILD)/scva-win64.clap
+clap-win32: $(BUILD)/scva-win32.clap
 windows: $(WINDOWS_BINS)
 windows32: $(WIN32_BINS)
 
@@ -49,6 +55,21 @@ $(BUILD)/scva-native: src/scva_native.c src/pe_loader.c src/pe_loader.h \
 $(BUILD)/scva-native32: src/scva_native.c src/pe_loader.c src/pe_loader.h \
                         src/midi_song.h src/core_path.h src/scva_map.h | $(BUILD)
 	$(CC) -m32 $(CFLAGS) -o $@ src/scva_native.c src/pe_loader.c -lpthread -lm
+
+# ---- the CLAP plugin -----------------------------------------------------
+# CLAP because its SDK is MIT and this project is CC0; VST3's is GPLv3 or
+# proprietary. Point CLAP_DIR at a checkout's include/ if it is not installed.
+
+$(BUILD)/scva.clap: src/scva_clap.c src/pe_loader.c src/pe_loader.h \
+                    src/scva_map.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CLAP_DIR) -fPIC -shared -o $@ \
+	      src/scva_clap.c src/pe_loader.c -lpthread -lm
+
+$(BUILD)/scva-win64.clap: src/scva_clap.c src/scva_map.h | $(BUILD)
+	$(MINGW) $(WINFLAGS) -I$(CLAP_DIR) -shared -o $@ src/scva_clap.c
+
+$(BUILD)/scva-win32.clap: src/scva_clap.c src/scva_map.h | $(BUILD)
+	$(MINGW32) $(WINFLAGS) -I$(CLAP_DIR) -shared -o $@ src/scva_clap.c
 
 # ---- the LV2 plugin ------------------------------------------------------
 # A bundle is a directory: the shared object plus its Turtle. The plugin's

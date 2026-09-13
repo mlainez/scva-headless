@@ -109,6 +109,37 @@ the plugin's - a 64-bit host needs the 64-bit bundle and a 64-bit core. LV2 is
 a Linux format in practice, and the engine is x86 machine code, so there is no
 ARM build of this and no Windows one.
 
+## As a CLAP plugin
+
+    make clap        # Linux .clap and 64-bit Windows .clap
+    make clap-win32  # 32-bit Windows .clap
+
+Needs the CLAP headers: `make clap CLAP_DIR=/path/to/clap/include`.
+
+CLAP rather than VST3 because its SDK is MIT and this project is CC0; VST3's is
+GPLv3 or a proprietary Steinberg licence, either of which would force a
+relicence. A CLAP-to-VST3 wrapper exists if you need VST3.
+
+Same shape as the LV2: MIDI in, stereo out, tone map as a parameter, and the
+core found through `$SCVA_DLL_DIR`. On Windows it loads the core with
+`LoadLibrary`; on Linux through the PE loader.
+
+## What runs where
+
+The engine is x86 machine code - Roland ship it as 32-bit Windows, 64-bit
+Windows and x86_64 Mac, and nothing else. So:
+
+| | |
+|---|---|
+| Linux x86-64 | LV2, CLAP, renderer, daemon |
+| Linux i386 | LV2, renderer (32-bit core) |
+| Windows x86-64 / x86 | CLAP, renderer |
+| ARM, any width | only by emulating x86 - box86 or box64 |
+| macOS | would need a Mach-O loader; not built here |
+
+There is no ARM build of the engine, so there is no native ARM plugin and no
+amount of work here would make one.
+
 ## Two-port songs
 
 Roland's demo SMFs are 32-part, two-port performances that name their port in
