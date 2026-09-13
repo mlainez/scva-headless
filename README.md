@@ -20,7 +20,7 @@ Nothing of Roland's is included here. You supply the DLL.
 
 ## Requirements
 
-- a C compiler and `alsa-lib` for the native path
+- a C compiler and `alsa-lib` for the native path, including the MIDI daemon
 - `mingw-w64` for the Windows path
 - `wine` only to run the Windows binaries on Linux
 
@@ -49,8 +49,8 @@ The core is looked for as `--core`, then `$SCVA_DLL_DIR/SCCore.dll`, then
 Both produce byte-identical audio, verified over a 5,840,640-frame render. The
 Windows binaries run unchanged on Windows.
 
-`make windows32` builds `scva_render32.exe` and `scva_engine32.exe` from the
-same sources, for people whose SOUND Canvas VA install is the 32-bit one. It
+`make windows32` builds `scva_render32.exe` from the same sources, for people
+whose SOUND Canvas VA install is the 32-bit one. It
 needs the i686 mingw toolchain and is not part of `make`, because a 64-bit
 process cannot host a 32-bit DLL: pick the build that matches your core. The
 32-bit core is the same engine - the same MIDI renders to within 109 dB of the
@@ -77,6 +77,45 @@ Pi 2 it probably does not.
     --flat-out       render as fast as possible rather than in real time
     --init N         TG_initialize argument          (default 0)
     --cfg A B        TG_XPsetSystemConfig fields     (default 1 1)
+
+## Run it as a MIDI device
+
+    make linux
+    ./build/scva-daemon
+
+Creates an ALSA sequencer port called **SCVA**:
+
+    aconnect -l
+    aconnect 24:0 'SCVA':0
+    aplaymidi -p 'SCVA' song.mid
+
+    --map WHICH      tone map, as above         (default: default)
+    --name NAME      port name                  (default SCVA)
+    --pcm DEV        ALSA output device         (default "default")
+    --rate HZ        sample rate                (default 44100)
+    --block N        frames per block           (default 256)
+    --core DLL       path to SCCore.dll
+
+The core is loaded into the daemon itself - no wine, no second process. The
+PCM device sets the pace; there is no timer in the daemon.
+
+`--core` matters when starting from anywhere but the repository root, since the
+default `dll/SCCore.dll` is relative. `$SCVA_DLL_DIR` works too.
+
+If it reports `cannot open PCM 'default'`, something else holds the card. List
+the devices with `aplay -L` and name one:
+
+    ./build/scva-daemon --pcm plughw:0,0
+
+### Changing the map while it runs
+
+Send **CC32** on the channel you want to change. The daemon adopts it for that
+part and uses it from then on, so any sequencer, controller or DAW can switch
+map live - it is ordinary MIDI, not a private control channel.
+
+`--map` sets what every part starts with. For parts the incoming stream never
+sets, the daemon sends the configured map before each program change, which is
+what makes it stick: a program change latches CC32 and a GS reset clears it.
 
 ## Tone maps
 
@@ -176,37 +215,6 @@ the track name (`PartA` / `PartB`). The renderers detect that and drive a
 second engine for port B, because the core itself has only 16 parts. Nothing
 needs to be passed: single-port files are unaffected and render exactly as
 before.
-
-## Run it as a MIDI device
-
-    make linux windows
-    ./build/scva-daemon
-
-Creates an ALSA sequencer port called **SCVA**:
-
-    aconnect -l
-    aconnect 24:0 'SCVA':0
-    aplaymidi -p 'SCVA' song.mid
-
-    --map WHICH      tone map, as above         (default: default)
-    --name NAME      port name                  (default SCVA)
-    --pcm DEV        ALSA output device         (default "default")
-    --rate HZ        sample rate                (default 44100)
-    --block N        frames per block           (default 256)
-    --dll-dir DIR    where SCCore.dll lives     (default dll, or $SCVA_DLL_DIR)
-    --engine EXE     engine binary              (default build/scva_engine.exe)
-
-The PCM device sets the pace; there is no timer in the daemon.
-
-### Changing the map while it runs
-
-Send **CC32** on the channel you want to change. The daemon adopts it for that
-part and uses it from then on, so any sequencer, controller or DAW can switch
-map live - it is ordinary MIDI, not a private control channel.
-
-`--map` sets what every part starts with. For parts the incoming stream never
-sets, the daemon sends the configured map before each program change, which is
-what makes it stick: a program change latches CC32 and a GS reset clears it.
 
 ## Driving the engine
 
