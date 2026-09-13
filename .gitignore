@@ -1,0 +1,15 @@
+# Roland's binaries are NOT redistributable. Supply your own copy.
+dll/
+*.dll
+*.dat
+*.drk
+*.drf
+*.tnf
+
+# wine state
+prefix/
+
+# build output
+build/
+*.exe
+*.o
