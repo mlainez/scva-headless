@@ -102,15 +102,31 @@ a detector that reports a single number will not see it.
 
 ## How the engine has to be driven
 
-Two things are not guessable and both bite silently. Both are in
-[docs/ENGINE-NOTES.md](docs/ENGINE-NOTES.md), with the measurements:
+Several things are not guessable and all of them fail silently - no error, and
+audio that sounds plausible. They are in
+[docs/ENGINE-NOTES.md](docs/ENGINE-NOTES.md) with the measurements and the real
+signatures:
 
-- `TG_activate(mode, n)`'s second argument is the **max block size**, not a
-  flag. Passing 1 reallocates the engine's ring buffers to one float each and
+- `TG_activate(float rate, int maxBlockSize)` - the first argument is a float
+  in XMM0, and the second is the block size, not a flag. A small second
+  argument reallocates the engine's ring buffers to one float each and
   corrupts the right channel.
+- `TG_ShortMidiIn` and `TG_LongMidiIn` each take a **timestamp** as their
+  second argument. `TG_LongMidiIn` does not take a length: the message is
+  F7-terminated.
+- A SysEx in a MIDI file is stored **without its leading F0** and has to be
+  rebuilt, or the engine ignores it.
 - `TG_setSampleRate` must be called **twice**, the second time as the last call
-  before `TG_activate`, or the engine emits `Inf` and `NaN` while reporting no
-  error.
+  before `TG_activate`, or the engine emits `Inf` and `NaN`.
+
+## Which Sound Canvas is it?
+
+The SC-8820 map, and that is not selectable. The product's own tone file names
+four maps - 55Map, 88Map, 88ProMap, 8820Map - and they assign different sounds
+to the same program and bank, so bank numbers cannot stand in for them.
+Nothing `SCCore.dll` exports selects a map, and neither does the GS tone-map
+SysEx. Bank Select (CC0) reaches the 1262 variations within the 8820 map,
+which is a different axis.
 
 ## Standing
 
