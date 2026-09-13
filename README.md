@@ -94,7 +94,7 @@ Creates an ALSA sequencer port called **SCVA**:
     --pcm DEV        output device              (default: wherever the system sends audio)
     --list-pcm       show what is tried, and what works here
     --latency MS     delay before a note sounds (default 20)
-    --rate HZ        sample rate                (default 44100)
+    --rate HZ        sample rate                (default 48000)
     --block N        frames per block           (default 256)
     --core DLL       path to SCCore.dll
 
@@ -120,6 +120,16 @@ raise it - the daemon counts dropouts and says so on exit.
 
 `--block` cannot go below 256 frames. The engine corrupts its own heap during
 TG_activate below 255, so smaller values are refused rather than passed on.
+
+The rate defaults to 48 kHz because that is what modern cards run; a mismatch
+makes the sound server resample every block. `cat /proc/asound/card*/pcm*p/sub*/hw_params`
+shows what yours is using while something plays.
+
+The daemon asks for locked memory and realtime priority on startup, and says so
+if it gets them. Most desktops refuse: `ulimit -r` of 0 means no realtime
+priority, which leaves the audio thread at the mercy of the scheduler. Adding
+yourself to a group with an `rtprio` limit is what fixes that, and it matters
+more than any setting here.
 
 `--core` matters when starting from anywhere but the repository root, since the
 default `dll/SCCore.dll` is relative. `$SCVA_DLL_DIR` works too.

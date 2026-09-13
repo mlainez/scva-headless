@@ -23,6 +23,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <poll.h>
+#include <sched.h>
+#include <sys/mman.h>
 #include "pe_loader.h"
 #include "core_path.h"
 #include "scva_map.h"
@@ -162,7 +164,9 @@ int main(int argc, char **argv)
   const char *pcm_opened = NULL;
   const char *mapname = "default";
   const char *port_name = "SCVA";
-  unsigned int rate = 44100;
+  /* Matching the hardware avoids a resample in the sound server, and 48 kHz
+     is what modern cards run. The renderers default to the same. */
+  unsigned int rate = 48000;
   /* How far ahead of the speaker to run. This is the delay between a note
      arriving and being heard, so it is kept short; the engine costs under 1%
      of realtime, so the buffer is the whole latency. Raise it on a machine
@@ -318,12 +322,25 @@ int main(int argc, char **argv)
   {
     snd_pcm_uframes_t bufsz = 0, per = 0;
     snd_pcm_get_params(pcm, &bufsz, &per);
-    fprintf(stderr, "scva-daemon: audio on '%s', %.0f ms buffer\n",
-            pcm_opened, 1000.0 * (double)bufsz / rate);
+    fprintf(stderr, "scva-daemon: audio on '%s', %u Hz, %.0f ms buffer\n",
+            pcm_opened, rate, 1000.0 * (double)bufsz / rate);
   }
 
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
+
+  /* Both of these are best-effort and silent when refused. A page fault or a
+     scheduler delay in the middle of a block is heard as a dropout, and an
+     ordinary desktop grants neither by default. */
+  mlockall(MCL_CURRENT | MCL_FUTURE);
+  {
+    struct sched_param sp;
+    memset(&sp, 0, sizeof sp);
+    sp.sched_priority = sched_get_priority_min(SCHED_FIFO) + 5;
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) == 0)
+      fprintf(stderr, "scva-daemon: realtime priority %d\n",
+              sp.sched_priority);
+  }
 
   snd_midi_event_new(1024, &coder);
   snd_midi_event_no_status(coder, 1);
