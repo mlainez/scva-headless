@@ -40,13 +40,14 @@ static void on_signal(int sig) { (void)sig; stop_now = 1; }
 
 /* Opens a device and configures it in one go, since a device that opens but
    will not take float32 stereo is no more use than one that does not open. */
-static snd_pcm_t *try_pcm(const char *name, unsigned int rate)
+static snd_pcm_t *try_pcm(const char *name, unsigned int rate,
+                          unsigned int latency_us)
 {
   snd_pcm_t *pcm = NULL;
   if (snd_pcm_open(&pcm, name, SND_PCM_STREAM_PLAYBACK, 0) < 0) return NULL;
   if (snd_pcm_set_params(pcm, SND_PCM_FORMAT_FLOAT_LE,
                          SND_PCM_ACCESS_RW_INTERLEAVED, 2, rate, 1,
-                         200000) < 0) {
+                         latency_us) < 0) {
     snd_pcm_close(pcm);
     return NULL;
   }
@@ -123,7 +124,8 @@ static size_t pcm_candidates(struct pcm_cand *out, size_t cap)
 
 /* An explicit --pcm is honoured as given and never second-guessed. */
 static snd_pcm_t *open_pcm(const char *want, unsigned int rate,
-                           const char **opened, int verbose)
+                           unsigned int latency_us, const char **opened,
+                           int verbose)
 {
   struct pcm_cand cand[64];
   static char chosen[128];
@@ -132,12 +134,12 @@ static snd_pcm_t *open_pcm(const char *want, unsigned int rate,
 
   if (want) {
     *opened = want;                 /* asked for by name: let ALSA complain */
-    return try_pcm(want, rate);
+    return try_pcm(want, rate, latency_us);
   }
   snd_lib_error_set_handler(alsa_quiet);
   n = pcm_candidates(cand, sizeof cand / sizeof cand[0]);
   for (i = 0; i < n; ++i) {
-    if (!pcm && (pcm = try_pcm(cand[i].name, rate)) != NULL) {
+    if (!pcm && (pcm = try_pcm(cand[i].name, rate, latency_us)) != NULL) {
       snprintf(chosen, sizeof chosen, "%s", cand[i].name);
       *opened = chosen;
     } else if (verbose && !pcm) {
@@ -158,6 +160,11 @@ int main(int argc, char **argv)
   const char *mapname = "default";
   const char *port_name = "SCVA";
   unsigned int rate = 44100;
+  /* How far ahead of the speaker to run. This is the delay between a note
+     arriving and being heard, so it is kept short; the engine costs under 1%
+     of realtime, so the buffer is the whole latency. Raise it on a machine
+     that cannot keep up - the symptom is the audio breaking up. */
+  unsigned int latency_us = 30000;
   int mapval = 0, block = 256, i;
   /* One map per part. A program change latches CC32, so it is sent again
      before every one; a CC32 arriving on the wire replaces it for that
@@ -180,6 +187,7 @@ int main(int argc, char **argv)
   float *left, *right, *inter;
   unsigned char mbuf[1024];
   int port, nfds, rc = 0;
+  long underruns = 0;
 
   for (i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--core") && i + 1 < argc) core = argv[++i];
@@ -187,6 +195,8 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--name") && i + 1 < argc) port_name = argv[++i];
     else if (!strcmp(argv[i], "--rate") && i + 1 < argc) rate = (unsigned)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--block") && i + 1 < argc) block = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--latency") && i + 1 < argc)
+      latency_us = (unsigned)atoi(argv[++i]) * 1000u;
     else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
     else if (!strcmp(argv[i], "--list-pcm")) {
       struct pcm_cand cand[64];
@@ -195,7 +205,7 @@ int main(int argc, char **argv)
       n = pcm_candidates(cand, sizeof cand / sizeof cand[0]);
       printf("tried in this order, then --pcm for anything else:\n");
       for (k = 0; k < n; ++k) {
-        snd_pcm_t *p = try_pcm(cand[k].name, rate);
+        snd_pcm_t *p = try_pcm(cand[k].name, rate, latency_us);
         printf("  %-28s %s\n", cand[k].name,
                p ? "works at this rate" : "will not open");
         if (p) snd_pcm_close(p);
@@ -209,6 +219,7 @@ int main(int argc, char **argv)
         "                   [--rate HZ] [--block N]\n"
         "                   [--map " SCVA_MAP_USAGE "]\n"
         "\n"
+        "  --latency MS       delay before a note is heard (default 30)\n"
         "  --list-pcm         what this machine offers, in try order\n"
         "  --pcm DEV          force one; otherwise it is detected\n");
       return argc > 1 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))
@@ -281,20 +292,25 @@ int main(int argc, char **argv)
           port_name, snd_seq_client_id(seq), mapname);
 
   /* --- the PCM device, which is also the clock -------------------------- */
-  pcm = open_pcm(pcm_name, rate, &pcm_opened, 0);
+  pcm = open_pcm(pcm_name, rate, latency_us, &pcm_opened, 0);
   if (!pcm) {
     fprintf(stderr, "scva-daemon: no PCM device would take float32 stereo "
                     "at %u Hz\n", rate);
     if (pcm_name)
       fprintf(stderr, "  '%s' did not open\n", pcm_name);
     else
-      open_pcm(NULL, rate, &pcm_opened, 1);   /* again, saying what failed */
+      open_pcm(NULL, rate, latency_us, &pcm_opened, 1);  /* say what failed */
     fprintf(stderr, "  `aplay -L` lists what this machine has; name one with "
                     "--pcm\n");
     snd_seq_close(seq);
     return 1;
   }
-  fprintf(stderr, "scva-daemon: audio on '%s'\n", pcm_opened);
+  {
+    snd_pcm_uframes_t bufsz = 0, per = 0;
+    snd_pcm_get_params(pcm, &bufsz, &per);
+    fprintf(stderr, "scva-daemon: audio on '%s', %.0f ms buffer\n",
+            pcm_opened, 1000.0 * (double)bufsz / rate);
+  }
 
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
@@ -353,11 +369,17 @@ int main(int argc, char **argv)
         inter[2 * k + 1] = right[k];
       }
       w = snd_pcm_writei(pcm, inter, (snd_pcm_uframes_t)block);
-      if (w < 0 && snd_pcm_recover(pcm, (int)w, 1) < 0) break;
+      if (w < 0) {
+        ++underruns;
+        if (snd_pcm_recover(pcm, (int)w, 1) < 0) break;
+      }
     }
   }
 
   fprintf(stderr, "\nscva-daemon: stopping\n");
+  if (underruns)
+    fprintf(stderr, "scva-daemon: %ld dropout%s - raise --latency\n",
+            underruns, underruns == 1 ? "" : "s");
 done:
   free(pfds);
   free(left);

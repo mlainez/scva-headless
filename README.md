@@ -93,6 +93,7 @@ Creates an ALSA sequencer port called **SCVA**:
     --name NAME      port name                  (default SCVA)
     --pcm DEV        output device              (default: wherever the system sends audio)
     --list-pcm       show what is tried, and what works here
+    --latency MS     delay before a note sounds (default 30)
     --rate HZ        sample rate                (default 44100)
     --block N        frames per block           (default 256)
     --core DLL       path to SCCore.dll
@@ -109,8 +110,16 @@ would play wherever the card happens to go - often an HDMI monitor.
 open is an error rather than a reason to choose another. Anything `aplay -L`
 lists works.
 
+`--latency` is the whole delay between a note arriving and being heard, since
+the engine costs under 1% of realtime and everything else is buffer. If the
+audio breaks up, raise it; the daemon counts dropouts and says so on exit.
+
 `--core` matters when starting from anywhere but the repository root, since the
 default `dll/SCCore.dll` is relative. `$SCVA_DLL_DIR` works too.
+
+The daemon's width has to match the core's, like everything else here: `make
+linux` builds a 64-bit `scva-daemon`, `make daemon32` a 32-bit `scva-daemon32`
+for a 32-bit `SCCore.dll`. It is ALSA, so Linux only.
 
 ### Changing the map while it runs
 
