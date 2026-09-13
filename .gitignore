@@ -13,3 +13,7 @@ prefix/
 build/
 *.exe
 *.o
+
+# python bytecode
+__pycache__/
+*.pyc

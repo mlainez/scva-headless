@@ -16,6 +16,7 @@
    FS and leaves GS alone, so GS can be pointed at a block we build - which is
    what makes running this image without wine possible at all. Without it the
    image's own CRT start-up faults on the first gs:[..] it touches. */
+static unsigned char *g_image_base;
 static unsigned char *g_teb;
 static unsigned char *g_peb;
 
@@ -90,9 +91,8 @@ struct exp_dir {
 
 /* Real locks and condition variables. The image asks for the condition
    variable trio by name through GetProcAddress and calls what it is given, so
-   handing back NULL is how the first native run died. A Windows
-   CRITICAL_SECTION has room for a pthread mutex; a CONDITION_VARIABLE is a
-   single pointer, so it holds one we allocate. */
+   they must resolve. A Windows CRITICAL_SECTION has room for a pthread mutex;
+   a CONDITION_VARIABLE is a single pointer, so it holds one we allocate. */
 typedef struct { long long a, b, c, d, e; } CRIT;
 
 static MSABI void ms_InitializeCriticalSectionAndSpinCount(CRIT *c, uint32_t n)
@@ -195,21 +195,49 @@ static MSABI void  ms_RtlVirtualUnwind(uint32_t a, uint64_t b, uint64_t c, void 
 /* Zeroed. Windows hands a fresh page back for anything sizeable, so an engine
    that never clears its own delay lines still starts from silence there; glibc
    happily returns a dirty recycled chunk and the same code starts from noise.
-   The first native renders peaked at 5e6 and then 1.4e29, differing run to run,
-   until this returned zeroed memory. */
-static MSABI void *ms_malloc(size_t n) { return calloc(1, n ? n : 1); }
+   Without this the output differs run to run. */
+static MSABI void *ms_malloc(size_t n)
+{
+  /* PE_MALLOC_FILL replaces the zeroing with a byte pattern. It is a probe,
+     not an option: if some part of the engine reads memory it never wrote,
+     the output changes with the pattern, and which channel changes says where
+     the unwritten memory is being read. Zero is the default because that is
+     what Windows hands back for a fresh page. */
+  const char *fill = getenv("PE_MALLOC_FILL");
+  void *p = malloc(n ? n : 1);
+  if (!p) return NULL;
+  memset(p, fill ? (int)strtol(fill, NULL, 0) : 0, n ? n : 1);
+  if (getenv("PE_TRACE_MALLOC")) {
+    /* Every allocation arrives through one CRT wrapper, so its own return
+       address names that wrapper and nothing else. What is wanted is who
+       called it, and the image is compiled without frame pointers - so the
+       stack is scanned for words that land inside the image's code, which is
+       what a return address looks like. */
+    unsigned char **sp = (unsigned char **)&p;
+    size_t depth = 0, shown = 0;
+    fprintf(stderr, "pe: malloc(%zu) -> %p .. %p   callers:",
+            n, p, (char *)p + n);
+    for (depth = 0; depth < 256 && shown < 6; ++depth) {
+      unsigned char *v = sp[depth];
+      if (g_image_base && v > g_image_base + 0x1000 &&
+          v < g_image_base + 0x92000) {
+        fprintf(stderr, " image+0x%tx", v - g_image_base);
+        ++shown;
+      }
+    }
+    fprintf(stderr, "\n");
+  }
+  return p;
+}
 static MSABI void  ms_free(void *p) { free(p); }
 static MSABI int   ms_callnewh(size_t n) { (void)n; return 0; }
-/* Forwarded to glibc. Note the ABI hazard here, which is not yet settled: the
-   Microsoft convention makes XMM6-XMM15 callee-saved and System V treats every
-   XMM register as scratch, so the compiler must spill ten vector registers
-   around each of these calls. Writing them out as byte loops to avoid that made
-   things WORSE, but only because __attribute__((optimize)) and ms_abi conflict
-   in GCC and the convention was silently lost. A hand-written version remains
-   worth trying. */
+/* Forwarded to glibc, and the ABI boundary is the compiler's problem, not
+   ours: ms_abi makes XMM6-XMM15 callee-saved where System V treats them as
+   scratch, and GCC spills all ten - plus RDI and RSI - around the call into
+   glibc. Read the generated prologue if in doubt; the movaps pairs are there.
+   Nothing hand-written is needed. */
 static MSABI void *ms_memcpy(void *d, const void *s, size_t n) { return memcpy(d, s, n); }
 static MSABI void *ms_memset(void *d, int c, size_t n) { return memset(d, c, n); }
-__attribute__((optimize("no-tree-vectorize")))
 
 static MSABI void ms_CxxThrowException(void *a, void *b)
 { (void)a;(void)b; fprintf(stderr, "pe: the image threw a C++ exception\n"); abort(); }
@@ -472,6 +500,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     }
   }
 
+  g_image_base = base;
   g_img.base = base; g_img.size = oh->imagesz; g_img.entry = oh->entry;
   if (oh->entry) {
     MSABI int (*dllmain)(void *, uint32_t, void *) =
