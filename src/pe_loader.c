@@ -8,14 +8,40 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include <math.h>
+#include <stdarg.h>
 #include <pthread.h>
 #include <asm/prctl.h>
+#include <asm/ldt.h>
 #include <sys/syscall.h>
 
-/* Windows x86-64 reads its thread block through GS. Linux keeps its own TLS in
-   FS and leaves GS alone, so GS can be pointed at a block we build - which is
-   what makes running this image without wine possible at all. Without it the
-   image's own CRT start-up faults on the first gs:[..] it touches. */
+/* Windows reads its thread block through a segment register, and on both
+   widths Linux happens to leave that exact register alone: 64-bit Windows
+   uses GS while Linux x86-64 keeps its TLS in FS, and 32-bit Windows uses FS
+   while Linux i386 keeps its TLS in GS. So the register is free on both, and
+   pointing it at a block we build is what makes running the image without
+   wine possible at all. Without it the CRT start-up faults on the first
+   segment-relative access it makes. */
+#if defined(__x86_64__)
+#define PE_TIB_EXCEPT     0x00
+#define PE_TIB_STACKBASE  0x08
+#define PE_TIB_STACKLIMIT 0x10
+#define PE_TIB_SELF       0x30
+#define PE_TIB_PID        0x40
+#define PE_TIB_TID        0x48
+#define PE_TIB_TLS        0x58
+#define PE_TIB_PEB        0x60
+#else
+#define PE_TIB_EXCEPT     0x00
+#define PE_TIB_STACKBASE  0x04
+#define PE_TIB_STACKLIMIT 0x08
+#define PE_TIB_SELF       0x18
+#define PE_TIB_PID        0x20
+#define PE_TIB_TID        0x24
+#define PE_TIB_TLS        0x2c
+#define PE_TIB_PEB        0x30
+#endif
+
 static unsigned char *g_teb;
 static unsigned char *g_peb;
 
@@ -40,18 +66,46 @@ static int install_teb(void)
       pthread_attr_destroy(&at);
     }
     if (!stack_addr) { char dummy; stack_addr = (void *)((uintptr_t)&dummy - (8u<<20)); stack_sz = 8u<<20; }
-    *(void **)(g_teb + 0x00) = (void *)~(uintptr_t)0; /* ExceptionList = -1 */
-    *(void **)(g_teb + 0x08) = (void *)((uintptr_t)stack_addr + stack_sz); /* StackBase */
-    *(void **)(g_teb + 0x10) = stack_addr;                                 /* StackLimit */
-    *(void **)(g_teb + 0x30) = g_teb;                 /* Self          */
-    *(void **)(g_teb + 0x60) = g_peb;                 /* ProcessEnvironmentBlock */
-    *(uint32_t *)(g_teb + 0x40) = 1;                  /* ClientId.Process */
-    *(uint32_t *)(g_teb + 0x48) = 1;                  /* ClientId.Thread  */
+    *(void **)(g_teb + PE_TIB_EXCEPT) = (void *)~(uintptr_t)0; /* -1 */
+    *(void **)(g_teb + PE_TIB_STACKBASE) =
+      (void *)((uintptr_t)stack_addr + stack_sz);
+    *(void **)(g_teb + PE_TIB_STACKLIMIT) = stack_addr;
+    *(void **)(g_teb + PE_TIB_SELF) = g_teb;
+    *(void **)(g_teb + PE_TIB_PEB) = g_peb;
+    *(uint32_t *)(g_teb + PE_TIB_PID) = 1;
+    *(uint32_t *)(g_teb + PE_TIB_TID) = 1;
     *(uint32_t *)(g_peb + 0x00) = 0;                  /* InheritedAddressSpace */
+#if defined(__x86_64__)
     *(uint32_t *)(g_peb + 0x118) = 10;                /* OSMajorVersion */
-    *(uint32_t *)(g_peb + 0x11c) = 0;                 /* OSMinorVersion */
+    *(uint32_t *)(g_peb + 0x11c) = 0;
+#else
+    *(uint32_t *)(g_peb + 0x0a4) = 10;
+    *(uint32_t *)(g_peb + 0x0a8) = 0;
+#endif
   }
+#if defined(__x86_64__)
   if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)g_teb) != 0) return 0;
+#else
+  {
+    /* i386 has no arch_prctl for this: a descriptor is added to the thread's
+       LDT and FS loaded with its selector. entry_number -1 asks the kernel to
+       pick a free slot and write back which one it used. */
+    struct user_desc d;
+    memset(&d, 0, sizeof d);
+    d.entry_number    = -1;
+    d.base_addr       = (unsigned long)g_teb;
+    d.limit           = 0xfffff;
+    d.seg_32bit       = 1;
+    d.contents        = 0;
+    d.read_exec_only  = 0;
+    d.limit_in_pages  = 1;
+    d.seg_not_present = 0;
+    d.useable         = 1;
+    if (syscall(SYS_set_thread_area, &d) != 0) return 0;
+    __asm__ volatile("movw %w0, %%fs"
+                     :: "q"((unsigned short)((d.entry_number << 3) | 3)));
+  }
+#endif
   return 1;
 }
 
@@ -72,6 +126,35 @@ struct oh64 {
   uint32_t loaderflags, ndirs;
   struct dir dirs[16];
 };
+struct oh32 {
+  uint16_t magic; uint8_t major, minor;
+  uint32_t codesz, initsz, uninitsz, entry, codebase, database;
+  uint32_t imagebase;
+  uint32_t salign, falign;
+  uint16_t osmaj, osmin, imgmaj, imgmin, submaj, submin;
+  uint32_t win32ver, imagesz, headersz, checksum;
+  uint16_t subsystem, dllchars;
+  uint32_t stackres, stackcom, heapres, heapcom;
+  uint32_t loaderflags, ndirs;
+  struct dir dirs[16];
+};
+
+#if defined(__x86_64__)
+typedef struct oh64 opt_hdr;
+typedef uint64_t thunk_t;
+#define PE_OPT_MAGIC  0x20b
+#define PE_MACHINE    0x8664
+#define PE_RELOC_ABS  10                    /* IMAGE_REL_BASED_DIR64  */
+#define PE_ORD_FLAG   ((thunk_t)1 << 63)
+#else
+typedef struct oh32 opt_hdr;
+typedef uint32_t thunk_t;
+#define PE_OPT_MAGIC  0x10b
+#define PE_MACHINE    0x14c
+#define PE_RELOC_ABS  3                     /* IMAGE_REL_BASED_HIGHLOW */
+#define PE_ORD_FLAG   ((thunk_t)1 << 31)
+#endif
+
 struct sh {
   char name[8]; uint32_t vsize, vaddr, rawsize, rawptr, relptr, lineptr;
   uint16_t nrel, nline; uint32_t chars;
@@ -94,7 +177,7 @@ struct exp_dir {
    a CONDITION_VARIABLE is a single pointer, so it holds one we allocate. */
 typedef struct { long long a, b, c, d, e; } CRIT;
 
-static MSABI void ms_InitializeCriticalSectionAndSpinCount(CRIT *c, uint32_t n)
+static WINAPI_CC void ms_InitializeCriticalSectionAndSpinCount(CRIT *c, uint32_t n)
 {
   pthread_mutexattr_t at;
   (void)n;
@@ -105,14 +188,14 @@ static MSABI void ms_InitializeCriticalSectionAndSpinCount(CRIT *c, uint32_t n)
   pthread_mutex_init((pthread_mutex_t *)c, &at);
   pthread_mutexattr_destroy(&at);
 }
-static MSABI void ms_DeleteCriticalSection(CRIT *c)
+static WINAPI_CC void ms_DeleteCriticalSection(CRIT *c)
 { if (c) pthread_mutex_destroy((pthread_mutex_t *)c); }
-static MSABI void ms_EnterCriticalSection(CRIT *c)
+static WINAPI_CC void ms_EnterCriticalSection(CRIT *c)
 { if (c) pthread_mutex_lock((pthread_mutex_t *)c); }
-static MSABI void ms_LeaveCriticalSection(CRIT *c)
+static WINAPI_CC void ms_LeaveCriticalSection(CRIT *c)
 { if (c) pthread_mutex_unlock((pthread_mutex_t *)c); }
 
-static MSABI void ms_InitializeConditionVariable(void **cv)
+static WINAPI_CC void ms_InitializeConditionVariable(void **cv)
 {
   pthread_cond_t *c;
   if (!cv) return;
@@ -120,7 +203,7 @@ static MSABI void ms_InitializeConditionVariable(void **cv)
   if (c) pthread_cond_init(c, NULL);
   *cv = c;
 }
-static MSABI int ms_SleepConditionVariableCS(void **cv, CRIT *cs, uint32_t ms)
+static WINAPI_CC int ms_SleepConditionVariableCS(void **cv, CRIT *cs, uint32_t ms)
 {
   if (!cv || !*cv || !cs) return 1;
   if (ms == 0xffffffffu) {
@@ -135,21 +218,21 @@ static MSABI int ms_SleepConditionVariableCS(void **cv, CRIT *cs, uint32_t ms)
   }
   return 1;
 }
-static MSABI void ms_WakeAllConditionVariable(void **cv)
+static WINAPI_CC void ms_WakeAllConditionVariable(void **cv)
 { if (cv && *cv) pthread_cond_broadcast((pthread_cond_t *)*cv); }
-static MSABI void ms_WakeConditionVariable(void **cv)
+static WINAPI_CC void ms_WakeConditionVariable(void **cv)
 { if (cv && *cv) pthread_cond_signal((pthread_cond_t *)*cv); }
-static MSABI void *ms_CreateEventW(void *a, int b, int c, void *d)
+static WINAPI_CC void *ms_CreateEventW(void *a, int b, int c, void *d)
 { (void)a;(void)b;(void)c;(void)d; return (void *)0x1000; }
-static MSABI int   ms_SetEvent(void *h) { (void)h; return 1; }
-static MSABI int   ms_ResetEvent(void *h) { (void)h; return 1; }
-static MSABI int   ms_CloseHandle(void *h) { (void)h; return 1; }
-static MSABI uint32_t ms_WaitForSingleObjectEx(void *h, uint32_t ms, int alert)
+static WINAPI_CC int   ms_SetEvent(void *h) { (void)h; return 1; }
+static WINAPI_CC int   ms_ResetEvent(void *h) { (void)h; return 1; }
+static WINAPI_CC int   ms_CloseHandle(void *h) { (void)h; return 1; }
+static WINAPI_CC uint32_t ms_WaitForSingleObjectEx(void *h, uint32_t ms, int alert)
 { (void)h;(void)ms;(void)alert; return 0; }
-static MSABI void *ms_GetCurrentProcess(void) { return (void *)-1; }
-static MSABI uint32_t ms_GetCurrentProcessId(void) { return 1; }
-static MSABI uint32_t ms_GetCurrentThreadId(void) { return 1; }
-static MSABI void *ms_GetModuleHandleW(const uint16_t *n)
+static WINAPI_CC void *ms_GetCurrentProcess(void) { return (void *)-1; }
+static WINAPI_CC uint32_t ms_GetCurrentProcessId(void) { return 1; }
+static WINAPI_CC uint32_t ms_GetCurrentThreadId(void) { return 1; }
+static WINAPI_CC void *ms_GetModuleHandleW(const uint16_t *n)
 {
   if (getenv("PE_TRACE") && n) {
     char b[128]; int i = 0;
@@ -160,7 +243,7 @@ static MSABI void *ms_GetModuleHandleW(const uint16_t *n)
   return (void *)0x2000;
 }
 static void *bind(const char *name);
-static MSABI void *ms_GetProcAddress(void *m, const char *n)
+static WINAPI_CC void *ms_GetProcAddress(void *m, const char *n)
 {
   void *r = n ? bind(n) : NULL;
   if (getenv("PE_TRACE"))
@@ -168,61 +251,61 @@ static MSABI void *ms_GetProcAddress(void *m, const char *n)
             m, n ? n : "(ordinal)", r ? "ok" : "NULL");
   return r;
 }
-static MSABI int   ms_IsDebuggerPresent(void) { return 0; }
-static MSABI int   ms_IsProcessorFeaturePresent(uint32_t f) { (void)f; return 1; }
-static MSABI void  ms_InitializeSListHead(void *p) { if (p) memset(p, 0, 16); }
-static MSABI void *ms_SetUnhandledExceptionFilter(void *f) { (void)f; return NULL; }
-static MSABI long  ms_UnhandledExceptionFilter(void *p) { (void)p; return 1; }
-static MSABI void  ms_TerminateProcess(void *h, uint32_t c)
+static WINAPI_CC int   ms_IsDebuggerPresent(void) { return 0; }
+static WINAPI_CC int   ms_IsProcessorFeaturePresent(uint32_t f) { (void)f; return 1; }
+static WINAPI_CC void  ms_InitializeSListHead(void *p) { if (p) memset(p, 0, 16); }
+static WINAPI_CC void *ms_SetUnhandledExceptionFilter(void *f) { (void)f; return NULL; }
+static WINAPI_CC long  ms_UnhandledExceptionFilter(void *p) { (void)p; return 1; }
+static WINAPI_CC void  ms_TerminateProcess(void *h, uint32_t c)
 { (void)h; fprintf(stderr, "pe: image called TerminateProcess(%u)\n", c); _exit((int)c); }
-static MSABI int ms_QueryPerformanceCounter(int64_t *v)
+static WINAPI_CC int ms_QueryPerformanceCounter(int64_t *v)
 {
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
   if (v) *v = (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
   return 1;
 }
-static MSABI void ms_GetSystemTimeAsFileTime(uint64_t *ft)
+static WINAPI_CC void ms_GetSystemTimeAsFileTime(uint64_t *ft)
 { struct timespec t; clock_gettime(CLOCK_REALTIME, &t);
   if (ft) *ft = ((uint64_t)t.tv_sec + 11644473600ULL) * 10000000ULL + t.tv_nsec / 100; }
-static MSABI void ms_GetLocalTime(uint16_t *st)
+static WINAPI_CC void ms_GetLocalTime(uint16_t *st)
 { if (st) memset(st, 0, 16); }
 /* unwinding: only reached if the image throws, which it must not */
-static MSABI void  ms_RtlCaptureContext(void *c) { if (c) memset(c, 0, 1232); }
-static MSABI void *ms_RtlLookupFunctionEntry(uint64_t pc, uint64_t *base, void *hist)
+static WINAPI_CC void  ms_RtlCaptureContext(void *c) { if (c) memset(c, 0, 1232); }
+static WINAPI_CC void *ms_RtlLookupFunctionEntry(uint64_t pc, uint64_t *base, void *hist)
 { (void)pc;(void)hist; if (base) *base = 0; return NULL; }
-static MSABI void  ms_RtlVirtualUnwind(uint32_t a, uint64_t b, uint64_t c, void *d,
+static WINAPI_CC void  ms_RtlVirtualUnwind(uint32_t a, uint64_t b, uint64_t c, void *d,
                                        void *e, void *f, void *g, void *h)
 { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; }
 
 /* Zeroed: Windows hands back a fresh page where glibc recycles a dirty one. */
-static MSABI void *ms_malloc(size_t n) { return calloc(1, n ? n : 1); }
-static MSABI void  ms_free(void *p) { free(p); }
-static MSABI int   ms_callnewh(size_t n) { (void)n; return 0; }
+static CDECL_CC void *ms_malloc(size_t n) { return calloc(1, n ? n : 1); }
+static CDECL_CC void  ms_free(void *p) { free(p); }
+static CDECL_CC int   ms_callnewh(size_t n) { (void)n; return 0; }
 /* ms_abi makes XMM6-XMM15, RDI and RSI callee-saved where System V does not;
    GCC spills them around the call into glibc, so no thunk is needed. */
-static MSABI void *ms_memcpy(void *d, const void *s, size_t n) { return memcpy(d, s, n); }
-static MSABI void *ms_memset(void *d, int c, size_t n) { return memset(d, c, n); }
+static CDECL_CC void *ms_memcpy(void *d, const void *s, size_t n) { return memcpy(d, s, n); }
+static CDECL_CC void *ms_memset(void *d, int c, size_t n) { return memset(d, c, n); }
 
-static MSABI void ms_CxxThrowException(void *a, void *b)
+static CDECL_CC void ms_CxxThrowException(void *a, void *b)
 { (void)a;(void)b; fprintf(stderr, "pe: the image threw a C++ exception\n"); abort(); }
-static MSABI long ms_C_specific_handler(void *a, void *b, void *c, void *d)
+static CDECL_CC long ms_C_specific_handler(void *a, void *b, void *c, void *d)
 { (void)a;(void)b;(void)c;(void)d; return 1; }
-static MSABI long ms_CxxFrameHandler3(void *a, void *b, void *c, void *d)
+static CDECL_CC long ms_CxxFrameHandler3(void *a, void *b, void *c, void *d)
 { (void)a;(void)b;(void)c;(void)d; return 1; }
-static MSABI void ms_std_exception_copy(void *a, void *b) { (void)a;(void)b; }
-static MSABI void ms_std_exception_destroy(void *a) { (void)a; }
-static MSABI void ms_std_terminate(void) { fprintf(stderr, "pe: std::terminate\n"); abort(); }
-static MSABI void ms_std_type_info_destroy_list(void *a) { (void)a; }
+static CDECL_CC void ms_std_exception_copy(void *a, void *b) { (void)a;(void)b; }
+static CDECL_CC void ms_std_exception_destroy(void *a) { (void)a; }
+static CDECL_CC void ms_std_terminate(void) { fprintf(stderr, "pe: std::terminate\n"); abort(); }
+static CDECL_CC void ms_std_type_info_destroy_list(void *a) { (void)a; }
 
 /* The tables hold function pointers INTO the image, so they are MS ABI, and
    both ends are inclusive-exclusive. Getting these wrong leaves the image's
    globals holding whatever the heap had, which shows up later as output that
    differs run to run. */
-typedef MSABI void (*pvfv)(void);
-typedef MSABI int  (*pifv)(void);
+typedef CDECL_CC void (*pvfv)(void);
+typedef CDECL_CC int  (*pifv)(void);
 
-static MSABI void ms_initterm(pvfv *first, pvfv *last)
+static CDECL_CC void ms_initterm(pvfv *first, pvfv *last)
 {
   int n = 0;
   if (!first || !last) return;
@@ -230,7 +313,7 @@ static MSABI void ms_initterm(pvfv *first, pvfv *last)
     if (*first) { (*first)(); ++n; }
   if (getenv("PE_TRACE")) fprintf(stderr, "pe: _initterm ran %d initialisers\n", n);
 }
-static MSABI int ms_initterm_e(pifv *first, pifv *last)
+static CDECL_CC int ms_initterm_e(pifv *first, pifv *last)
 {
   int n = 0;
   if (!first || !last) return 0;
@@ -243,18 +326,64 @@ static MSABI int ms_initterm_e(pifv *first, pifv *last)
   if (getenv("PE_TRACE")) fprintf(stderr, "pe: _initterm_e ran %d initialisers\n", n);
   return 0;
 }
-static MSABI int  ms_crt_atexit(void *f) { (void)f; return 0; }
-static MSABI int  ms_register_onexit_function(void *t, void *f) { (void)t;(void)f; return 0; }
-static MSABI int  ms_initialize_onexit_table(void *t) { (void)t; return 0; }
-static MSABI int  ms_execute_onexit_table(void *t) { (void)t; return 0; }
-static MSABI int  ms_configure_narrow_argv(int m) { (void)m; return 0; }
-static MSABI int  ms_initialize_narrow_environment(void) { return 0; }
-static MSABI void ms_cexit(void) {}
-static MSABI void ms_exit(int c) { _exit(c); }
-static MSABI long ms_seh_filter_dll(uint32_t c, void *p) { (void)c;(void)p; return 0; }
-static MSABI int ms_stdio_common_vsprintf(uint64_t opt, char *buf, size_t n,
+static CDECL_CC int  ms_crt_atexit(void *f) { (void)f; return 0; }
+static CDECL_CC int  ms_register_onexit_function(void *t, void *f) { (void)t;(void)f; return 0; }
+static CDECL_CC int  ms_initialize_onexit_table(void *t) { (void)t; return 0; }
+static CDECL_CC int  ms_execute_onexit_table(void *t) { (void)t; return 0; }
+static CDECL_CC int  ms_configure_narrow_argv(int m) { (void)m; return 0; }
+static CDECL_CC int  ms_initialize_narrow_environment(void) { return 0; }
+static CDECL_CC void ms_cexit(void) {}
+static CDECL_CC void ms_exit(int c) { _exit(c); }
+static CDECL_CC long ms_seh_filter_dll(uint32_t c, void *p) { (void)c;(void)p; return 0; }
+static CDECL_CC int ms_stdio_common_vsprintf(uint64_t opt, char *buf, size_t n,
                                           const char *fmt, void *loc, va_list ap)
 { (void)opt; (void)loc; return vsnprintf(buf, n ? n : 0, fmt, ap); }
+
+
+#if defined(__i386__)
+/* The 32-bit core asks for a different set: no condition variables and no
+   critical sections, but a handful of CRT internals the 64-bit build does
+   without, and pow by way of the SSE2 libm entry point. */
+static WINAPI_CC uint32_t ms_GetTickCount(void)
+{ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint32_t)(t.tv_sec * 1000u + (uint32_t)(t.tv_nsec / 1000000)); }
+static WINAPI_CC void  ms_Sleep(uint32_t ms)
+{ struct timespec t; t.tv_sec = ms / 1000u;
+  t.tv_nsec = (long)(ms % 1000u) * 1000000L; nanosleep(&t, NULL); }
+static WINAPI_CC long  ms_InterlockedExchange(volatile long *p, long v)
+{ return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST); }
+static WINAPI_CC long  ms_InterlockedCompareExchange(volatile long *p, long x, long c)
+{ __atomic_compare_exchange_n(p, &c, x, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+  return c; }
+/* Windows obfuscates stored pointers; anything self-consistent will do. */
+static WINAPI_CC void *ms_EncodePointer(void *p) { return p; }
+static WINAPI_CC void *ms_DecodePointer(void *p) { return p; }
+
+static CDECL_CC void  ms_amsg_exit(int code)
+{ fprintf(stderr, "pe: CRT fatal %d\n", code); _exit(code); }
+static CDECL_CC void  ms_crt_debugger_hook(int r) { (void)r; }
+static CDECL_CC void  ms_clean_type_info_names_internal(void *p) { (void)p; }
+static CDECL_CC long  ms_CppXcptFilter(unsigned long c, void *p)
+{ (void)c; (void)p; return 0; }
+static CDECL_CC int   ms_except_handler4_common(void *a, void *b, void *c,
+                                                void *d, void *e, void *f)
+{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f; return 1; }
+static CDECL_CC void *ms_dllonexit(void *f, void **b, void **e)
+{ (void)b; (void)e; return f; }
+static CDECL_CC void *ms_onexit(void *f) { return f; }
+static CDECL_CC void  ms_lock(int n) { (void)n; }
+static CDECL_CC void  ms_unlock(int n) { (void)n; }
+static CDECL_CC void *ms_malloc_crt(size_t n) { return calloc(1, n ? n : 1); }
+static CDECL_CC double ms_libm_sse2_pow(double x, double y) { return pow(x, y); }
+static CDECL_CC int   ms_vsprintf(char *b, const char *f, va_list ap)
+{ return vsprintf(b, f, ap); }
+static CDECL_CC void *ms_operator_new(size_t n) { return calloc(1, n ? n : 1); }
+static CDECL_CC void  ms_operator_delete(void *p) { free(p); }
+/* __thiscall with no arguments: `this` arrives in ECX and the callee cleans
+   nothing, which is what a no-argument stdcall does. */
+static WINAPI_CC void ms_type_info_dtor(void) {}
+static CDECL_CC void *ms_encoded_null(void) { return NULL; }
+#endif
 
 struct binding { const char *name; void *fn; };
 static const struct binding BINDINGS[] = {
@@ -305,6 +434,27 @@ static const struct binding BINDINGS[] = {
   {"SleepConditionVariableCS", ms_SleepConditionVariableCS},
   {"WakeAllConditionVariable", ms_WakeAllConditionVariable},
   {"WakeConditionVariable", ms_WakeConditionVariable},
+#if defined(__i386__)
+  {"GetTickCount", ms_GetTickCount}, {"Sleep", ms_Sleep},
+  {"InterlockedExchange", ms_InterlockedExchange},
+  {"InterlockedCompareExchange", ms_InterlockedCompareExchange},
+  {"EncodePointer", ms_EncodePointer}, {"DecodePointer", ms_DecodePointer},
+  {"_amsg_exit", ms_amsg_exit},
+  {"_crt_debugger_hook", ms_crt_debugger_hook},
+  {"__clean_type_info_names_internal", ms_clean_type_info_names_internal},
+  {"__CppXcptFilter", ms_CppXcptFilter},
+  {"_except_handler4_common", ms_except_handler4_common},
+  {"__dllonexit", ms_dllonexit}, {"_onexit", ms_onexit},
+  {"_lock", ms_lock}, {"_unlock", ms_unlock},
+  {"_malloc_crt", ms_malloc_crt},
+  {"__libm_sse2_pow", ms_libm_sse2_pow},
+  {"vsprintf", ms_vsprintf},
+  {"??2@YAPAXI@Z", ms_operator_new},
+  {"??3@YAXPAX@Z", ms_operator_delete},
+  {"?terminate@@YAXXZ", ms_std_terminate},
+  {"?_type_info_dtor_internal_method@type_info@@QAEXXZ", ms_type_info_dtor},
+  {"_encoded_null", ms_encoded_null},
+#endif
   {NULL, NULL}
 };
 
@@ -330,7 +480,7 @@ void *pe_symbol(struct pe_image *img, const char *name)
   struct dos *d = (struct dos *)img->base;
   unsigned char *nt = img->base + d->lfanew;
   struct fh *fh = (struct fh *)(nt + 4);
-  struct oh64 *oh = (struct oh64 *)(nt + 4 + sizeof *fh);
+  opt_hdr *oh = (opt_hdr *)(nt + 4 + sizeof *fh);
   struct exp_dir *ed;
   uint32_t *names, *funcs; uint16_t *ords; uint32_t i;
   (void)fh;
@@ -367,9 +517,11 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
   unsigned char *nt = g_file + d->lfanew;
   if (memcmp(nt, "PE\0\0", 4)) FAIL("no PE signature");
   struct fh *fh = (struct fh *)(nt + 4);
-  struct oh64 *oh = (struct oh64 *)(nt + 4 + sizeof *fh);
-  if (fh->machine != 0x8664) FAIL("not x86-64");
-  if (oh->magic != 0x20b) FAIL("not PE32+");
+  opt_hdr *oh = (opt_hdr *)(nt + 4 + sizeof *fh);
+  if (fh->machine != PE_MACHINE)
+    FAIL("wrong machine: this build hosts %s cores",
+         PE_MACHINE == 0x8664 ? "64-bit" : "32-bit");
+  if (oh->magic != PE_OPT_MAGIC) FAIL("wrong PE optional header");
 
   /* Prefer the image's own base: then the relocation pass has nothing to do
      and cannot be the thing that is wrong. Falling back to anywhere is fine,
@@ -407,8 +559,13 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
       uint32_t n = (blk - 8) / 2;
       for (uint32_t i = 0; i < n; ++i) {
         int type = e[i] >> 12, off = e[i] & 0xfff;
-        if (type == 10) *(uint64_t *)(base + page + off) += (uint64_t)delta;
-        else if (type != 0) FAIL("unhandled relocation type %d", type);
+        if (type == PE_RELOC_ABS) {
+#if defined(__x86_64__)
+          *(uint64_t *)(base + page + off) += (uint64_t)delta;
+#else
+          *(uint32_t *)(base + page + off) += (uint32_t)delta;
+#endif
+        } else if (type != 0) FAIL("unhandled relocation type %d", type);
       }
       p += blk;
     }
@@ -419,14 +576,15 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
   if (oh->dirs[1].size) {
     struct imp_desc *im = (struct imp_desc *)(base + oh->dirs[1].rva);
     for (; im->name; ++im) {
-      uint64_t *oft = (uint64_t *)(base + (im->oft ? im->oft : im->ft));
-      uint64_t *ft  = (uint64_t *)(base + im->ft);
+      thunk_t *oft = (thunk_t *)(base + (im->oft ? im->oft : im->ft));
+      thunk_t *ft  = (thunk_t *)(base + im->ft);
       for (; *oft; ++oft, ++ft) {
-        if (*oft >> 63) FAIL("%s imports by ordinal", (char *)(base + im->name));
+        if (*oft & PE_ORD_FLAG)
+          FAIL("%s imports by ordinal", (char *)(base + im->name));
         const char *nm = (const char *)(base + (*oft & 0xffffffff) + 2);
         void *fn = bind(nm);
         if (!fn) FAIL("no binding for %s (%s)", nm, (char *)(base + im->name));
-        *ft = (uint64_t)(uintptr_t)fn;
+        *ft = (thunk_t)(uintptr_t)fn;
       }
     }
   }
@@ -459,7 +617,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     if (!g_tls_slots) {
       g_tls_slots = calloc(PE_TLS_SLOTS, sizeof *g_tls_slots);
       if (!g_tls_slots) FAIL("out of memory for TLS");
-      *(void **)(g_teb + 0x58) = g_tls_slots;
+      *(void **)(g_teb + PE_TIB_TLS) = g_tls_slots;
     }
     if (g_tls_next >= PE_TLS_SLOTS) FAIL("out of TLS slots");
     idx = g_tls_next++;
@@ -472,7 +630,8 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     if (tls->callbacks) {
       uint64_t *cb = (uint64_t *)(uintptr_t)tls->callbacks;
       while (*cb) {
-        MSABI void (*f)(void *, uint32_t, void *) = (void *)(uintptr_t)*cb;
+        /* PIMAGE_TLS_CALLBACK is WINAPI: stdcall on i386. */
+        WINAPI_CC void (*f)(void *, uint32_t, void *) = (void *)(uintptr_t)*cb;
         f(base, 1, NULL);
         ++cb;
       }
@@ -481,7 +640,9 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
 
   img->base = base; img->size = oh->imagesz; img->entry = oh->entry;
   if (oh->entry) {
-    MSABI int (*dllmain)(void *, uint32_t, void *) =
+    /* DllMain is WINAPI: stdcall on i386, so the callee clears the arguments
+       and the caller must not. */
+    WINAPI_CC int (*dllmain)(void *, uint32_t, void *) =
       (void *)(base + oh->entry);
     if (getenv("PE_TRACE")) fprintf(stderr, "pe: calling DllMain at +0x%llx\n", (unsigned long long)oh->entry);
     if (!dllmain(base, 1 /* DLL_PROCESS_ATTACH */, NULL))

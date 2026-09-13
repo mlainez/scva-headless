@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: CC0-1.0
 #
 #   make linux      native Linux binaries, no wine
+#   make linux32    32-bit native Linux, for a 32-bit SCCore.dll and for
+#                   running under box86 on 32-bit ARM
 #   make windows    64-bit Windows PE binaries via mingw-w64
 #   make windows32  32-bit Windows PE binaries, for the 32-bit SCCore.dll
 #   make            linux and windows
 #
-# windows32 is not part of "make": it needs the i686 toolchain and a 32-bit
-# core, and a 64-bit process cannot host a 32-bit DLL, so it is a separate
-# build rather than a variant of the others.
+# A 64-bit process cannot host a 32-bit DLL, so the 32-bit targets are separate
+# builds rather than variants: pick the one that matches your core. Neither is
+# part of "make" - linux32 needs libc6-dev-i386 and windows32 the i686 mingw
+# toolchain.
 #
 MINGW  ?= x86_64-w64-mingw32-gcc
 MINGW32 ?= i686-w64-mingw32-gcc
@@ -19,12 +22,14 @@ WINFLAGS := -O2 -Wall
 ALSA     := $(shell pkg-config --cflags --libs alsa 2>/dev/null || echo -lasound)
 
 LINUX_BINS   := $(BUILD)/scva-native $(BUILD)/scva-daemon
+LINUX32_BINS := $(BUILD)/scva-native32
 WINDOWS_BINS := $(BUILD)/scva_render.exe $(BUILD)/scva_engine.exe \
                 $(BUILD)/scva-vst.dll
 WIN32_BINS   := $(BUILD)/scva_render32.exe $(BUILD)/scva_engine32.exe
 
 all: linux windows
 linux: $(LINUX_BINS)
+linux32: $(LINUX32_BINS)
 windows: $(WINDOWS_BINS)
 windows32: $(WIN32_BINS)
 
@@ -34,6 +39,10 @@ $(BUILD):
 $(BUILD)/scva-native: src/scva_native.c src/pe_loader.c src/pe_loader.h \
                       src/midi_song.h src/core_path.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ src/scva_native.c src/pe_loader.c -lpthread -lm
+
+$(BUILD)/scva-native32: src/scva_native.c src/pe_loader.c src/pe_loader.h \
+                        src/midi_song.h src/core_path.h src/scva_map.h | $(BUILD)
+	$(CC) -m32 $(CFLAGS) -o $@ src/scva_native.c src/pe_loader.c -lpthread -lm
 
 $(BUILD)/scva-daemon: src/scva_daemon.c src/core_path.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $< $(ALSA)

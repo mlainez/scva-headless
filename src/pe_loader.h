@@ -18,7 +18,21 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define MSABI __attribute__((ms_abi))
+/* Calling conventions across the boundary.
+   x86-64 Windows has exactly one, so all three collapse to ms_abi. x86-32 has
+   three that matter and mixing them up corrupts the stack: the Win32 API is
+   stdcall, the CRT is cdecl, and the core's own exports are cdecl. */
+#if defined(__x86_64__)
+#define MSABI      __attribute__((ms_abi))
+#define WINAPI_CC  __attribute__((ms_abi))
+#define CDECL_CC   __attribute__((ms_abi))
+#elif defined(__i386__)
+#define MSABI
+#define WINAPI_CC  __attribute__((stdcall))
+#define CDECL_CC   __attribute__((cdecl))
+#else
+#error "this loader is x86 only"
+#endif
 
 struct pe_image {
   unsigned char *base;      /* where the image is mapped */
