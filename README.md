@@ -140,9 +140,18 @@ for a 32-bit `SCCore.dll`. It is ALSA, so Linux only.
 
 ### Changing the map while it runs
 
-Send **CC32** on the channel you want to change. The daemon adopts it for that
-part and uses it from then on, so any sequencer, controller or DAW can switch
-map live - it is ordinary MIDI, not a private control channel.
+Type it in the terminal the daemon is running in:
+
+    SC-88          every part
+    10 55          one part, channels numbered 1 to 16
+    <enter>        what each part is currently set to
+    q              stop
+
+Or send **CC32** on the channel you want to change. The daemon adopts it for
+that part and uses it from then on, so any sequencer, controller or DAW can
+switch map live - it is ordinary MIDI, not a private control channel. There is
+no command-line tool for a single controller change in alsa-utils before
+1.2.10, which is why typing it is usually easier.
 
 `--map` sets what every part starts with. For parts the incoming stream never
 sets, the daemon sends the configured map before each program change, which is

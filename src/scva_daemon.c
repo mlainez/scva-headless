@@ -157,6 +157,45 @@ static snd_pcm_t *open_pcm(const char *want, unsigned int rate,
   return pcm;
 }
 
+/* One typed line. Returns 1 when it asked to stop. */
+static int console_command(char *line, unsigned char *map_of,
+                           tg_short_midi_fn short_midi)
+{
+  int ch, want, off = 0;
+  size_t n = strlen(line);
+
+  while (n > 0 && (line[n - 1] == '\r' || line[n - 1] == ' ')) line[--n] = '\0';
+  if (!line[0]) {
+    fprintf(stderr, "map:");
+    for (ch = 0; ch < 16; ++ch) fprintf(stderr, " %d", map_of[ch]);
+    fprintf(stderr, "\n");
+    return 0;
+  }
+  if (!strcmp(line, "q") || !strcmp(line, "quit")) return 1;
+
+  /* "<channel> <map>" sets one part, a bare map name sets all of them */
+  if (sscanf(line, "%d %n", &ch, &off) == 1 && off > 0 && line[off] &&
+      ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
+    map_of[ch - 1] = (unsigned char)want;
+    short_midi(scva_map_cc(ch - 1, want), 0);
+    fprintf(stderr, "channel %d -> map %d\n", ch, want);
+    return 0;
+  }
+  if ((want = scva_map_value(line)) >= 0) {
+    for (ch = 0; ch < 16; ++ch) {
+      map_of[ch] = (unsigned char)want;
+      short_midi(scva_map_cc(ch, want), 0);
+    }
+    fprintf(stderr, "all parts -> map %d\n", want);
+    return 0;
+  }
+  fprintf(stderr, "type a map (" SCVA_MAP_USAGE "), or\n"
+                  "  <channel 1-16> <map>   one part only\n"
+                  "  <enter>                what each part is set to\n"
+                  "  q                      stop\n");
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   const char *core = NULL;
@@ -195,6 +234,7 @@ int main(int argc, char **argv)
   unsigned char mbuf[1024];
   int port, nfds, nseq, npcm, rc = 0;
   long underruns = 0;
+  int console = 1;          /* typed commands on stdin */
 
   for (i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--core") && i + 1 < argc) core = argv[++i];
@@ -348,7 +388,7 @@ int main(int argc, char **argv)
   nseq = snd_seq_poll_descriptors_count(seq, POLLIN);
   npcm = snd_pcm_poll_descriptors_count(pcm);
   nfds = nseq + npcm;
-  pfds = calloc((size_t)nfds, sizeof *pfds);
+  pfds = calloc((size_t)nfds + 1, sizeof *pfds);   /* +1 for stdin */
   left = malloc((size_t)block * sizeof *left);
   right = malloc((size_t)block * sizeof *right);
   inter = malloc((size_t)block * 2 * sizeof *inter);
@@ -367,7 +407,12 @@ int main(int argc, char **argv)
 
     snd_seq_poll_descriptors(seq, pfds, (unsigned)nseq, POLLIN);
     snd_pcm_poll_descriptors(pcm, pfds + nseq, (unsigned)npcm);
-    ready = poll(pfds, (nfds_t)nfds, 100);
+    if (console) {
+      pfds[nfds].fd = STDIN_FILENO;
+      pfds[nfds].events = POLLIN;
+      pfds[nfds].revents = 0;
+    }
+    ready = poll(pfds, (nfds_t)(nfds + (console ? 1 : 0)), 100);
     if (ready < 0) {
       if (errno == EINTR) continue;
       break;
@@ -375,6 +420,22 @@ int main(int argc, char **argv)
     if (snd_pcm_poll_descriptors_revents(pcm, pfds + nseq, (unsigned)npcm,
                                          &revents) < 0)
       revents = POLLOUT;                  /* cannot tell: try the write */
+
+    if (console && (pfds[nfds].revents & (POLLIN | POLLHUP))) {
+      char buf[256];
+      ssize_t n = read(STDIN_FILENO, buf, sizeof buf - 1);
+      if (n <= 0) {
+        console = 0;              /* stdin is gone: stop watching it */
+      } else {
+        char *p = buf, *nl;
+        buf[n] = '\0';
+        while ((nl = strchr(p, '\n')) != NULL) {
+          *nl = '\0';
+          if (console_command(p, map_of, short_midi)) stop_now = 1;
+          p = nl + 1;
+        }
+      }
+    }
 
     /* MIDI first: whatever arrived goes into the engine before the block it
        belongs to is rendered. input_pending(1) fetches from the kernel, so
