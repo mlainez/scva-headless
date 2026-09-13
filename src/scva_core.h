@@ -59,7 +59,7 @@ static int scva_open(struct scva *s, const char *dll, double rate, int maxblock)
   s->set_max_block(maxblock);
   { struct scva_config c; c.a = 1; c.b = 1; s->set_config(&c); }
   s->set_sample_rate((float)rate);          /* <-- last call before activate */
-  s->activate(0, 1);
+  s->activate(0, maxblock);
   if (s->fatal()) { fprintf(stderr, "scva: fatal after activate\n"); return 0; }
   return 1;
 }
