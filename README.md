@@ -105,11 +105,42 @@ runs 12 samples ahead.
 | `TG_XPsetSystemConfig` | clamped to (1,1); 0 silences the engine, 2 and 3 clamp to 1, skipping it is identical |
 | floating-point environment | flush-to-zero, denormals-are-zero and round-toward-zero all change nothing |
 
-### Still untried
+### The VST route, which is the live lead
 
-- `TG_PMidiIn`, `TG_Pt` and `TG_flushMidi`, the three exports nothing here calls.
-- Hosting the actual VST wrapper rather than the core, via the MrsWatson host
-  that is already present. Novak's clean recording came through that path.
+Novak's clean right channel came through the plug-in hosted in a DAW, not
+through the core directly - so the wrapper does something we do not.
+
+`src/scva_vst_shim.c` gets that path open. The wrapper exports its entry as
+**`R2RPluginMain`** rather than the `VSTPluginMain` a host looks for, so no host
+can open it unaided; the shim publishes the expected name and forwards. It
+resolves `Wrapper.dll` next to itself rather than through the registry, so the
+host's working directory cannot change which one is found.
+
+It replaces a third-party shim that ships alongside the wrapper and **fails its
+own DllMain under wine** - `LoadLibrary` returns 1114, ERROR_DLL_INIT_FAILED -
+while the wrapper itself loads perfectly. That shim also reads
+`HKLM\SOFTWARE\Roland Cloud\SOUND Canvas VA`, and the prefix only carried the
+key under `Wow6432Node`, the 32-bit view, which a 64-bit host does not read.
+Adding it to the 64-bit hive did not revive it; ours needs no registry at all.
+
+With our shim the plug-in opens and identifies itself, and stops at one
+specific thing:
+
+    Plugin 'scva' asked for directory pointer (unsupported)
+    ERROR: Sent signal 11
+
+It calls **`audioMasterGetDirectory`** to locate its data, MrsWatson answers
+"unsupported", and the plug-in dereferences the null it gets back. So the
+blocker is now a single host callback rather than anything unknown.
+
+**Next**: a minimal VST2 host of our own that answers `audioMasterGetDirectory`
+with the plug-in's directory and then drives `processReplacing`. That is a small
+amount of code and it is the last thing between here and a clean-right-channel
+oracle.
+
+### Also still untried
+
+- `TG_PMidiIn`, `TG_Pt` and `TG_flushMidi`, the three core exports nothing calls.
 - Whether wine's own float handling differs from Windows in a way the FP-mode
   test above does not reach.
 
