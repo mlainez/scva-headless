@@ -22,6 +22,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <poll.h>
 #include <sched.h>
 #include <sys/mman.h>
@@ -157,18 +159,76 @@ static snd_pcm_t *open_pcm(const char *want, unsigned int rate,
   return pcm;
 }
 
+/* $XDG_RUNTIME_DIR is where a user service is meant to keep its socket. */
+static const char *control_path(const char *given)
+{
+  static char buf[256];
+  const char *run;
+  if (given && *given) return given;
+  run = getenv("XDG_RUNTIME_DIR");
+  if (run && *run)
+    snprintf(buf, sizeof buf, "%s/scva-daemon.sock", run);
+  else
+    snprintf(buf, sizeof buf, "/tmp/scva-daemon-%u.sock",
+             (unsigned)getuid());
+  return buf;
+}
+
+static int control_listen(const char *path)
+{
+  struct sockaddr_un a;
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+  memset(&a, 0, sizeof a);
+  a.sun_family = AF_UNIX;
+  snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
+  unlink(path);                     /* a socket left by a killed daemon */
+  if (bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || listen(fd, 4) < 0) {
+    close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+/* One command, one reply, one connection: enough for "set the map", and it
+   keeps every client a single shell redirect. */
+static int control_send(const char *path, const char *text)
+{
+  struct sockaddr_un a;
+  char reply[512];
+  ssize_t n;
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return 1;
+  memset(&a, 0, sizeof a);
+  a.sun_family = AF_UNIX;
+  snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
+  if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) {
+    fprintf(stderr, "scva-daemon: no daemon listening on %s\n", path);
+    close(fd);
+    return 1;
+  }
+  dprintf(fd, "%s\n", text);
+  shutdown(fd, SHUT_WR);
+  while ((n = read(fd, reply, sizeof reply - 1)) > 0) {
+    reply[n] = '\0';
+    fputs(reply, stdout);
+  }
+  close(fd);
+  return 0;
+}
+
 /* One typed line. Returns 1 when it asked to stop. */
 static int console_command(char *line, unsigned char *map_of,
-                           tg_short_midi_fn short_midi)
+                           tg_short_midi_fn short_midi, int out)
 {
   int ch, want, off = 0;
   size_t n = strlen(line);
 
   while (n > 0 && (line[n - 1] == '\r' || line[n - 1] == ' ')) line[--n] = '\0';
   if (!line[0]) {
-    fprintf(stderr, "map:");
-    for (ch = 0; ch < 16; ++ch) fprintf(stderr, " %d", map_of[ch]);
-    fprintf(stderr, "\n");
+    dprintf(out, "map:");
+    for (ch = 0; ch < 16; ++ch) dprintf(out, " %d", map_of[ch]);
+    dprintf(out, "\n");
     return 0;
   }
   if (!strcmp(line, "q") || !strcmp(line, "quit")) return 1;
@@ -178,7 +238,7 @@ static int console_command(char *line, unsigned char *map_of,
       ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
     map_of[ch - 1] = (unsigned char)want;
     short_midi(scva_map_cc(ch - 1, want), 0);
-    fprintf(stderr, "channel %d -> map %d\n", ch, want);
+    dprintf(out, "channel %d -> map %d\n", ch, want);
     return 0;
   }
   if ((want = scva_map_value(line)) >= 0) {
@@ -186,10 +246,10 @@ static int console_command(char *line, unsigned char *map_of,
       map_of[ch] = (unsigned char)want;
       short_midi(scva_map_cc(ch, want), 0);
     }
-    fprintf(stderr, "all parts -> map %d\n", want);
+    dprintf(out, "all parts -> map %d\n", want);
     return 0;
   }
-  fprintf(stderr, "type a map (" SCVA_MAP_USAGE "), or\n"
+  dprintf(out, "type a map (" SCVA_MAP_USAGE "), or\n"
                   "  <channel 1-16> <map>   one part only\n"
                   "  <enter>                what each part is set to\n"
                   "  q                      stop\n");
@@ -235,6 +295,8 @@ int main(int argc, char **argv)
   int port, nfds, nseq, npcm, rc = 0;
   long underruns = 0;
   int console = 1;          /* typed commands on stdin */
+  const char *ctl_path = NULL;
+  int ctl_fd = -1, ctl_slot = -1;
 
   for (i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--core") && i + 1 < argc) core = argv[++i];
@@ -245,6 +307,9 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--latency") && i + 1 < argc)
       latency_us = (unsigned)atoi(argv[++i]) * 1000u;
     else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
+    else if (!strcmp(argv[i], "--control") && i + 1 < argc) ctl_path = argv[++i];
+    else if (!strcmp(argv[i], "--send") && i + 1 < argc)
+      return control_send(control_path(ctl_path), argv[++i]);
     else if (!strcmp(argv[i], "--list-pcm")) {
       struct pcm_cand cand[64];
       size_t n, k;
@@ -267,6 +332,8 @@ int main(int argc, char **argv)
         "                   [--map " SCVA_MAP_USAGE "]\n"
         "\n"
         "  --latency MS       delay before a note is heard (default 20)\n"
+        "  --control PATH     control socket (default under $XDG_RUNTIME_DIR)\n"
+        "  --send TEXT        send one command to a running daemon and exit\n"
         "  --list-pcm         what this machine offers, in try order\n"
         "  --pcm DEV          force one; otherwise it is detected\n");
       return argc > 1 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))
@@ -366,8 +433,16 @@ int main(int argc, char **argv)
             pcm_opened, rate, 1000.0 * (double)bufsz / rate);
   }
 
+  ctl_path = control_path(ctl_path);
+  ctl_fd = control_listen(ctl_path);
+  if (ctl_fd >= 0)
+    fprintf(stderr, "scva-daemon: control socket %s\n", ctl_path);
+  else
+    fprintf(stderr, "scva-daemon: no control socket at %s\n", ctl_path);
+
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
+  signal(SIGPIPE, SIG_IGN);          /* a client that hangs up mid-reply */
 
   /* Both of these are best-effort and silent when refused. A page fault or a
      scheduler delay in the middle of a block is heard as a dropout, and an
@@ -388,7 +463,7 @@ int main(int argc, char **argv)
   nseq = snd_seq_poll_descriptors_count(seq, POLLIN);
   npcm = snd_pcm_poll_descriptors_count(pcm);
   nfds = nseq + npcm;
-  pfds = calloc((size_t)nfds + 1, sizeof *pfds);   /* +1 for stdin */
+  pfds = calloc((size_t)nfds + 2, sizeof *pfds);   /* stdin, control */
   left = malloc((size_t)block * sizeof *left);
   right = malloc((size_t)block * sizeof *right);
   inter = malloc((size_t)block * 2 * sizeof *inter);
@@ -407,12 +482,25 @@ int main(int argc, char **argv)
 
     snd_seq_poll_descriptors(seq, pfds, (unsigned)nseq, POLLIN);
     snd_pcm_poll_descriptors(pcm, pfds + nseq, (unsigned)npcm);
-    if (console) {
-      pfds[nfds].fd = STDIN_FILENO;
-      pfds[nfds].events = POLLIN;
-      pfds[nfds].revents = 0;
+    {
+      int extra = 0;
+      if (console) {
+        pfds[nfds].fd = STDIN_FILENO;
+        pfds[nfds].events = POLLIN;
+        pfds[nfds].revents = 0;
+        ++extra;
+      }
+      if (ctl_fd >= 0) {
+        pfds[nfds + extra].fd = ctl_fd;
+        pfds[nfds + extra].events = POLLIN;
+        pfds[nfds + extra].revents = 0;
+        ctl_slot = nfds + extra;
+        ++extra;
+      } else {
+        ctl_slot = -1;
+      }
+      ready = poll(pfds, (nfds_t)(nfds + extra), 100);
     }
-    ready = poll(pfds, (nfds_t)(nfds + (console ? 1 : 0)), 100);
     if (ready < 0) {
       if (errno == EINTR) continue;
       break;
@@ -431,9 +519,29 @@ int main(int argc, char **argv)
         buf[n] = '\0';
         while ((nl = strchr(p, '\n')) != NULL) {
           *nl = '\0';
-          if (console_command(p, map_of, short_midi)) stop_now = 1;
+          if (console_command(p, map_of, short_midi, STDERR_FILENO))
+            stop_now = 1;
           p = nl + 1;
         }
+      }
+    }
+
+    if (ctl_slot >= 0 && (pfds[ctl_slot].revents & POLLIN)) {
+      int c = accept(ctl_fd, NULL, NULL);
+      if (c >= 0) {
+        char buf[256];
+        ssize_t n = read(c, buf, sizeof buf - 1);
+        if (n > 0) {
+          char *p = buf, *nl;
+          buf[n] = '\0';
+          if (!strchr(buf, '\n')) strcat(buf, "\n");
+          while ((nl = strchr(p, '\n')) != NULL) {
+            *nl = '\0';
+            if (console_command(p, map_of, short_midi, c)) stop_now = 1;
+            p = nl + 1;
+          }
+        }
+        close(c);
       }
     }
 
@@ -493,6 +601,7 @@ done:
   free(right);
   free(inter);
   if (coder) snd_midi_event_free(coder);
+  if (ctl_fd >= 0) { close(ctl_fd); unlink(ctl_path); }
   /* Deactivate, never terminate: TG_terminate calls exit(). */
   tg_deactivate();
   pe_unload(img);

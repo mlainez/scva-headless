@@ -147,11 +147,30 @@ Type it in the terminal the daemon is running in:
     <enter>        what each part is currently set to
     q              stop
 
-Or send **CC32** on the channel you want to change. The daemon adopts it for
-that part and uses it from then on, so any sequencer, controller or DAW can
-switch map live - it is ordinary MIDI, not a private control channel. There is
-no command-line tool for a single controller change in alsa-utils before
-1.2.10, which is why typing it is usually easier.
+Under systemd there is no terminal to type into, so the same commands go over a
+control socket, which the daemon opens in `$XDG_RUNTIME_DIR`:
+
+    scva-daemon --send "SC-88"
+    scva-daemon --send "10 55"
+    scva-daemon --send ""          # what each part is set to
+
+`--control PATH` puts it elsewhere. It is a plain Unix socket speaking the same
+lines, so anything can drive it - `socat - UNIX-CONNECT:...`, or six lines of
+Python - and `--send` is there so nothing extra has to be installed.
+
+    [Unit]
+    Description=SOUND Canvas VA
+    [Service]
+    ExecStart=/usr/local/bin/scva-daemon --map 88
+    Environment=SCVA_DLL_DIR=/opt/scva
+    [Install]
+    WantedBy=default.target
+
+Or send **CC32** on the channel you want to change - the idiomatic way to
+control a MIDI device is MIDI. The daemon adopts it for that part and uses it
+from then on, so any sequencer, controller or DAW switches map live. It is
+awkward only from a shell: `aseqsend` arrived in alsa-utils 1.2.10, and `amidi`
+talks to raw `hw:` ports rather than sequencer clients.
 
 `--map` sets what every part starts with. For parts the incoming stream never
 sets, the daemon sends the configured map before each program change, which is
