@@ -17,3 +17,5 @@ build/
 # python bytecode
 __pycache__/
 *.pyc
+
+.claude/
