@@ -26,11 +26,11 @@ Nothing of Roland's is included here. You supply the DLL.
 
 ## Supply the engine
 
-Copy these out of your own SOUND Canvas VA installation into `dll/`:
-
-    SCCore.dll
-    parameter1.dat  parameter2.dat  parameter3.dat
-    GM.drf GM.drk GM.tnf GM2.drk GM2.tnf SCVSC.drf SCVSC.drk SCVSC.tnf
+Copy **`SCCore.dll`** out of your own SOUND Canvas VA installation into `dll/`.
+That is the only file needed. Every sample and tone table is inside the 26.7 MB
+image, and the core does no file I/O at all — the `.dat`, `.drk`, `.drf` and
+`.tnf` files beside it are read by Roland's own interface, not by the engine.
+A full mix renders byte-identical with them present and absent.
 
 `dll/` is gitignored and must stay that way.
 

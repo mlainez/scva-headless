@@ -153,7 +153,9 @@ Bank Select MSB (the variation axis within a map).
 
 `src/pe_loader.c` maps `SCCore.dll` into a Linux process and calls it directly.
 The core imports **50 functions** and does no file I/O, no registry, no threads
-of its own, no GUI, no COM; its data is inside the 26.7 MB image.
+of its own, no GUI, no COM; its data is inside the 26.7 MB image, so
+`SCCore.dll` is the only file it needs. The only symbols it looks up at run
+time are the three condition-variable functions.
 
 - Everything crossing the boundary is `__attribute__((ms_abi))`. GCC emits the
   argument shuffling, the shadow space, and spills XMM6-XMM15, RDI and RSI
