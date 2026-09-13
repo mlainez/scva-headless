@@ -208,10 +208,39 @@ Audio goes out through waveOut in 16-bit stereo, which every Windows device
 accepts. Latency matters less here than on a keyboard, since a game is playing
 a score rather than responding to fingers.
 
+### What Windows needs besides the DLL
+
+The same files as anywhere else - `SCCore.dll`, plus the name files if you want
+patch names - and one thing Linux does not need. The core imports 50 functions,
+and not all of them come with Windows:
+
+    KERNEL32.dll                26   always present
+    VCRUNTIME140.dll             9   Visual C++ 2015-2022 redistributable
+    api-ms-win-crt-{heap,stdio,runtime}
+                                15   Universal CRT: built into Windows 10 and
+                                     11, a Windows Update on 7 and 8
+
+So on Windows 10 or 11 the redistributable is all that might be missing, and it
+is usually there already. No Roland installer, no activation: the engine is the
+DLL.
+
+On Linux none of this applies, because `pe_loader.c` supplies those imports
+itself rather than asking the system for them.
+
 ### Old Windows
 
-Not Windows 98: mingw-w64 produces NT binaries and does not target Win9x at
-all.
+Not Windows 98, for three separate reasons, any one of them enough:
+
+- mingw-w64 emits NT binaries and does not target Win9x at all
+- the 64-bit core cannot run on a 32-bit system, and the 32-bit one still wants
+  the Universal CRT, which Windows 98 never had
+- Roland built this in 2015; the instruction set it assumes is not what a
+  Windows 98 machine has
+
+The second of those is the only one this project could answer, by doing on
+Win32 what `pe_loader.c` already does on Linux - mapping the image and
+providing the imports instead of the system loader. That would be a port, not
+a flag, and the other two would still stand.
 
 Windows XP depends on the core, not on this program, which is built against
 the XP API and uses nothing newer. Check what your copy demands:
