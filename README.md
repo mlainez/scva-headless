@@ -208,6 +208,22 @@ Audio goes out through waveOut in 16-bit stereo, which every Windows device
 accepts. Latency matters less here than on a keyboard, since a game is playing
 a score rather than responding to fingers.
 
+### Old Windows
+
+Not Windows 98: mingw-w64 produces NT binaries and does not target Win9x at
+all.
+
+Windows XP depends on the core, not on this program, which is built against
+the XP API and uses nothing newer. Check what your copy demands:
+
+    python3 -c "import struct,sys; d=open(sys.argv[1],'rb').read(); \
+      pe=struct.unpack_from('<I',d,0x3c)[0]; \
+      print('subsystem version', *struct.unpack_from('<HH',d,pe+24+48))" SCCore.dll
+
+5.1 is XP and 6.0 is Vista. The 64-bit core here reports **6.0** and imports
+`VCRUNTIME140.dll` and the Universal CRT, so XP will refuse to load it however
+the host program is built.
+
 **Only partly tested.** It builds, enumerates devices, opens audio and renders,
 all verified under wine. The MIDI input path could not be checked here: wine
 reports success from `midiInOpen` and `midiInStart` and then delivers nothing,

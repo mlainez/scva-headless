@@ -19,7 +19,12 @@
  * device accepts. Latency is the buffer count times the block, so it is set
  * by --latency rather than fixed.
  */
-#define _WIN32_WINNT 0x0601
+/* Windows XP. Nothing here needs newer: midiIn, waveOut, LoadLibrary and a
+   critical section are all Win95-era. Whether it runs on an old machine is
+   decided by the core, not by this program - the 64-bit one declares a
+   subsystem version of 6.0 and imports the Universal CRT, so it needs Vista
+   or later. */
+#define _WIN32_WINNT 0x0501
 #include <windows.h>
 #include <mmsystem.h>
 #include <stdio.h>
