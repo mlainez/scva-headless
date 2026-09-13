@@ -175,19 +175,45 @@ Two things make it work:
   be the **real** ones from `pthread_getattr_np` - MSVC's stack probes compare
   against them, and a guess sends a deep call through the floor.
 
-### Where it stands
+### Where it stands: close, not finished
 
 Working: the image maps, relocates, binds all 50 imports, runs `DllMain` and
 its static initialisers, and every `TG_*` export resolves. `TG_initialize`
-returns 0, `setSampleRate`, `setMaxBlockSize` and `XPsetSystemConfig` all
-return, `TG_activate` returns 0 and MIDI is accepted.
+returns 0, the setters return, `TG_activate` returns 0, MIDI is accepted, and
+`TG_Process` **runs and returns audio**.
 
-Not working: `TG_activate` sets `TG_isFatalError`, and `TG_Process` then
-faults. The engine's own error table is no help - it is a static list of eight
-strings, not a report, and index 0 is "TGER: OK".
+**Not yet usable.** At its best the output was recognisably right - sample 0 is
+the same `1e-05` anti-denormal guard wine produces, and samples around 1000 sat
+at plausible levels like `-6.6e-4` - but with sporadic spikes reaching 3.6e4,
+starting around sample 340.
 
-Under wine the same sequence gives `fatal 0` and renders audio, so something
-the engine checks is satisfied there and not here. The difference is the next
-thing to find: candidates are TEB or PEB fields the image reads beyond the few
-set here, a `GetModuleHandleW`/`GetProcAddress` pair answered with stubs where
-the image expects a real module, or `QueryPerformanceCounter` semantics.
+Three things had to be solved to get that far, and each is worth keeping:
+
+1. **Condition variables.** The image asks
+   `api-ms-win-core-synch-l1-2-0.dll` for `InitializeConditionVariable`,
+   `SleepConditionVariableCS` and `WakeAllConditionVariable` **through
+   `GetProcAddress`**, and calls what it is handed. Returning NULL is what
+   killed the first native `TG_Process`. They are implemented on pthreads, and
+   the critical sections behind them are real recursive mutexes rather than the
+   no-ops they started as.
+2. **Thread-local storage.** The image reads its TLS pointer array from
+   `gs:[0x58]`. Without it the first thread-local access is
+   `mov (%rax,%rcx,8),%rbx` with `rax = 0` - which is exactly the faulting
+   instruction the debugger showed.
+3. **Zeroed allocations.** Windows hands back a fresh page for anything
+   sizeable; glibc returns a dirty recycled chunk. `malloc` here zeroes.
+
+**What is left, and it is one specific thing.** The Microsoft x64 convention
+makes **XMM6-XMM15 callee-saved**; System V treats every XMM register as
+scratch. Every `memcpy` and `memset` the image calls therefore crosses that
+boundary, and the engine's DSP state lives in exactly those registers. That is
+the most likely source of the remaining spikes.
+
+Writing the two functions out as plain byte loops to avoid the crossing made it
+worse, but **only because `__attribute__((optimize(...)))` and `ms_abi` conflict
+in GCC** and the convention was silently lost. Hand-written assembly that saves
+and restores XMM6-15, or a separately compiled translation unit without the
+`optimize` attribute, is the thing to try next.
+
+Until then **wine remains the working path** and the native loader is not a
+substitute.

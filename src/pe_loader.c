@@ -88,13 +88,58 @@ struct exp_dir {
    convention. They are deliberately minimal: this host is single-threaded and
    drives the engine synchronously, so locks and events have nothing to do. */
 
+/* Real locks and condition variables. The image asks for the condition
+   variable trio by name through GetProcAddress and calls what it is given, so
+   handing back NULL is how the first native run died. A Windows
+   CRITICAL_SECTION has room for a pthread mutex; a CONDITION_VARIABLE is a
+   single pointer, so it holds one we allocate. */
 typedef struct { long long a, b, c, d, e; } CRIT;
 
-static MSABI void  ms_InitializeCriticalSectionAndSpinCount(CRIT *c, uint32_t n)
-{ (void)n; if (c) memset(c, 0, sizeof *c); }
-static MSABI void  ms_DeleteCriticalSection(CRIT *c) { (void)c; }
-static MSABI void  ms_EnterCriticalSection(CRIT *c) { (void)c; }
-static MSABI void  ms_LeaveCriticalSection(CRIT *c) { (void)c; }
+static MSABI void ms_InitializeCriticalSectionAndSpinCount(CRIT *c, uint32_t n)
+{
+  pthread_mutexattr_t at;
+  (void)n;
+  if (!c) return;
+  memset(c, 0, sizeof *c);
+  pthread_mutexattr_init(&at);
+  pthread_mutexattr_settype(&at, PTHREAD_MUTEX_RECURSIVE);
+  pthread_mutex_init((pthread_mutex_t *)c, &at);
+  pthread_mutexattr_destroy(&at);
+}
+static MSABI void ms_DeleteCriticalSection(CRIT *c)
+{ if (c) pthread_mutex_destroy((pthread_mutex_t *)c); }
+static MSABI void ms_EnterCriticalSection(CRIT *c)
+{ if (c) pthread_mutex_lock((pthread_mutex_t *)c); }
+static MSABI void ms_LeaveCriticalSection(CRIT *c)
+{ if (c) pthread_mutex_unlock((pthread_mutex_t *)c); }
+
+static MSABI void ms_InitializeConditionVariable(void **cv)
+{
+  pthread_cond_t *c;
+  if (!cv) return;
+  c = calloc(1, sizeof *c);
+  if (c) pthread_cond_init(c, NULL);
+  *cv = c;
+}
+static MSABI int ms_SleepConditionVariableCS(void **cv, CRIT *cs, uint32_t ms)
+{
+  if (!cv || !*cv || !cs) return 1;
+  if (ms == 0xffffffffu) {
+    pthread_cond_wait((pthread_cond_t *)*cv, (pthread_mutex_t *)cs);
+  } else {
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    t.tv_sec  += (time_t)(ms / 1000u);
+    t.tv_nsec += (long)(ms % 1000u) * 1000000L;
+    if (t.tv_nsec >= 1000000000L) { t.tv_nsec -= 1000000000L; ++t.tv_sec; }
+    pthread_cond_timedwait((pthread_cond_t *)*cv, (pthread_mutex_t *)cs, &t);
+  }
+  return 1;
+}
+static MSABI void ms_WakeAllConditionVariable(void **cv)
+{ if (cv && *cv) pthread_cond_broadcast((pthread_cond_t *)*cv); }
+static MSABI void ms_WakeConditionVariable(void **cv)
+{ if (cv && *cv) pthread_cond_signal((pthread_cond_t *)*cv); }
 static MSABI void *ms_CreateEventW(void *a, int b, int c, void *d)
 { (void)a;(void)b;(void)c;(void)d; return (void *)0x1000; }
 static MSABI int   ms_SetEvent(void *h) { (void)h; return 1; }
@@ -105,8 +150,25 @@ static MSABI uint32_t ms_WaitForSingleObjectEx(void *h, uint32_t ms, int alert)
 static MSABI void *ms_GetCurrentProcess(void) { return (void *)-1; }
 static MSABI uint32_t ms_GetCurrentProcessId(void) { return 1; }
 static MSABI uint32_t ms_GetCurrentThreadId(void) { return 1; }
-static MSABI void *ms_GetModuleHandleW(const void *n) { (void)n; return (void *)0x2000; }
-static MSABI void *ms_GetProcAddress(void *m, const char *n) { (void)m;(void)n; return NULL; }
+static MSABI void *ms_GetModuleHandleW(const uint16_t *n)
+{
+  if (getenv("PE_TRACE") && n) {
+    char b[128]; int i = 0;
+    while (n[i] && i < 127) { b[i] = (char)n[i]; ++i; }
+    b[i] = 0;
+    fprintf(stderr, "pe: GetModuleHandleW(\"%s\")\n", b);
+  } else if (getenv("PE_TRACE")) fprintf(stderr, "pe: GetModuleHandleW(NULL)\n");
+  return (void *)0x2000;
+}
+static void *bind(const char *name);
+static MSABI void *ms_GetProcAddress(void *m, const char *n)
+{
+  void *r = n ? bind(n) : NULL;
+  if (getenv("PE_TRACE"))
+    fprintf(stderr, "pe: GetProcAddress(%p, \"%s\") -> %s\n",
+            m, n ? n : "(ordinal)", r ? "ok" : "NULL");
+  return r;
+}
 static MSABI int   ms_IsDebuggerPresent(void) { return 0; }
 static MSABI int   ms_IsProcessorFeaturePresent(uint32_t f) { (void)f; return 1; }
 static MSABI void  ms_InitializeSListHead(void *p) { if (p) memset(p, 0, 16); }
@@ -130,11 +192,24 @@ static MSABI void  ms_RtlVirtualUnwind(uint32_t a, uint64_t b, uint64_t c, void 
                                        void *e, void *f, void *g, void *h)
 { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; }
 
-static MSABI void *ms_malloc(size_t n) { return malloc(n); }
+/* Zeroed. Windows hands a fresh page back for anything sizeable, so an engine
+   that never clears its own delay lines still starts from silence there; glibc
+   happily returns a dirty recycled chunk and the same code starts from noise.
+   The first native renders peaked at 5e6 and then 1.4e29, differing run to run,
+   until this returned zeroed memory. */
+static MSABI void *ms_malloc(size_t n) { return calloc(1, n ? n : 1); }
 static MSABI void  ms_free(void *p) { free(p); }
 static MSABI int   ms_callnewh(size_t n) { (void)n; return 0; }
+/* Forwarded to glibc. Note the ABI hazard here, which is not yet settled: the
+   Microsoft convention makes XMM6-XMM15 callee-saved and System V treats every
+   XMM register as scratch, so the compiler must spill ten vector registers
+   around each of these calls. Writing them out as byte loops to avoid that made
+   things WORSE, but only because __attribute__((optimize)) and ms_abi conflict
+   in GCC and the convention was silently lost. A hand-written version remains
+   worth trying. */
 static MSABI void *ms_memcpy(void *d, const void *s, size_t n) { return memcpy(d, s, n); }
 static MSABI void *ms_memset(void *d, int c, size_t n) { return memset(d, c, n); }
+__attribute__((optimize("no-tree-vectorize")))
 
 static MSABI void ms_CxxThrowException(void *a, void *b)
 { (void)a;(void)b; fprintf(stderr, "pe: the image threw a C++ exception\n"); abort(); }
@@ -147,11 +222,34 @@ static MSABI void ms_std_exception_destroy(void *a) { (void)a; }
 static MSABI void ms_std_terminate(void) { fprintf(stderr, "pe: std::terminate\n"); abort(); }
 static MSABI void ms_std_type_info_destroy_list(void *a) { (void)a; }
 
-typedef MSABI void (*initfn)(void);
-static MSABI void ms_initterm(initfn *a, initfn *b)
-{ while (a < b) { if (*a) (*a)(); ++a; } }
-static MSABI int ms_initterm_e(int (MSABI *(*a))(void), int (MSABI *(*b))(void))
-{ while (a < b) { if (*a) { int r = (*a)(); if (r) return r; } ++a; } return 0; }
+/* The tables hold function pointers INTO the image, so they are MS ABI, and
+   both ends are inclusive-exclusive. Getting these wrong leaves the image's
+   globals holding whatever the heap had, which shows up later as output that
+   differs run to run. */
+typedef MSABI void (*pvfv)(void);
+typedef MSABI int  (*pifv)(void);
+
+static MSABI void ms_initterm(pvfv *first, pvfv *last)
+{
+  int n = 0;
+  if (!first || !last) return;
+  for (; first < last; ++first)
+    if (*first) { (*first)(); ++n; }
+  if (getenv("PE_TRACE")) fprintf(stderr, "pe: _initterm ran %d initialisers\n", n);
+}
+static MSABI int ms_initterm_e(pifv *first, pifv *last)
+{
+  int n = 0;
+  if (!first || !last) return 0;
+  for (; first < last; ++first)
+    if (*first) {
+      int r = (*first)();
+      ++n;
+      if (r) { fprintf(stderr, "pe: an initialiser returned %d\n", r); return r; }
+    }
+  if (getenv("PE_TRACE")) fprintf(stderr, "pe: _initterm_e ran %d initialisers\n", n);
+  return 0;
+}
 static MSABI int  ms_crt_atexit(void *f) { (void)f; return 0; }
 static MSABI int  ms_register_onexit_function(void *t, void *f) { (void)t;(void)f; return 0; }
 static MSABI int  ms_initialize_onexit_table(void *t) { (void)t; return 0; }
@@ -210,6 +308,10 @@ static const struct binding BINDINGS[] = {
   {"_register_onexit_function", ms_register_onexit_function},
   {"_initterm", ms_initterm}, {"_initterm_e", ms_initterm_e},
   {"_seh_filter_dll", ms_seh_filter_dll},
+  {"InitializeConditionVariable", ms_InitializeConditionVariable},
+  {"SleepConditionVariableCS", ms_SleepConditionVariableCS},
+  {"WakeAllConditionVariable", ms_WakeAllConditionVariable},
+  {"WakeConditionVariable", ms_WakeConditionVariable},
   {NULL, NULL}
 };
 
@@ -268,8 +370,20 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
   if (fh->machine != 0x8664) FAIL("not x86-64");
   if (oh->magic != 0x20b) FAIL("not PE32+");
 
-  unsigned char *base = mmap(NULL, oh->imagesz, PROT_READ | PROT_WRITE,
-                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  /* Prefer the image's own base: then the relocation pass has nothing to do
+     and cannot be the thing that is wrong. Falling back to anywhere is fine,
+     but if behaviour differs between the two, the relocations are the suspect. */
+  unsigned char *base = mmap((void *)(uintptr_t)oh->imagebase, oh->imagesz,
+                             PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+  if (base == MAP_FAILED || base != (unsigned char *)(uintptr_t)oh->imagebase) {
+    if (base != MAP_FAILED) munmap(base, oh->imagesz);
+    base = mmap(NULL, oh->imagesz, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (getenv("PE_TRACE")) fprintf(stderr, "pe: relocating (preferred base taken)\n");
+  } else if (getenv("PE_TRACE")) {
+    fprintf(stderr, "pe: mapped at its preferred base, no relocation needed\n");
+  }
   if (base == MAP_FAILED) FAIL("cannot reserve %u bytes", oh->imagesz);
   memcpy(base, g_file, oh->headersz);
   struct sh *sec = (struct sh *)(nt + 4 + sizeof *fh + fh->optsz);
@@ -327,6 +441,37 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
   }
 
   if (getenv("PE_TRACE")) fprintf(stderr, "pe: %s\n", "protections set");
+  /* Thread-local storage. The image reads gs:[0x58] for its TLS pointer array
+     and indexes it: without this the very first thread-local access is
+     `mov (%rax,%rcx,8),%rbx` with rax = 0, which is where the first native
+     TG_Process died. */
+  if (oh->dirs[9].size) {
+    struct {
+      uint64_t start, end, index_addr, callbacks;
+      uint32_t zerofill, chars;
+    } *tls = (void *)(base + oh->dirs[9].rva);
+    size_t raw = (size_t)(tls->end - tls->start);
+    size_t total = raw + tls->zerofill;
+    unsigned char *blockmem = calloc(1, total ? total : 1);
+    void **slots = calloc(64, sizeof *slots);
+    if (!blockmem || !slots) FAIL("out of memory for TLS");
+    if (raw) memcpy(blockmem, (void *)(uintptr_t)tls->start, raw);
+    slots[0] = blockmem;
+    if (tls->index_addr) *(uint32_t *)(uintptr_t)tls->index_addr = 0;
+    *(void **)(g_teb + 0x58) = slots;
+    if (getenv("PE_TRACE"))
+      fprintf(stderr, "pe: TLS block %zu bytes (%zu raw + %u zero)\n",
+              total, raw, tls->zerofill);
+    if (tls->callbacks) {
+      uint64_t *cb = (uint64_t *)(uintptr_t)tls->callbacks;
+      while (*cb) {
+        MSABI void (*f)(void *, uint32_t, void *) = (void *)(uintptr_t)*cb;
+        f(base, 1, NULL);
+        ++cb;
+      }
+    }
+  }
+
   g_img.base = base; g_img.size = oh->imagesz; g_img.entry = oh->entry;
   if (oh->entry) {
     MSABI int (*dllmain)(void *, uint32_t, void *) =
