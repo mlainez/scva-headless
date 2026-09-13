@@ -1,7 +1,12 @@
 /* SPDX-License-Identifier: CC0-1.0
  *
  * Tone map = Bank Select LSB (CC32), latched by a program change.
- * 0 Default (= SC-8820), 1 SC-55, 2 SC-88, 3 SC-88Pro, 4 SC-8820; >4 clamps.
+ * 0 Default, 1 SC-55, 2 SC-88, 3 SC-88Pro, 4 SC-8820.
+ *
+ * 0 and 4 render identically, so Default is the SC-8820 map. Values above 4
+ * do not clamp to 4 and are not the default either: 5, 6, 7 and 9 all render
+ * the same as each other and as no real map, so they are rejected here rather
+ * than passed to the engine.
  */
 #ifndef SCVA_MAP_H
 #define SCVA_MAP_H
@@ -15,16 +20,32 @@
 
 #define SCVA_MAP_USAGE "default | 55 | 88 | 88pro | 8820"
 
-/* -1 if the name is not one of them. */
+/* -1 if the name is not one of them. Case, an "SC" in front and any dashes,
+   spaces or underscores are all ignored, so the spelling on the box works:
+   SC-88, sc88 and 88 are the same thing. */
 static inline int scva_map_value(const char *name)
 {
+  char n[16];
+  size_t i = 0;
+
   if (!name) return -1;
-  if (!strcmp(name, "default")) return SCVA_MAP_DEFAULT;
-  if (!strcmp(name, "55") || !strcmp(name, "sc55")) return SCVA_MAP_55;
-  if (!strcmp(name, "88") || !strcmp(name, "sc88")) return SCVA_MAP_88;
-  if (!strcmp(name, "88pro") || !strcmp(name, "sc88pro")) return SCVA_MAP_88PRO;
-  if (!strcmp(name, "8820") || !strcmp(name, "sc8820")) return SCVA_MAP_8820;
-  if (name[0] >= '0' && name[0] <= '9' && !name[1]) return name[0] - '0';
+  for (; *name && i < sizeof n - 1; ++name) {
+    char c = *name;
+    if (c == '-' || c == ' ' || c == '_') continue;
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    n[i++] = c;
+  }
+  n[i] = '\0';
+  if (n[0] == 's' && n[1] == 'c' && n[2])
+    memmove(n, n + 2, strlen(n + 2) + 1);
+
+  if (!strcmp(n, "default")) return SCVA_MAP_DEFAULT;
+  if (!strcmp(n, "55"))      return SCVA_MAP_55;
+  if (!strcmp(n, "88"))      return SCVA_MAP_88;
+  if (!strcmp(n, "88pro"))   return SCVA_MAP_88PRO;
+  if (!strcmp(n, "8820"))    return SCVA_MAP_8820;
+  /* The raw CC32 value, but only where a map exists. */
+  if (n[0] >= '0' && n[0] <= '4' && !n[1]) return n[0] - '0';
   return -1;
 }
 

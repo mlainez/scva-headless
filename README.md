@@ -157,6 +157,11 @@ one another: the same program and bank is a different sound in each.
     --map 88      SC-88       --map 8820    SC-8820
     --map default same as 8820
 
+Case, a leading `SC` and any dashes, spaces or underscores are ignored, so
+`SC-88`, `sc88` and `88` are the same thing. The raw CC32 value works too, but
+only 0 to 4: higher values are not a map at all - 5, 6, 7 and 9 all render the
+same as each other and as none of the five - so they are refused.
+
 **The default is the SC-8820 map.** If you are using this as an SC-88 proxy,
 pass `--map 88` or you are comparing against the wrong instrument.
 
