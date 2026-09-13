@@ -151,3 +151,43 @@ The Mac build ships **32 cores**, `SCCore00` through `SCCore31`, all exactly
 constant, so each loads as a separate library with its own globals. The engine
 is single-instance by design and Roland multi-instances it by shipping copies.
 The Windows `SCCore.dll` is one 26.7 MB file carrying code and data together.
+
+## Running without wine
+
+`src/pe_loader.c` maps `SCCore.dll` into a native Linux process and calls it
+directly. No wine, no prefix.
+
+It is possible because the core is unusually self-contained. Its whole
+dependency list is **50 functions across five libraries** - critical sections,
+events, time, `malloc`/`free`, `memcpy`/`memset`, C++ exception plumbing and
+CRT start-up. **No file I/O at all**, no registry, no threads of its own, no
+GUI, no COM. Its data lives inside the 26.7 MB image.
+
+Two things make it work:
+
+- **The calling convention is the compiler's job.** Everything crossing into or
+  out of the image is `__attribute__((ms_abi))`, so GCC emits the argument
+  shuffling and the 32 bytes of shadow space. No hand-written thunks.
+- **GS points at a thread block we build.** Windows x86-64 reads its TEB through
+  `GS`; Linux keeps its TLS in `FS` and leaves `GS` alone, so `arch_prctl`
+  can point `GS` at a TEB of our own. Without it the image's own CRT start-up
+  faults on the first `gs:[..]` it touches. The stack bounds in that block must
+  be the **real** ones from `pthread_getattr_np` - MSVC's stack probes compare
+  against them, and a guess sends a deep call through the floor.
+
+### Where it stands
+
+Working: the image maps, relocates, binds all 50 imports, runs `DllMain` and
+its static initialisers, and every `TG_*` export resolves. `TG_initialize`
+returns 0, `setSampleRate`, `setMaxBlockSize` and `XPsetSystemConfig` all
+return, `TG_activate` returns 0 and MIDI is accepted.
+
+Not working: `TG_activate` sets `TG_isFatalError`, and `TG_Process` then
+faults. The engine's own error table is no help - it is a static list of eight
+strings, not a report, and index 0 is "TGER: OK".
+
+Under wine the same sequence gives `fatal 0` and renders audio, so something
+the engine checks is satisfied there and not here. The difference is the next
+thing to find: candidates are TEB or PEB fields the image reads beyond the few
+set here, a `GetModuleHandleW`/`GetProcAddress` pair answered with stubs where
+the image expects a real module, or `QueryPerformanceCounter` semantics.
