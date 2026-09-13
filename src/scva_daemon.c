@@ -7,9 +7,12 @@
  *
  * The core is loaded into this process by the PE loader, so there is no wine
  * and no second process. MIDI arrives on the sequencer port and goes straight
- * into the engine; the engine's stereo goes to an ALSA PCM device. The PCM
- * device sets the pace: writing to it blocks until the card has room. There is
- * deliberately no timer anywhere in this program.
+ * into the engine; the engine's stereo goes to an ALSA PCM device.
+ *
+ * One poll waits on the sequencer and the card together, so a note reaches the
+ * engine the moment it arrives rather than whenever the next block happens to
+ * end. The card still sets the pace - a block is rendered only when there is
+ * somewhere to put it - so there is deliberately no timer in this program.
  */
 #define _GNU_SOURCE
 #include <alsa/asoundlib.h>
@@ -164,7 +167,7 @@ int main(int argc, char **argv)
      arriving and being heard, so it is kept short; the engine costs under 1%
      of realtime, so the buffer is the whole latency. Raise it on a machine
      that cannot keep up - the symptom is the audio breaking up. */
-  unsigned int latency_us = 30000;
+  unsigned int latency_us = 20000;
   int mapval = 0, block = 256, i;
   /* One map per part. A program change latches CC32, so it is sent again
      before every one; a CC32 arriving on the wire replaces it for that
@@ -186,7 +189,7 @@ int main(int argc, char **argv)
   struct pollfd *pfds;
   float *left, *right, *inter;
   unsigned char mbuf[1024];
-  int port, nfds, rc = 0;
+  int port, nfds, nseq, npcm, rc = 0;
   long underruns = 0;
 
   for (i = 1; i < argc; ++i) {
@@ -219,7 +222,7 @@ int main(int argc, char **argv)
         "                   [--rate HZ] [--block N]\n"
         "                   [--map " SCVA_MAP_USAGE "]\n"
         "\n"
-        "  --latency MS       delay before a note is heard (default 30)\n"
+        "  --latency MS       delay before a note is heard (default 20)\n"
         "  --list-pcm         what this machine offers, in try order\n"
         "  --pcm DEV          force one; otherwise it is detected\n");
       return argc > 1 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))
@@ -232,7 +235,14 @@ int main(int argc, char **argv)
     return 2;
   }
   for (i = 0; i < 16; ++i) map_of[i] = (unsigned char)mapval;
-  if (block < 1) block = 256;
+  /* The core corrupts its own heap below 255 frames: 254 aborts every time,
+     255 renders identically to 4096. 256 is the floor, rounded. */
+  if (block < SCVA_MIN_BLOCK) {
+    if (block > 0)
+      fprintf(stderr, "scva-daemon: --block %d is below the engine's minimum, "
+                      "using %d\n", block, SCVA_MIN_BLOCK);
+    block = SCVA_MIN_BLOCK;
+  }
 
   /* --- the engine, in this process -------------------------------------- */
   snprintf(corebuf, sizeof corebuf, "%s", scva_core_path(core));
@@ -318,7 +328,9 @@ int main(int argc, char **argv)
   snd_midi_event_new(1024, &coder);
   snd_midi_event_no_status(coder, 1);
 
-  nfds = snd_seq_poll_descriptors_count(seq, POLLIN);
+  nseq = snd_seq_poll_descriptors_count(seq, POLLIN);
+  npcm = snd_pcm_poll_descriptors_count(pcm);
+  nfds = nseq + npcm;
   pfds = calloc((size_t)nfds, sizeof *pfds);
   left = malloc((size_t)block * sizeof *left);
   right = malloc((size_t)block * sizeof *right);
@@ -329,12 +341,30 @@ int main(int argc, char **argv)
     goto done;
   }
 
+  /* Wait on the sequencer and the card together. Blocking in the write
+     instead would leave MIDI unread for most of every block, so a note
+     played during one would not reach the engine until the next. */
   while (!stop_now) {
-    /* MIDI first, so a note that arrived during the last block is not late */
-    snd_seq_poll_descriptors(seq, pfds, (unsigned)nfds, POLLIN);
-    if (poll(pfds, (nfds_t)nfds, 0) > 0) {
+    unsigned short revents = 0;
+    int ready;
+
+    snd_seq_poll_descriptors(seq, pfds, (unsigned)nseq, POLLIN);
+    snd_pcm_poll_descriptors(pcm, pfds + nseq, (unsigned)npcm);
+    ready = poll(pfds, (nfds_t)nfds, 100);
+    if (ready < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    if (snd_pcm_poll_descriptors_revents(pcm, pfds + nseq, (unsigned)npcm,
+                                         &revents) < 0)
+      revents = POLLOUT;                  /* cannot tell: try the write */
+
+    /* MIDI first: whatever arrived goes into the engine before the block it
+       belongs to is rendered. input_pending(1) fetches from the kernel, so
+       this never blocks waiting for an event that is not there. */
+    while (snd_seq_event_input_pending(seq, 1) > 0) {
       snd_seq_event_t *ev;
-      while (snd_seq_event_input(seq, &ev) >= 0) {
+      if (snd_seq_event_input(seq, &ev) >= 0) {
         long n = snd_midi_event_decode(coder, mbuf, sizeof mbuf, ev);
         if (n > 0) {
           if (mbuf[0] == 0xF0) {
@@ -356,11 +386,10 @@ int main(int argc, char **argv)
           }
         }
         snd_seq_free_event(ev);
-        if (snd_seq_event_input_pending(seq, 0) <= 0) break;
       }
     }
-    /* then one block of audio, and writing it is what paces us */
-    {
+    /* then one block, but only when the card has somewhere to put it */
+    if (revents & (POLLOUT | POLLERR)) {
       snd_pcm_sframes_t w;
       int k;
       process(left, right, block);

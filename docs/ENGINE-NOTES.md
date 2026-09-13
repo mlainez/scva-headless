@@ -64,6 +64,20 @@ Driven correctly, one note with CC10 panned hard over:
 | centre | -0.1 dB |
 | hard right | -30.0 dB |
 
+## The block size has a floor of 255 frames
+
+`TG_activate`'s second argument is the maximum block, and below 255 frames the
+core corrupts its own heap while setting up: 254 aborts with "double free or
+corruption" every time, 255 renders identically to 4096. The boundary is
+reproducible, not a race - six consecutive runs split cleanly either side of
+it.
+
+    32 64 128 192 200 224 240 248 252 254   abort or segfault
+    255 256 384 512 1024 2048 4096          identical audio
+
+Anything that takes a block size therefore refuses to go below 256, which also
+sets the floor on how short a realtime block can be: 5.8 ms at 44.1 kHz.
+
 ## TG_setSampleRate must be called twice
 
 Once before `TG_setMaxBlockSize`, and again as the last call before

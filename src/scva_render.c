@@ -201,6 +201,11 @@ int main(int argc, char **argv)
 
   printf("initialize -> %d\n", a.initialize(0));
   a.set_sample_rate((float)rate);
+  if (maxblock < SCVA_MIN_BLOCK) {
+    fprintf(stderr, "%s: --maxblock %d is below the engine's minimum, "
+                    "using %d\n", argv[0], maxblock, SCVA_MIN_BLOCK);
+    maxblock = SCVA_MIN_BLOCK;
+  }
   a.set_max_block(maxblock);
   /* And AGAIN, after the block size. This is the whole of TASK-171: with the
      rate set only once - on either side of set_max_block - the core writes

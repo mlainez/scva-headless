@@ -15,6 +15,11 @@
 #define SCVA_SEP "/"
 #endif
 
+/* Smallest block the engine will accept. Below 255 frames it corrupts its own
+   heap during TG_activate: 254 aborts every time, 255 renders identically to
+   4096. Rounded up to a power of two. */
+#define SCVA_MIN_BLOCK 256
+
 /* explicit_path is the --core argument, or NULL. */
 static const char *scva_core_path(const char *explicit_path)
 {

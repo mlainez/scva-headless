@@ -93,7 +93,7 @@ Creates an ALSA sequencer port called **SCVA**:
     --name NAME      port name                  (default SCVA)
     --pcm DEV        output device              (default: wherever the system sends audio)
     --list-pcm       show what is tried, and what works here
-    --latency MS     delay before a note sounds (default 30)
+    --latency MS     delay before a note sounds (default 20)
     --rate HZ        sample rate                (default 44100)
     --block N        frames per block           (default 256)
     --core DLL       path to SCCore.dll
@@ -110,9 +110,16 @@ would play wherever the card happens to go - often an HDMI monitor.
 open is an error rather than a reason to choose another. Anything `aplay -L`
 lists works.
 
-`--latency` is the whole delay between a note arriving and being heard, since
-the engine costs under 1% of realtime and everything else is buffer. If the
-audio breaks up, raise it; the daemon counts dropouts and says so on exit.
+One poll waits on the sequencer and the card together, so a note reaches the
+engine as it arrives - measured at 0.02 ms, against 5.6 ms median and 10.3 ms
+worst when the write was allowed to block instead.
+
+`--latency` is then almost the whole delay before it is heard, since the engine
+costs under 1% of realtime. 10 ms works on a desktop; if the audio breaks up,
+raise it - the daemon counts dropouts and says so on exit.
+
+`--block` cannot go below 256 frames. The engine corrupts its own heap during
+TG_activate below 255, so smaller values are refused rather than passed on.
 
 `--core` matters when starting from anywhere but the repository root, since the
 default `dll/SCCore.dll` is relative. `$SCVA_DLL_DIR` works too.
