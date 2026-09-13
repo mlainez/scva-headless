@@ -87,6 +87,66 @@ state.
 Control: with one rate call, sample 0 is bit-identical at 22050, 44100 and
 96000 Hz; with two it differs at each.
 
+## The engine cannot be asked what it contains
+
+`SCCore.dll` exports seventeen names, and every MIDI one is input:
+`TG_ShortMidiIn`, `TG_LongMidiIn`, `TG_PMidiIn`, `TG_flushMidi`. There is no
+MIDI out, no callback to register, no query for a tone name. The only getters
+are `TG_XPgetCurTotalRunningVoices`, `TG_XPgetCurSystemConfig`,
+`TG_getErrorStrings` and `TG_isFatalError`.
+
+So the GS Data Request (RQ1), which makes real hardware reply with a DT1, has
+nowhere to send its answer. MIDI 1.0 has no patch-list discovery of its own;
+MIDI 2.0's Property Exchange added one, and this is a MIDI 1.0 device.
+
+Probing does not work either: the engine sounds **every** bank, listed or not.
+On the 88 map, banks 1, 3, 5 and 127 of program 1 are all unlisted and all
+produce audio, around 37% different from bank 0 by per-block RMS. Nothing in
+the audio distinguishes a real patch from a fallback.
+
+## Name files
+
+The names live in text files beside the core, read by Roland's interface and
+not by the engine. Tab-separated, with a header naming the module and the
+controller carrying the bank axis:
+
+    SSW TONEFILE Ver 2.0
+    MODULENAME=SC-8820
+    BANKCONTROLCC#=0        0 here; GM2.tnf uses 32
+    PAGE=2 <TAB> 88Map      page number is the CC32 value
+     <TAB> 0 <TAB> 1 ...    header row: the bank axis
+    1 <TAB> Piano 1 ...     one row per program, 1-based
+
+`.tnf` holds melodic tones and `.drf` drum kits, which only ever use bank 0.
+`.drk` names the keys inside a kit and transposes the axes: its header is the
+kit's program number and each row is a MIDI note, so row 35 is the kick.
+
+Counts, which the parser in `src/scva_names.h` reproduces exactly:
+
+| map | tones | kits | key names |
+|---|---|---|---|
+| Default | 1262 | 37 | 3527 |
+| 55Map | 418 | 10 | 602 |
+| 88Map | 418 | 14 | 902 |
+| 88ProMap | 774 | 25 | 2580 |
+| 8820Map | 1262 | 37 | 3527 |
+
+The page numbers matching the CC32 values is independent corroboration of the
+tone map mapping below, from a source not used to derive it.
+
+## A tone table is in the DLL, but not the mapping
+
+The core carries its own name table: 2363 records of 256 bytes at `0x18f1800`
+in the 64-bit build, each with a 12-character name at `+0x10`, beginning
+"Piano 1", "UprightPiano", "Mild Piano". Its order tracks the 8820 map's
+program-major, bank-minor reading order but not exactly - 34 of the first 40.
+
+It is not a substitute for the name files. Matching on the 12-character field,
+it covers 96.7% of the Default map but only 72.5% of the 55 map, and it gives
+names in internal order with nothing saying which map, bank and program selects
+which record. That mapping would have to be found separately, at offsets valid
+only for one build, and there are at least three.
+
 ## Tone maps
 
 Selected by **Bank Select LSB (CC32)**, per part, latched by a program change:

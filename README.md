@@ -26,11 +26,12 @@ Nothing of Roland's is included here. You supply the DLL.
 
 ## Supply the engine
 
-Copy **`SCCore.dll`** out of your own SOUND Canvas VA installation into `dll/`.
-That is the only file needed. Every sample and tone table is inside the 26.7 MB
-image, and the core does no file I/O at all — the `.dat`, `.drk`, `.drf` and
-`.tnf` files beside it are read by Roland's own interface, not by the engine.
-A full mix renders byte-identical with them present and absent.
+Copy into `dll/`, from your own SOUND Canvas VA installation:
+
+    SCCore.dll                       required - the engine
+    SCVSC.tnf, SCVSC.drf, SCVSC.drk  optional - patch names for the plugins
+
+Nothing else is used. The name files change no audio.
 
 `dll/` is gitignored and must stay that way.
 
@@ -104,6 +105,10 @@ MIDI in, stereo out, and the tone map as an enumerated control. MIDI is
 sample-accurate: the block is split at each event rather than trusting the
 engine's own timestamps.
 
+Patch names use the KXStudio `programs` extension, read by Carla, Ardour and
+Qtractor. Bank is the GS 14-bit bank - CC0 the MSB, CC32 the tone map - with
+bit 14 marking a drum kit. Kits select on the drum part, tones on the first.
+
 The plugin's architecture has to match the host's, and the core's has to match
 the plugin's - a 64-bit host needs the 64-bit bundle and a 64-bit core. LV2 is
 a Linux format in practice, and the engine is x86 machine code, so there is no
@@ -123,6 +128,30 @@ relicence. A CLAP-to-VST3 wrapper exists if you need VST3.
 Same shape as the LV2: MIDI in, stereo out, tone map as a parameter, and the
 core found through `$SCVA_DLL_DIR`. On Windows it loads the core with
 `LoadLibrary`; on Linux through the PE loader.
+
+Patches use `clap.preset-discovery` (a `LOCATION_PLUGIN` provider),
+`clap.preset-load`, and `clap.note-name` for the loaded kit's keys.
+
+## Patch names
+
+The engine cannot be asked what patches exist: its MIDI entry points are all
+input-only, and it sounds every bank whether named or not. Names come from one
+of three sources, in order:
+
+| source | where | patches |
+|---|---|---|
+| this project's format | `$SCVA_TONES`, or `scva-tones.txt` beside the core | as written |
+| a SOUND Canvas VA install | `SCVSC.tnf`, `.drf`, `.drk` beside the core | 4257 |
+| General MIDI | built in, no files | 129 |
+
+Without any of them the plugin still plays; the host shows numbers.
+
+`make tones` writes a table from whatever this machine has:
+
+    ./build/scva-tones --core /path/to/scva > scva-tones.txt
+
+The format is documented at the top of `src/scva_names.h`. This project ships
+the converter, not its output.
 
 ## What runs where
 

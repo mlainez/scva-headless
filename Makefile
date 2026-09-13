@@ -42,6 +42,7 @@ lv2: $(LV2_BUNDLE)/scva.so
 lv2-32: $(LV2_BUNDLE32)/scva.so
 clap: $(BUILD)/scva.clap $(BUILD)/scva-win64.clap
 clap-win32: $(BUILD)/scva-win32.clap
+tones: $(BUILD)/scva-tones
 windows: $(WINDOWS_BINS)
 windows32: $(WIN32_BINS)
 
@@ -61,14 +62,17 @@ $(BUILD)/scva-native32: src/scva_native.c src/pe_loader.c src/pe_loader.h \
 # proprietary. Point CLAP_DIR at a checkout's include/ if it is not installed.
 
 $(BUILD)/scva.clap: src/scva_clap.c src/pe_loader.c src/pe_loader.h \
-                    src/scva_map.h | $(BUILD)
+                    src/scva_map.h src/scva_names.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(CLAP_DIR) -fPIC -shared -o $@ \
 	      src/scva_clap.c src/pe_loader.c -lpthread -lm
 
-$(BUILD)/scva-win64.clap: src/scva_clap.c src/scva_map.h | $(BUILD)
+$(BUILD)/scva-tones: src/scva_tones.c src/scva_names.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -o $@ src/scva_tones.c
+
+$(BUILD)/scva-win64.clap: src/scva_clap.c src/scva_map.h src/scva_names.h | $(BUILD)
 	$(MINGW) $(WINFLAGS) -I$(CLAP_DIR) -shared -o $@ src/scva_clap.c
 
-$(BUILD)/scva-win32.clap: src/scva_clap.c src/scva_map.h | $(BUILD)
+$(BUILD)/scva-win32.clap: src/scva_clap.c src/scva_map.h src/scva_names.h | $(BUILD)
 	$(MINGW32) $(WINFLAGS) -I$(CLAP_DIR) -shared -o $@ src/scva_clap.c
 
 # ---- the LV2 plugin ------------------------------------------------------
@@ -77,14 +81,14 @@ $(BUILD)/scva-win32.clap: src/scva_clap.c src/scva_map.h | $(BUILD)
 # plugin's, so there is a 32-bit bundle too.
 
 $(LV2_BUNDLE)/scva.so: src/scva_lv2.c src/pe_loader.c src/pe_loader.h \
-                       src/scva_map.h lv2/manifest.ttl lv2/scva.ttl | $(BUILD)
+                       src/scva_map.h src/scva_names.h lv2/manifest.ttl lv2/scva.ttl | $(BUILD)
 	@mkdir -p $(LV2_BUNDLE)
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ src/scva_lv2.c src/pe_loader.c \
 	      -lpthread -lm
 	@cp lv2/manifest.ttl lv2/scva.ttl $(LV2_BUNDLE)/
 
 $(LV2_BUNDLE32)/scva.so: src/scva_lv2.c src/pe_loader.c src/pe_loader.h \
-                         src/scva_map.h lv2/manifest.ttl lv2/scva.ttl | $(BUILD)
+                         src/scva_map.h src/scva_names.h lv2/manifest.ttl lv2/scva.ttl | $(BUILD)
 	@mkdir -p $(LV2_BUNDLE32)
 	$(CC) -m32 $(CFLAGS) -fPIC -shared -o $@ src/scva_lv2.c src/pe_loader.c \
 	      -lpthread -lm

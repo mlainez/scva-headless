@@ -5,6 +5,7 @@
 @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix urid:  <http://lv2plug.in/ns/ext/urid#> .
+@prefix progs: <http://kxstudio.sf.net/ns/lv2ext/programs#> .
 
 <https://github.com/mlainez/scva-headless#scva>
 	a lv2:Plugin , lv2:InstrumentPlugin ;
@@ -13,6 +14,7 @@
 	rdfs:comment "Roland SOUND Canvas VA's engine, loaded from your own SCCore.dll. Set SCVA_DLL_DIR or put SCCore.dll in this bundle." ;
 	lv2:requiredFeature urid:map ;
 	lv2:optionalFeature lv2:hardRTCapable ;
+	lv2:extensionData progs:Interface ;
 
 	lv2:port [
 		a lv2:InputPort , atom:AtomPort ;

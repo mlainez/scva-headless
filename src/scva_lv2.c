@@ -18,6 +18,7 @@
 #define _GNU_SOURCE
 #include "pe_loader.h"
 #include "scva_map.h"
+#include "scva_names.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,37 @@
 #include <lv2/midi/midi.h>
 
 #define SCVA_URI "https://github.com/mlainez/scva-headless#scva"
+
+/* LV2 has no official program-list extension. This one is KXStudio's, which
+   Carla, Ardour and Qtractor read; it is an ABI rather than a library, so it
+   is declared here rather than depended on. */
+#define LV2_PROGRAMS__Interface \
+  "http://kxstudio.sf.net/ns/lv2ext/programs#Interface"
+
+typedef struct {
+  uint32_t bank;
+  uint32_t program;
+  const char *name;
+} LV2_Program_Descriptor;
+
+typedef struct {
+  const LV2_Program_Descriptor *(*get_program)(LV2_Handle, uint32_t index);
+  void (*select_program)(LV2_Handle, uint32_t bank, uint32_t program);
+} LV2_Programs_Interface;
+
+/* A patch needs four numbers, and the extension offers two. Bank carries the
+   GS 14-bit bank exactly as MIDI defines it - CC0 is the MSB, CC32 the tone
+   map - and bit 14, which lies outside that range, marks a drum kit. */
+#define SCVA_BANK_DRUM   (1u << 14)
+#define SCVA_BANK(cc0, map, drum) \
+  (((drum) ? SCVA_BANK_DRUM : 0u) | ((uint32_t)(cc0) << 7) | (uint32_t)(map))
+#define SCVA_BANK_CC0(b)  (((b) >> 7) & 0x7f)
+#define SCVA_BANK_MAP(b)  ((b) & 0x7f)
+#define SCVA_BANK_ISDRUM(b) (((b) & SCVA_BANK_DRUM) != 0)
+
+/* Kits land on the drum part, tones on the first part. */
+#define SCVA_TONE_CH 0
+#define SCVA_DRUM_CH 9
 
 /* Declared to the engine; run() is chunked to it. */
 #define SCVA_MAXBLOCK 4096
@@ -51,6 +83,13 @@ typedef MSABI void (*tg_process_fn)(float *, float *, int);
 struct tg_system_config { int a, b; };
 typedef MSABI int (*tg_set_config_fn)(const struct tg_system_config *);
 
+/* The descriptor hands out a const char *, so each name is owned alongside
+   the descriptor that points at it. */
+struct scva_program {
+  LV2_Program_Descriptor d;
+  char name[SCVA_NAME_MAX + 8];
+};
+
 struct scva {
   struct pe_image *img;
   tg_set_sample_rate_fn set_rate;
@@ -66,10 +105,20 @@ struct scva {
 
   LV2_URID midi_event;
   int map_now;                 /* tone map currently pushed to the engine */
+
+  struct scva_names names;
+  struct scva_program *progs;
+  uint32_t nprogs;
+  /* select_program arrives on the host's thread, so it is latched here and
+     applied at the top of the next run(). */
+  uint32_t sel_bank, sel_prog;
+  int sel_pending;
 };
 
-/* $SCVA_DLL_DIR/SCCore.dll, then <bundle>/SCCore.dll. */
-static struct pe_image *open_core(const char *bundle, char *err, size_t errlen)
+/* $SCVA_DLL_DIR/SCCore.dll, then <bundle>/SCCore.dll. Reports the directory
+   it succeeded in, because the tone name files sit beside the core. */
+static struct pe_image *open_core(const char *bundle, char *err, size_t errlen,
+                                  char *found, size_t foundcap)
 {
   char path[2048];
   const char *dir = getenv("SCVA_DLL_DIR");
@@ -77,17 +126,63 @@ static struct pe_image *open_core(const char *bundle, char *err, size_t errlen)
   if (dir && *dir) {
     snprintf(path, sizeof path, "%s/SCCore.dll", dir);
     img = pe_load(path, err, errlen);
-    if (img) return img;
+    if (img) { snprintf(found, foundcap, "%s", dir); return img; }
   }
   if (bundle && *bundle) {
+    size_t n;
     snprintf(path, sizeof path, "%sSCCore.dll", bundle);
     img = pe_load(path, err, errlen);
-    if (img) return img;
+    if (img) {
+      snprintf(found, foundcap, "%s", bundle);
+      n = strlen(found);                  /* the bundle path keeps its slash */
+      while (n > 1 && found[n - 1] == '/') found[--n] = '\0';
+      return img;
+    }
   }
   snprintf(err, errlen,
            "no SCCore.dll: set SCVA_DLL_DIR or put it in the bundle");
   return NULL;
 }
+
+/* One entry per named patch, kits after tones, in the order the files give
+   them. The map tag goes in front of the name so a flat host list stays
+   readable: "Piano 1" is the default map, "88 Piano 1w" the SC-88 one. */
+static void build_programs(struct scva *s)
+{
+  size_t i;
+  if (!s->names.npatch) return;
+  s->progs = calloc(s->names.npatch, sizeof *s->progs);
+  if (!s->progs) return;
+  for (i = 0; i < s->names.npatch; ++i) {
+    const struct scva_patch *p = &s->names.patch[i];
+    struct scva_program *e = &s->progs[s->nprogs];
+    const char *tag = scva_map_tag(p->map);
+    snprintf(e->name, sizeof e->name, "%s%s%s",
+             tag, *tag ? " " : "", p->name);
+    e->d.bank = SCVA_BANK(p->bank, p->map, p->drum);
+    e->d.program = p->prog;
+    e->d.name = e->name;
+    ++s->nprogs;
+  }
+}
+
+static const LV2_Program_Descriptor *get_program(LV2_Handle h, uint32_t index)
+{
+  struct scva *s = h;
+  return index < s->nprogs ? &s->progs[index].d : NULL;
+}
+
+static void select_program(LV2_Handle h, uint32_t bank, uint32_t program)
+{
+  struct scva *s = h;
+  s->sel_bank = bank;
+  s->sel_prog = program;
+  s->sel_pending = 1;
+}
+
+static const LV2_Programs_Interface programs_iface = {
+  get_program, select_program
+};
 
 static void send_map(struct scva *s, int mapval)
 {
@@ -116,8 +211,17 @@ static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
   if (!s) return NULL;
   s->midi_event = map->map(map->handle, LV2_MIDI__MidiEvent);
 
-  s->img = open_core(bundle, err, sizeof err);
-  if (!s->img) { fprintf(stderr, "scva.lv2: %s\n", err); free(s); return NULL; }
+  {
+    char dir[2048] = "";
+    s->img = open_core(bundle, err, sizeof err, dir, sizeof dir);
+    if (!s->img) {
+      fprintf(stderr, "scva.lv2: %s\n", err);
+      free(s);
+      return NULL;
+    }
+    /* Names are a convenience: without them the plugin still plays. */
+    if (scva_names_load(&s->names, dir)) build_programs(s);
+  }
 
 #define GET(f, t, n) s->f = (t)pe_symbol(s->img, n); \
   if (!s->f) { fprintf(stderr, "scva.lv2: missing %s\n", n); goto fail; }
@@ -203,10 +307,28 @@ static void deliver(struct scva *s, const uint8_t *d, uint32_t size)
   }
 }
 
+/* CC32 then CC0 then the program change: the bank pair only takes effect on
+   the program change that follows it. */
+static void apply_selection(struct scva *s)
+{
+  int ch = SCVA_BANK_ISDRUM(s->sel_bank) ? SCVA_DRUM_CH : SCVA_TONE_CH;
+  int map = SCVA_BANK_MAP(s->sel_bank);
+  int cc0 = SCVA_BANK_CC0(s->sel_bank);
+
+  s->short_midi(scva_map_cc(ch, map), 0);
+  s->short_midi((unsigned int)(0xb0 | ch) | (0u << 8) |
+                ((unsigned int)cc0 << 16), 0);
+  s->short_midi((unsigned int)(0xc0 | ch) |
+                ((s->sel_prog & 0x7fu) << 8), 0);
+  s->sel_pending = 0;
+}
+
 static void run(LV2_Handle h, uint32_t n_samples)
 {
   struct scva *s = h;
   uint32_t at = 0;
+
+  if (s->sel_pending) apply_selection(s);
 
   if (s->map_port) {
     int want = (int)(*s->map_port + 0.5f);
@@ -236,11 +358,19 @@ static void cleanup(LV2_Handle h)
   /* Deactivate, never terminate: TG_terminate calls exit(). */
   if (s->deactivate) s->deactivate();
   pe_unload(s->img);
+  scva_names_free(&s->names);
+  free(s->progs);
   free(s);
 }
 
+static const void *extension_data(const char *uri)
+{
+  if (!strcmp(uri, LV2_PROGRAMS__Interface)) return &programs_iface;
+  return NULL;
+}
+
 static const LV2_Descriptor descriptor = {
-  SCVA_URI, instantiate, connect_port, NULL, run, NULL, cleanup, NULL
+  SCVA_URI, instantiate, connect_port, NULL, run, NULL, cleanup, extension_data
 };
 
 LV2_SYMBOL_EXPORT const LV2_Descriptor *lv2_descriptor(uint32_t index)

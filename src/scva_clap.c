@@ -15,6 +15,7 @@
  */
 #define _GNU_SOURCE
 #include "scva_map.h"
+#include "scva_names.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,9 +62,30 @@ struct scva {
 
    double rate;
    int map_want, map_now;
+
+   struct scva_names names;
+   /* A preset arrives on the main thread; it is latched and applied at the
+      top of the next process(). */
+   int sel_map, sel_bank, sel_prog, sel_drum, sel_pending;
+   /* The kit on the drum part and the map it came from, for note names. A
+      preset names its own map, which need not be the one the Tone Map
+      parameter holds for everything else. */
+   int kit_now, kit_map;
 };
 
+/* Kits land on the drum part, tones on the first part. */
+#define SCVA_TONE_CH 0
+#define SCVA_DRUM_CH 9
+
+static void apply_selection(struct scva *s);
+
 /* ---- finding and opening the core -------------------------------------- */
+
+static const char *core_dir(void)
+{
+   const char *dir = getenv("SCVA_DLL_DIR");
+   return (dir && *dir) ? dir : ".";
+}
 
 static int core_path(char *buf, size_t cap, const char *leaf)
 {
@@ -74,6 +96,23 @@ static int core_path(char *buf, size_t cap, const char *leaf)
    }
    snprintf(buf, cap, "%s", leaf);
    return 1;
+}
+
+/* A preset is four numbers; the host only ever passes the string back. */
+static void load_key_make(char *buf, size_t cap, const struct scva_patch *p)
+{
+   snprintf(buf, cap, "%u.%u.%u.%c", p->map, p->bank, p->prog,
+            p->drum ? 'd' : 't');
+}
+
+static int load_key_parse(const char *k, int *map, int *bank, int *prog,
+                          int *drum)
+{
+   char kind = 't';
+   if (!k || sscanf(k, "%d.%d.%d.%c", map, bank, prog, &kind) < 3) return 0;
+   *drum = (kind == 'd');
+   return *map >= 0 && *map < SCVA_MAPS && *bank >= 0 && *bank < 128 &&
+          *prog >= 0 && *prog < 128;
 }
 
 static void *sym(struct scva *s, const char *n)
@@ -187,12 +226,20 @@ static void render(struct scva *s, float *l, float *r, uint32_t at, uint32_t n)
 
 /* ---- clap_plugin ------------------------------------------------------- */
 
-static bool plug_init(const clap_plugin_t *p) { (void)p; return true; }
+/* Names come from text files beside the core, not from the core, so they load
+   without it. Absent, the plugin still plays; it just offers no presets. */
+static bool plug_init(const clap_plugin_t *p)
+{
+   struct scva *s = p->plugin_data;
+   scva_names_load(&s->names, core_dir());
+   return true;
+}
 
 static void plug_destroy(const clap_plugin_t *p)
 {
    struct scva *s = p->plugin_data;
    close_core(s);
+   scva_names_free(&s->names);
    free(s);
 }
 
@@ -225,6 +272,8 @@ static clap_process_status plug_process(const clap_plugin_t *p,
    uint32_t at = 0, ei = 0, n = pr->frames_count;
    uint32_t nev = pr->in_events ? pr->in_events->size(pr->in_events) : 0;
    float *l, *r;
+
+   if (s->sel_pending) apply_selection(s);
 
    if (!pr->audio_outputs_count || pr->audio_outputs[0].channel_count < 2)
       return CLAP_PROCESS_ERROR;
@@ -358,12 +407,95 @@ static const clap_plugin_params_t s_params = {
    pr_count, pr_info, pr_value, pr_text, pr_from_text, pr_flush
 };
 
+/* ---- presets ----------------------------------------------------------- */
+
+/* CC32 then CC0 then the program change: the bank pair only takes effect on
+   the program change that follows it. */
+static void apply_selection(struct scva *s)
+{
+   int ch = s->sel_drum ? SCVA_DRUM_CH : SCVA_TONE_CH;
+
+   s->sel_pending = 0;
+   if (!s->short_midi) return;             /* not activated yet */
+   s->short_midi(scva_map_cc(ch, s->sel_map), 0);
+   s->short_midi((unsigned int)(0xb0 | ch) |
+                 ((unsigned int)s->sel_bank << 16), 0);
+   s->short_midi((unsigned int)(0xc0 | ch) |
+                 ((unsigned int)s->sel_prog << 8), 0);
+   if (s->sel_drum) {
+      s->kit_now = s->sel_prog;
+      s->kit_map = s->sel_map;
+   }
+}
+
+static bool preset_from_location(const clap_plugin_t *p, uint32_t kind,
+                                 const char *location, const char *load_key)
+{
+   struct scva *s = p->plugin_data;
+   int map, bank, prog, drum;
+
+   if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location) return false;
+   if (!load_key_parse(load_key, &map, &bank, &prog, &drum)) return false;
+   s->sel_map = map;
+   s->sel_bank = bank;
+   s->sel_prog = prog;
+   s->sel_drum = drum;
+   s->sel_pending = 1;
+   if (drum && s->host && s->host->get_extension) {
+      const clap_host_note_name_t *nn =
+         s->host->get_extension(s->host, CLAP_EXT_NOTE_NAME);
+      if (nn && nn->changed) nn->changed(s->host);
+   }
+   return true;
+}
+
+static const clap_plugin_preset_load_t s_preset_load = { preset_from_location };
+
+/* The keys of whichever kit the drum part is holding. */
+static uint32_t nn_count(const clap_plugin_t *p)
+{
+   struct scva *s = p->plugin_data;
+   uint32_t n = 0;
+   size_t i;
+   for (i = 0; i < s->names.nkey; ++i)
+      if (s->names.key[i].map == s->kit_map &&
+          s->names.key[i].prog == s->kit_now)
+         ++n;
+   return n;
+}
+
+static bool nn_get(const clap_plugin_t *p, uint32_t index,
+                   clap_note_name_t *out)
+{
+   struct scva *s = p->plugin_data;
+   uint32_t n = 0;
+   size_t i;
+   for (i = 0; i < s->names.nkey; ++i) {
+      const struct scva_key *k = &s->names.key[i];
+      if (k->map != s->kit_map || k->prog != s->kit_now) continue;
+      if (n++ != index) continue;
+      memset(out, 0, sizeof *out);
+      snprintf(out->name, sizeof out->name, "%s", k->name);
+      out->port = -1;
+      out->key = k->key;
+      out->channel = SCVA_DRUM_CH;
+      return true;
+   }
+   return false;
+}
+
+static const clap_plugin_note_name_t s_note_name = { nn_count, nn_get };
+
 static const void *plug_get_extension(const clap_plugin_t *p, const char *id)
 {
    (void)p;
    if (!strcmp(id, CLAP_EXT_AUDIO_PORTS)) return &s_audio_ports;
    if (!strcmp(id, CLAP_EXT_NOTE_PORTS))  return &s_note_ports;
    if (!strcmp(id, CLAP_EXT_PARAMS))      return &s_params;
+   if (!strcmp(id, CLAP_EXT_NOTE_NAME))   return &s_note_name;
+   if (!strcmp(id, CLAP_EXT_PRESET_LOAD) ||
+       !strcmp(id, CLAP_EXT_PRESET_LOAD_COMPAT))
+      return &s_preset_load;
    return NULL;
 }
 
@@ -426,11 +558,116 @@ static const clap_plugin_factory_t s_factory = {
    fac_count, fac_desc, fac_create
 };
 
+/* ---- preset discovery -------------------------------------------------- */
+
+/* The presets are the tone and drum tables of the user's own SOUND Canvas VA
+   install. They are not files, so the location is LOCATION_PLUGIN and each
+   preset is identified by a load_key the plugin alone has to understand. */
+static const clap_preset_discovery_provider_descriptor_t s_provider_desc = {
+   .clap_version = CLAP_VERSION_INIT,
+   .id = SCVA_ID ".presets",
+   .name = "SOUND Canvas VA tones",
+   .vendor = "scva-headless"
+};
+
+static const clap_preset_discovery_indexer_t *s_indexer;
+
+static bool prov_init(const clap_preset_discovery_provider_t *provider)
+{
+   clap_preset_discovery_location_t loc;
+   const clap_preset_discovery_indexer_t *ix = provider->provider_data;
+   memset(&loc, 0, sizeof loc);
+   loc.flags = CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT;
+   loc.name = "SOUND Canvas VA tones";
+   loc.kind = CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN;
+   loc.location = NULL;
+   return ix && ix->declare_location(ix, &loc);
+}
+
+static void prov_destroy(const clap_preset_discovery_provider_t *provider)
+{
+   free((void *)provider);
+}
+
+static bool prov_get_metadata(const clap_preset_discovery_provider_t *provider,
+                              uint32_t kind, const char *location,
+                              const clap_preset_discovery_metadata_receiver_t *rx)
+{
+   clap_universal_plugin_id_t pid;
+   struct scva_names names;
+   size_t i;
+   (void)provider;
+
+   if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location) return false;
+   if (!scva_names_load(&names, core_dir())) {
+      if (rx->on_error)
+         rx->on_error(rx, 0, "no SOUND Canvas VA tone files beside SCCore.dll");
+      return false;
+   }
+   pid.abi = "clap";
+   pid.id = SCVA_ID;
+
+   for (i = 0; i < names.npatch; ++i) {
+      const struct scva_patch *p = &names.patch[i];
+      const char *tag = scva_map_tag(p->map);
+      char name[SCVA_NAME_MAX + 16], key[32];
+      snprintf(name, sizeof name, "%s%s%s", tag, *tag ? " " : "", p->name);
+      load_key_make(key, sizeof key, p);
+      if (!rx->begin_preset(rx, name, key)) break;
+      rx->add_plugin_id(rx, &pid);
+      if (rx->add_feature)
+         rx->add_feature(rx, p->drum ? "drum" : CLAP_PLUGIN_FEATURE_INSTRUMENT);
+   }
+   scva_names_free(&names);
+   return true;
+}
+
+static const void *prov_get_extension(const clap_preset_discovery_provider_t *p,
+                                      const char *id)
+{
+   (void)p; (void)id;
+   return NULL;
+}
+
+static uint32_t pd_count(const clap_preset_discovery_factory_t *f)
+{ (void)f; return 1; }
+
+static const clap_preset_discovery_provider_descriptor_t *
+pd_get_descriptor(const clap_preset_discovery_factory_t *f, uint32_t i)
+{ (void)f; return i ? NULL : &s_provider_desc; }
+
+static const clap_preset_discovery_provider_t *
+pd_create(const clap_preset_discovery_factory_t *f,
+          const clap_preset_discovery_indexer_t *indexer, const char *id)
+{
+   clap_preset_discovery_provider_t *p;
+   (void)f;
+   if (!indexer || !id || strcmp(id, s_provider_desc.id)) return NULL;
+   p = calloc(1, sizeof *p);
+   if (!p) return NULL;
+   s_indexer = indexer;
+   p->desc = &s_provider_desc;
+   p->provider_data = (void *)indexer;
+   p->init = prov_init;
+   p->destroy = prov_destroy;
+   p->get_metadata = prov_get_metadata;
+   p->get_extension = prov_get_extension;
+   return p;
+}
+
+static const clap_preset_discovery_factory_t s_preset_factory = {
+   pd_count, pd_get_descriptor, pd_create
+};
+
 static bool entry_init(const char *path) { (void)path; return true; }
 static void entry_deinit(void) {}
 static const void *entry_get_factory(const char *id)
 {
-   return strcmp(id, CLAP_PLUGIN_FACTORY_ID) ? NULL : &s_factory;
+   if (!strcmp(id, CLAP_PLUGIN_FACTORY_ID)) return &s_factory;
+   if (!strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID) ||
+       !strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT))
+      return &s_preset_factory;
+   return NULL;
 }
 
 CLAP_EXPORT const clap_plugin_entry_t clap_entry = {

@@ -19,3 +19,6 @@ __pycache__/
 *.pyc
 
 .claude/
+
+# a generated tone table is derived from your own install
+scva-tones.txt
