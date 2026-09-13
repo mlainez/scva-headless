@@ -1,7 +1,7 @@
-# scva-linux
+# scva-headless
 
-Roland's **SOUND Canvas VA** engine, headless, on Linux: as an ALSA MIDI
-device, or as a file renderer.
+Roland's **SOUND Canvas VA** engine without its GUI: as an ALSA MIDI device,
+or as a file renderer. Native on Linux, and as Windows binaries.
 
 Nothing of Roland's is included here. You supply the DLL.
 
