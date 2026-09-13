@@ -16,7 +16,7 @@
 Roland's **SOUND Canvas VA** engine without its GUI: as an ALSA MIDI device,
 or as a file renderer. Native on Linux, and as Windows binaries.
 
-Nothing of Roland's is included here. You supply the DLL.
+Nothing of Roland's is included here. You supply the DLL and other optional files from your own installation.
 
 ## Requirements
 
@@ -78,16 +78,10 @@ Pi 2 it probably does not.
     --init N         TG_initialize argument          (default 0)
     --cfg A B        TG_XPsetSystemConfig fields     (default 1 1)
 
-## Run it as a MIDI device
+## Run it as a MIDI device on Linux
 
     make linux
     ./build/scva-daemon
-
-Creates an ALSA sequencer port called **SCVA**:
-
-    aconnect -l
-    aconnect 24:0 'SCVA':0
-    aplaymidi -p 'SCVA' song.mid
 
     --map WHICH      tone map, as above         (default: default)
     --name NAME      port name                  (default SCVA)
@@ -98,8 +92,12 @@ Creates an ALSA sequencer port called **SCVA**:
     --block N        frames per block           (default 256)
     --core DLL       path to SCCore.dll
 
-The core is loaded into the daemon itself - no wine, no second process. The
-PCM device sets the pace; there is no timer in the daemon.
+Creates an ALSA sequencer port called **SCVA**:
+
+    aconnect -l
+    aconnect 24:0 'SCVA':0
+    aplaymidi -p 'SCVA' song.mid
+
 
 Audio goes where the system sends it: ALSA's `default`, then PipeWire, Pulse or
 JACK if a server holds the card and `default` therefore cannot open it. It
@@ -196,11 +194,21 @@ pass `--map 88` or you are comparing against the wrong instrument.
 The map is Bank Select LSB (CC32). A program change latches it and a GS reset
 clears it, so it is sent on the part immediately before every program change.
 
-## As a MIDI device on Windows
+## Run it as a MIDI device on Linux
+
+This requires that you have loopMIDI installed.
 
     make windows
     build\scva-winmidi.exe --list
     build\scva-winmidi.exe --midi-in "loopMIDI Port"
+
+    --list             the MIDI inputs this machine has
+    --midi-in          index, or any part of the name
+    --map WHICH        tone map, as above          (default: default)
+    --rate HZ          sample rate                 (default 48000)
+    --block N          frames per block            (default 256)
+    --latency MS       buffered ahead              (default 40)
+    --core DLL         path to SCCore.dll
 
 Windows has no way for a program to put itself in the MIDI device list. That
 list comes from drivers, which is why the one soft-synth that appears in it
@@ -218,7 +226,7 @@ With a virtual cable the game selects the cable's port, not this program:
 
 ### DOSBox
 
-In `dosbox.conf`, send MIDI to the cable:
+In `dosbox.conf`, use loopMIDI too:
 
     [midi]
     mididevice = win32
@@ -228,14 +236,6 @@ DOSBox-X and DOSBox Staging also accept the name: `midiconfig = loopMIDI Port`.
 Then choose **General MIDI** or **Sound Canvas** in the game's own setup
 program, not MT-32 - the SC-88 maps are GM and GS, and an MT-32 score sent to
 them plays the wrong instruments.
-
-    --list             the MIDI inputs this machine has
-    --midi-in          index, or any part of the name
-    --map WHICH        tone map, as above          (default: default)
-    --rate HZ          sample rate                 (default 48000)
-    --block N          frames per block            (default 256)
-    --latency MS       buffered ahead              (default 40)
-    --core DLL         path to SCCore.dll
 
 Audio goes out through waveOut in 16-bit stereo, which every Windows device
 accepts. Latency matters less here than on a keyboard, since a game is playing
@@ -262,18 +262,12 @@ itself rather than asking the system for them.
 
 ### Old Windows
 
-Not Windows 98, for three separate reasons, any one of them enough:
+Not Windows 98, for the following reasons:
 
 - mingw-w64 emits NT binaries and does not target Win9x at all
-- the 64-bit core cannot run on a 32-bit system, and the 32-bit one still wants
-  the Universal CRT, which Windows 98 never had
-- Roland built this in 2015; the instruction set it assumes is not what a
+- the 32-bit one still wants the Universal CRT, which Windows 98 never had
+- Roland built this in 2015; the instruction set it assumes in it's DLL is not what a
   Windows 98 machine has
-
-The second of those is the only one this project could answer, by doing on
-Win32 what `pe_loader.c` already does on Linux - mapping the image and
-providing the imports instead of the system loader. That would be a port, not
-a flag, and the other two would still stand.
 
 Windows XP depends on the core, not on this program, which is built against
 the XP API and uses nothing newer. Check what your copy demands:
@@ -319,10 +313,6 @@ ARM build of this and no Windows one.
     make clap-win32  # 32-bit Windows .clap
 
 Needs the CLAP headers: `make clap CLAP_DIR=/path/to/clap/include`.
-
-CLAP rather than VST3 because its SDK is MIT and this project is CC0; VST3's is
-GPLv3 or a proprietary Steinberg licence, either of which would force a
-relicence. A CLAP-to-VST3 wrapper exists if you need VST3.
 
 Same shape as the LV2: MIDI in, stereo out, tone map as a parameter, and the
 core found through `$SCVA_DLL_DIR`. On Windows it loads the core with
@@ -381,7 +371,7 @@ before.
 Several exported functions fail silently if called wrongly. The signatures and
 the measurements are in [docs/ENGINE-NOTES.md](docs/ENGINE-NOTES.md).
 
-## Standing
+## Remarks
 
 This project loads the DLL and calls its exported entry points. None of
 Roland's code is redistributed here.
