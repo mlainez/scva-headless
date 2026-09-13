@@ -91,7 +91,8 @@ Creates an ALSA sequencer port called **SCVA**:
 
     --map WHICH      tone map, as above         (default: default)
     --name NAME      port name                  (default SCVA)
-    --pcm DEV        ALSA output device         (default "default")
+    --pcm DEV        output device              (default: wherever the system sends audio)
+    --list-pcm       show what is tried, and what works here
     --rate HZ        sample rate                (default 44100)
     --block N        frames per block           (default 256)
     --core DLL       path to SCCore.dll
@@ -99,13 +100,17 @@ Creates an ALSA sequencer port called **SCVA**:
 The core is loaded into the daemon itself - no wine, no second process. The
 PCM device sets the pace; there is no timer in the daemon.
 
+Audio goes where the system sends it: ALSA's `default`, then PipeWire, Pulse or
+JACK if a server holds the card and `default` therefore cannot open it. It
+reports which one it took. No named card is picked automatically, since that
+would play wherever the card happens to go - often an HDMI monitor.
+
+`--pcm` overrides all of that and is taken literally, so a device that will not
+open is an error rather than a reason to choose another. Anything `aplay -L`
+lists works.
+
 `--core` matters when starting from anywhere but the repository root, since the
 default `dll/SCCore.dll` is relative. `$SCVA_DLL_DIR` works too.
-
-If it reports `cannot open PCM 'default'`, something else holds the card. List
-the devices with `aplay -L` and name one:
-
-    ./build/scva-daemon --pcm plughw:0,0
 
 ### Changing the map while it runs
 

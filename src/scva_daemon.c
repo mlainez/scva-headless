@@ -38,10 +38,123 @@ typedef MSABI int (*tg_set_config_fn)(const struct tg_system_config *);
 static volatile sig_atomic_t stop_now;
 static void on_signal(int sig) { (void)sig; stop_now = 1; }
 
+/* Opens a device and configures it in one go, since a device that opens but
+   will not take float32 stereo is no more use than one that does not open. */
+static snd_pcm_t *try_pcm(const char *name, unsigned int rate)
+{
+  snd_pcm_t *pcm = NULL;
+  if (snd_pcm_open(&pcm, name, SND_PCM_STREAM_PLAYBACK, 0) < 0) return NULL;
+  if (snd_pcm_set_params(pcm, SND_PCM_FORMAT_FLOAT_LE,
+                         SND_PCM_ACCESS_RW_INTERLEAVED, 2, rate, 1,
+                         200000) < 0) {
+    snd_pcm_close(pcm);
+    return NULL;
+  }
+  return pcm;
+}
+
+/* Where the system sends audio, in the order to try. "default" is ALSA's own
+   answer and is right wherever it works; it fails only when a sound server
+   holds the card, so the servers follow. Nothing else is chosen automatically:
+   a named card would play wherever that card happens to go, which on this
+   machine would be an HDMI monitor. Pass --pcm to reach those. */
+static int pcm_rank(const char *n)
+{
+  if (!strcmp(n, "default"))         return 0;
+  if (!strcmp(n, "pipewire"))        return 1;
+  if (!strcmp(n, "pulse"))           return 2;
+  if (!strcmp(n, "jack"))            return 3;
+  if (!strncmp(n, "sysdefault", 10)) return 4;
+  return -1;
+}
+
+struct pcm_cand { char *name; int rank; };
+
+static int by_rank(const void *a, const void *b)
+{
+  const struct pcm_cand *x = a, *y = b;
+  return x->rank - y->rank;
+}
+
+/* ALSA prints its own complaints straight to stderr, which during probing is
+   noise about devices we are about to reject anyway. */
+static void alsa_quiet(const char *file, int line, const char *fn, int err,
+                       const char *fmt, ...)
+{
+  (void)file; (void)line; (void)fn; (void)err; (void)fmt;
+}
+
+/* Asks ALSA what this machine actually has, rather than guessing names: the
+   same hint list `aplay -L` prints. "default" is prepended because it is not
+   always in that list yet is the right answer wherever it works - it is a
+   dmix on the raw card, so it fails only when a sound server holds it. */
+static size_t pcm_candidates(struct pcm_cand *out, size_t cap)
+{
+  void **hints = NULL;
+  size_t n = 0;
+  void **h;
+
+  if (cap) {
+    out[0].name = strdup("default");
+    out[0].rank = pcm_rank("default");
+    if (out[0].name) n = 1;
+  }
+  if (snd_device_name_hint(-1, "pcm", &hints) < 0) return n;
+  for (h = hints; *h && n < cap; ++h) {
+    char *name = snd_device_name_get_hint(*h, "NAME");
+    char *ioid = snd_device_name_get_hint(*h, "IOID");
+    int rank;
+    /* IOID is NULL for duplex devices, "Output" for playback-only */
+    if (name && strcmp(name, "default") &&      /* already first */
+        (!ioid || !strcmp(ioid, "Output")) &&
+        (rank = pcm_rank(name)) >= 0) {
+      out[n].name = name;
+      out[n].rank = rank;
+      ++n;
+      name = NULL;                        /* kept, freed by the caller */
+    }
+    free(name);
+    free(ioid);
+  }
+  snd_device_name_free_hint(hints);
+  qsort(out, n, sizeof *out, by_rank);
+  return n;
+}
+
+/* An explicit --pcm is honoured as given and never second-guessed. */
+static snd_pcm_t *open_pcm(const char *want, unsigned int rate,
+                           const char **opened, int verbose)
+{
+  struct pcm_cand cand[64];
+  static char chosen[128];
+  snd_pcm_t *pcm = NULL;
+  size_t n, i;
+
+  if (want) {
+    *opened = want;                 /* asked for by name: let ALSA complain */
+    return try_pcm(want, rate);
+  }
+  snd_lib_error_set_handler(alsa_quiet);
+  n = pcm_candidates(cand, sizeof cand / sizeof cand[0]);
+  for (i = 0; i < n; ++i) {
+    if (!pcm && (pcm = try_pcm(cand[i].name, rate)) != NULL) {
+      snprintf(chosen, sizeof chosen, "%s", cand[i].name);
+      *opened = chosen;
+    } else if (verbose && !pcm) {
+      fprintf(stderr, "  '%s' did not open\n", cand[i].name);
+    }
+    free(cand[i].name);
+  }
+  snd_lib_error_set_handler(NULL);
+  if (!pcm) *opened = "default";
+  return pcm;
+}
+
 int main(int argc, char **argv)
 {
   const char *core = NULL;
-  const char *pcm_name = "default";
+  const char *pcm_name = NULL;      /* NULL: walk the fallback chain */
+  const char *pcm_opened = NULL;
   const char *mapname = "default";
   const char *port_name = "SCVA";
   unsigned int rate = 44100;
@@ -75,13 +188,29 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--rate") && i + 1 < argc) rate = (unsigned)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--block") && i + 1 < argc) block = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
+    else if (!strcmp(argv[i], "--list-pcm")) {
+      struct pcm_cand cand[64];
+      size_t n, k;
+      snd_lib_error_set_handler(alsa_quiet);
+      n = pcm_candidates(cand, sizeof cand / sizeof cand[0]);
+      printf("tried in this order, then --pcm for anything else:\n");
+      for (k = 0; k < n; ++k) {
+        snd_pcm_t *p = try_pcm(cand[k].name, rate);
+        printf("  %-28s %s\n", cand[k].name,
+               p ? "works at this rate" : "will not open");
+        if (p) snd_pcm_close(p);
+        free(cand[k].name);
+      }
+      return 0;
+    }
     else {
       fprintf(stderr,
         "usage: scva-daemon [--core DLL] [--pcm DEV] [--name NAME]\n"
         "                   [--rate HZ] [--block N]\n"
         "                   [--map " SCVA_MAP_USAGE "]\n"
         "\n"
-        "  --pcm accepts anything `aplay -L` lists, eg. plughw:0,0\n");
+        "  --list-pcm         what this machine offers, in try order\n"
+        "  --pcm DEV          force one; otherwise it is detected\n");
       return argc > 1 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))
              ? 0 : 2;
     }
@@ -152,22 +281,20 @@ int main(int argc, char **argv)
           port_name, snd_seq_client_id(seq), mapname);
 
   /* --- the PCM device, which is also the clock -------------------------- */
-  if (snd_pcm_open(&pcm, pcm_name, SND_PCM_STREAM_PLAYBACK, 0) < 0) {
-    fprintf(stderr, "scva-daemon: cannot open PCM '%s'\n"
-                    "  `aplay -L` lists the devices; pass one with --pcm,\n"
-                    "  eg. --pcm plughw:0,0 to bypass a busy dmix\n", pcm_name);
+  pcm = open_pcm(pcm_name, rate, &pcm_opened, 0);
+  if (!pcm) {
+    fprintf(stderr, "scva-daemon: no PCM device would take float32 stereo "
+                    "at %u Hz\n", rate);
+    if (pcm_name)
+      fprintf(stderr, "  '%s' did not open\n", pcm_name);
+    else
+      open_pcm(NULL, rate, &pcm_opened, 1);   /* again, saying what failed */
+    fprintf(stderr, "  `aplay -L` lists what this machine has; name one with "
+                    "--pcm\n");
     snd_seq_close(seq);
     return 1;
   }
-  if (snd_pcm_set_params(pcm, SND_PCM_FORMAT_FLOAT_LE,
-                         SND_PCM_ACCESS_RW_INTERLEAVED, 2, rate, 1,
-                         200000) < 0) {
-    fprintf(stderr, "scva-daemon: PCM '%s' will not take float32 stereo "
-                    "at %u Hz\n", pcm_name, rate);
-    snd_pcm_close(pcm);
-    snd_seq_close(seq);
-    return 1;
-  }
+  fprintf(stderr, "scva-daemon: audio on '%s'\n", pcm_opened);
 
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
