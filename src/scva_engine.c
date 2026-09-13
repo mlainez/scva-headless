@@ -81,7 +81,7 @@ int main(int argc, char **argv)
         if (!read_exact(b, 3)) goto done;
         msg = (unsigned int)b[0] | ((unsigned int)b[1] << 8) |
               ((unsigned int)b[2] << 16);
-        s.short_midi(msg);
+        s.short_midi(msg, 0);
       } else if (tag == 0x02) {
         unsigned char len[4];
         unsigned char *buf;
@@ -92,7 +92,7 @@ int main(int argc, char **argv)
         if (n == 0 || n > (1u << 20)) goto done;
         buf = malloc(n);
         if (!buf || !read_exact(buf, n)) { free(buf); goto done; }
-        s.long_midi(buf, (int)n);
+        s.long_midi(buf, 0);
         free(buf);
       } else {
         goto done;                      /* desynchronised: stop rather than guess */

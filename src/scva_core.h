@@ -17,10 +17,13 @@ struct scva {
   int  (*initialize)(int);
   void (*set_sample_rate)(float);
   void (*set_max_block)(int);
-  int  (*activate)(int, int);
+  /* rate is a float in XMM0; the second argument is the max block size */
+  int  (*activate)(float, int);
   void (*deactivate)(void);
   void (*terminate)(void);
-  void (*short_midi)(unsigned int);
+  /* second argument is a timestamp in samples, not a length or a flag */
+  void (*short_midi)(unsigned int, int);
+  /* the message is F7-terminated, so this second argument is a timestamp */
   void (*long_midi)(const unsigned char *, int);
   void (*process)(float *, float *, int);
   int  (*fatal)(void);
@@ -59,7 +62,7 @@ static int scva_open(struct scva *s, const char *dll, double rate, int maxblock)
   s->set_max_block(maxblock);
   { struct scva_config c; c.a = 1; c.b = 1; s->set_config(&c); }
   s->set_sample_rate((float)rate);          /* <-- last call before activate */
-  s->activate(0, maxblock);
+  s->activate((float)rate, maxblock);
   if (s->fatal()) { fprintf(stderr, "scva: fatal after activate\n"); return 0; }
   return 1;
 }
@@ -68,7 +71,7 @@ static void scva_gs_reset(struct scva *s)
 {
   static const unsigned char gs[] =
     { 0xF0,0x41,0x10,0x42,0x12,0x40,0x00,0x7F,0x00,0x41,0xF7 };
-  s->long_midi(gs, (int)sizeof gs);
+  s->long_midi(gs, 0);
 }
 
 static void scva_close(struct scva *s)

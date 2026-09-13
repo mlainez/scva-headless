@@ -22,10 +22,15 @@
 typedef MSABI int (*tg_initialize_fn)(int);
 typedef MSABI void (*tg_set_sample_rate_fn)(float);
 typedef MSABI void (*tg_set_max_block_fn)(int);
-typedef MSABI int (*tg_activate_fn)(int, int);
+/* The first argument is a float in XMM0: the sample rate the engine divides
+   MIDI timestamps by. The second is the max block size, which activate
+   passes straight to TG_setMaxBlockSize. */
+typedef MSABI int (*tg_activate_fn)(float, int);
 typedef MSABI void (*tg_deactivate_fn)(void);
 typedef MSABI void (*tg_terminate_fn)(void);
-typedef MSABI void (*tg_short_midi_fn)(unsigned int);
+/* Second argument is a timestamp in samples, not a length or a flag. */
+typedef MSABI void (*tg_short_midi_fn)(unsigned int, int);
+/* The message is F7-terminated, so the second argument is a timestamp too. */
 typedef MSABI void (*tg_long_midi_fn)(const unsigned char *, int);
 typedef MSABI void (*tg_process_fn)(float *, float *, int);
 typedef MSABI int (*tg_running_voices_fn)(void);
@@ -93,6 +98,8 @@ int main(int argc, char **argv)
   int i, sent = 0;
   int realtime = 1;
   int dump = 0;
+  int initarg = 0;
+  int cfga = 1, cfgb = 1;
   uint64_t start_ms;
 
   for (i = 1; i < argc; ++i) {
@@ -104,6 +111,8 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--reset") && i + 1 < argc) reset = argv[++i];
     else if (!strcmp(argv[i], "--maxblock") && i + 1 < argc) maxblock = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--dump") && i + 1 < argc) dump = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--init") && i + 1 < argc) initarg = (int)strtol(argv[++i], NULL, 0);
+    else if (!strcmp(argv[i], "--cfg") && i + 2 < argc) { cfga = atoi(argv[++i]); cfgb = atoi(argv[++i]); }
     else if (!strcmp(argv[i], "--flat-out")) realtime = 0;
     else { fprintf(stderr, "usage: scva-native --core DLL --midi FILE --out FILE\n"); return 2; }
   }
@@ -134,7 +143,7 @@ int main(int argc, char **argv)
   bytes = slurp(midi, &n);
   if (!bytes || !parse(&s, bytes, n)) { fprintf(stderr, "not a MIDI file this can play\n"); return 1; }
 
-  printf("initialize -> %d\n", a.initialize(0));
+  printf("initialize(%d) -> %d\n", initarg, a.initialize(initarg));
   /* THE ORDER. See README: the rate is set on both sides of the block size and
      the second call is the last thing before activate. */
   a.set_sample_rate((float)rate);
@@ -142,7 +151,7 @@ int main(int argc, char **argv)
   printf("rate %.0f, max block %d (rate set both sides)\n", rate, maxblock);
   {
     struct tg_system_config cfg;
-    cfg.a = 1; cfg.b = 1;
+    cfg.a = cfga; cfg.b = cfgb;
     printf("set_config(1,1) -> %d\n", a.set_config(&cfg));
     memset(&cfg, 0, sizeof cfg);
     a.get_config(&cfg);
@@ -150,14 +159,14 @@ int main(int argc, char **argv)
   }
   a.set_sample_rate((float)rate);
   {
-    int act = a.activate(0, maxblock);
+    int act = a.activate((float)rate, maxblock);
     int fat = a.fatal();
     printf("activate -> %d, fatal %d\n", act, fat);
     fflush(stdout);
   }
-  if (!strcmp(reset, "gs")) { a.long_midi(gs_reset, (int)sizeof gs_reset);
+  if (!strcmp(reset, "gs")) { a.long_midi(gs_reset, 0);
     printf("gs reset sent\n"); fflush(stdout); }
-  else if (!strcmp(reset, "gm")) { a.long_midi(gm_reset, (int)sizeof gm_reset);
+  else if (!strcmp(reset, "gm")) { a.long_midi(gm_reset, 0);
     printf("gm reset sent\n"); fflush(stdout); }
 
   left = calloc((size_t)maxblock, sizeof *left);
@@ -182,12 +191,13 @@ int main(int argc, char **argv)
         tempo = e->tempo;
         per_tick = rate * (double)tempo / (1e6 * s.division);
       } else if (e->sysex_len) {
-        a.long_midi(e->sysex, e->sysex_len);
-        ++sent;
+        unsigned char sx[260];
+        int sn = sysex_message(e, sx, sizeof sx);
+        if (sn) { a.long_midi(sx, 0); ++sent; }
       } else {
         unsigned int msg = (unsigned int)e->status |
           ((unsigned int)e->data1 << 8) | ((unsigned int)e->data2 << 16);
-        a.short_midi(msg);
+        a.short_midi(msg, 0);
         ++sent;
       }
       ++ei;
@@ -222,9 +232,12 @@ int main(int argc, char **argv)
   rewind(wav);
   header(wav, (unsigned)rate, total);
   fclose(wav);
-  a.deactivate();
-  a.terminate();
+  /* before terminating: TG_terminate calls exit(), so nothing after it runs
+     and anything still buffered is lost */
   printf("%s: %u frames at %.0f Hz, %.1f s, peak %.5f, %d messages, voices %d\n",
          out, total, rate, total / rate, peak, sent, a.voices());
+  fflush(stdout);
+  a.deactivate();
+  a.terminate();
   return 0;
 }

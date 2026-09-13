@@ -27,10 +27,13 @@
 typedef int (*tg_initialize_fn)(int);
 typedef void (*tg_set_sample_rate_fn)(float);
 typedef void (*tg_set_max_block_fn)(int);
-typedef int (*tg_activate_fn)(int, int);
+/* rate is a float in XMM0; the second argument is the max block size */
+typedef int (*tg_activate_fn)(float, int);
 typedef void (*tg_deactivate_fn)(void);
 typedef void (*tg_terminate_fn)(void);
-typedef void (*tg_short_midi_fn)(unsigned int);
+/* second argument is a timestamp in samples, not a length or a flag */
+typedef void (*tg_short_midi_fn)(unsigned int, int);
+/* the message is F7-terminated, so this second argument is a timestamp */
 typedef void (*tg_long_midi_fn)(const unsigned char *, int);
 typedef void (*tg_process_fn)(float *, float *, int);
 typedef int (*tg_running_voices_fn)(void);
@@ -164,7 +167,7 @@ int main(int argc, char **argv)
   /* LAST call before activate, and this is the whole of TASK-171. */
   a.set_sample_rate((float)rate);
   {
-    int act = a.activate(0, maxblock);
+    int act = a.activate((float)rate, maxblock);
     int fat = a.fatal();
     int k;
     printf("activate -> %d, fatal %d\n", act, fat);
@@ -176,9 +179,9 @@ int main(int argc, char **argv)
     fflush(stdout);
   }
   fflush(stdout);
-  if (!strcmp(reset, "gs")) { a.long_midi(gs_reset, (int)sizeof gs_reset);
+  if (!strcmp(reset, "gs")) { a.long_midi(gs_reset, 0);
     printf("gs reset sent\n"); fflush(stdout); }
-  else if (!strcmp(reset, "gm")) { a.long_midi(gm_reset, (int)sizeof gm_reset);
+  else if (!strcmp(reset, "gm")) { a.long_midi(gm_reset, 0);
     printf("gm reset sent\n"); fflush(stdout); }
 
   left = calloc((size_t)maxblock, sizeof *left);
@@ -207,12 +210,13 @@ int main(int argc, char **argv)
         tempo = e->tempo;
         per_tick = rate * (double)tempo / (1e6 * s.division);
       } else if (e->sysex_len) {
-        a.long_midi(e->sysex, e->sysex_len);
-        ++sent;
+        unsigned char sx[260];
+        int sn = sysex_message(e, sx, sizeof sx);
+        if (sn) { a.long_midi(sx, 0); ++sent; }
       } else {
         unsigned int msg = (unsigned int)e->status |
           ((unsigned int)e->data1 << 8) | ((unsigned int)e->data2 << 16);
-        a.short_midi(msg);
+        a.short_midi(msg, 0);
         ++sent;
       }
       ++ei;
@@ -244,9 +248,12 @@ int main(int argc, char **argv)
   rewind(wav);
   header(wav, (unsigned)rate, total);
   fclose(wav);
-  a.deactivate();
-  a.terminate();
+  /* before terminating: TG_terminate calls exit(), so nothing after it runs
+     and anything still buffered is lost */
   printf("%s: %u frames at %.0f Hz, %.1f s, peak %.5f, %d messages, voices %d\n",
          out, total, rate, total / rate, peak, sent, a.voices());
+  fflush(stdout);
+  a.deactivate();
+  a.terminate();
   return 0;
 }

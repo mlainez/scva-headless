@@ -136,6 +136,24 @@ static int parse(struct song *s, const unsigned char *p, size_t n)
   return s->count > 0;
 }
 
+/* A Standard MIDI File stores an F0 event without its leading F0 - the byte
+   is implied by the event type - and the engine wants the whole message. An
+   F7 event is a raw continuation and goes out exactly as it stands.
+   Returns the length written, or 0 if it does not fit. */
+static int sysex_message(const struct event *e, unsigned char *buf, size_t cap)
+{
+  size_t n = e->sysex_len;
+  if (e->status == 0xf7) {
+    if (n > cap) return 0;
+    memcpy(buf, e->sysex, n);
+    return (int)n;
+  }
+  if (n + 1 > cap) return 0;
+  buf[0] = 0xf0;
+  memcpy(buf + 1, e->sysex, n);
+  return (int)n + 1;
+}
+
 /* ------------------------------------------------------------------ WAV */
 
 static void put32(FILE *f, uint32_t v) { fwrite(&v, 4, 1, f); }
