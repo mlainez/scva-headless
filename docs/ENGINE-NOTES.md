@@ -107,6 +107,12 @@ they disagree on renders differently, in both directions.
 A GS reset returns every part to the default map, so the map has to be sent
 again before each program change rather than once at the start.
 
+Against Novak's SCVA recording of discworld-alley, `--map 88` correlates best
+(0.307, against 0.238 for the default and 0.060 for `--map 55`) and matches it
+by ear, instrument for instrument, while `--map 55` is audibly a different
+instrument. The residual is level and alignment, not tone selection: our render
+is about 3x louder in RMS and lands 0.46 s off.
+
 Not the selector, measured against a tone the maps disagree about: the GS tone
 map parameter `40 1n 42` (no effect), `TG_initialize` 0-16 (no effect),
 `TG_XPsetSystemConfig` (field 1 is an enable, field 0 silences the engine),
