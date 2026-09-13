@@ -474,6 +474,10 @@ static void *bind(const char *name)
 static void **g_tls_slots;
 static uint32_t g_tls_next;
 #define PE_TLS_SLOTS 64
+/* Slots handed back by pe_unload, so a host that creates and destroys plugin
+   instances does not run the array out. */
+static int g_tls_free[PE_TLS_SLOTS];
+static int g_tls_nfree;
 
 void *pe_symbol(struct pe_image *img, const char *name)
 {
@@ -503,6 +507,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
   unsigned char *g_file;
   struct pe_image *img = calloc(1, sizeof *img);
   if (!img) FAIL("out of memory");
+  img->tls_index = -1;
   if (fd < 0) FAIL("cannot open %s", path);
   fsz = lseek(fd, 0, SEEK_END); lseek(fd, 0, SEEK_SET);
   g_file = mmap(NULL, (size_t)fsz, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -619,8 +624,10 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
       if (!g_tls_slots) FAIL("out of memory for TLS");
       *(void **)(g_teb + PE_TIB_TLS) = g_tls_slots;
     }
-    if (g_tls_next >= PE_TLS_SLOTS) FAIL("out of TLS slots");
-    idx = g_tls_next++;
+    if (g_tls_nfree > 0) idx = (uint32_t)g_tls_free[--g_tls_nfree];
+    else if (g_tls_next < PE_TLS_SLOTS) idx = g_tls_next++;
+    else FAIL("out of TLS slots");
+    img->tls_index = (int)idx;
     if (raw) memcpy(blockmem, (void *)(uintptr_t)tls->start, raw);
     g_tls_slots[idx] = blockmem;
     if (tls->index_addr) *(uint32_t *)(uintptr_t)tls->index_addr = idx;
@@ -653,4 +660,14 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
 #undef FAIL
 }
 
-void pe_unload(struct pe_image *img) { (void)img; }
+void pe_unload(struct pe_image *img)
+{
+  if (!img) return;
+  if (img->tls_index >= 0 && g_tls_slots) {
+    free(g_tls_slots[img->tls_index]);
+    g_tls_slots[img->tls_index] = NULL;
+    if (g_tls_nfree < PE_TLS_SLOTS) g_tls_free[g_tls_nfree++] = img->tls_index;
+  }
+  if (img->base) munmap(img->base, img->size);
+  free(img);
+}

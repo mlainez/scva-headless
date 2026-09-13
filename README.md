@@ -92,6 +92,23 @@ pass `--map 88` or you are comparing against the wrong instrument.
 The map is Bank Select LSB (CC32). A program change latches it and a GS reset
 clears it, so it is sent on the part immediately before every program change.
 
+## As an LV2 plugin
+
+    make lv2      # x86-64 bundle, for a 64-bit SCCore.dll
+    make lv2-32   # i386 bundle, for a 32-bit SCCore.dll
+
+Copy `build/scva.lv2` into `~/.lv2/`. The plugin finds the core in
+`$SCVA_DLL_DIR`, or beside the bundle if you drop `SCCore.dll` in there.
+
+MIDI in, stereo out, and the tone map as an enumerated control. MIDI is
+sample-accurate: the block is split at each event rather than trusting the
+engine's own timestamps.
+
+The plugin's architecture has to match the host's, and the core's has to match
+the plugin's - a 64-bit host needs the 64-bit bundle and a 64-bit core. LV2 is
+a Linux format in practice, and the engine is x86 machine code, so there is no
+ARM build of this and no Windows one.
+
 ## Two-port songs
 
 Roland's demo SMFs are 32-part, two-port performances that name their port in

@@ -1,0 +1,48 @@
+@prefix atom:  <http://lv2plug.in/ns/ext/atom#> .
+@prefix doap:  <http://usefulinc.com/ns/doap#> .
+@prefix lv2:   <http://lv2plug.in/ns/lv2core#> .
+@prefix midi:  <http://lv2plug.in/ns/ext/midi#> .
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix urid:  <http://lv2plug.in/ns/ext/urid#> .
+
+<https://github.com/mlainez/scva-headless#scva>
+	a lv2:Plugin , lv2:InstrumentPlugin ;
+	doap:name "SCVA" ;
+	doap:license <https://creativecommons.org/publicdomain/zero/1.0/> ;
+	rdfs:comment "Roland SOUND Canvas VA's engine, loaded from your own SCCore.dll. Set SCVA_DLL_DIR or put SCCore.dll in this bundle." ;
+	lv2:requiredFeature urid:map ;
+	lv2:optionalFeature lv2:hardRTCapable ;
+
+	lv2:port [
+		a lv2:InputPort , atom:AtomPort ;
+		atom:bufferType atom:Sequence ;
+		atom:supports midi:MidiEvent ;
+		lv2:index 0 ;
+		lv2:symbol "midi_in" ;
+		lv2:name "MIDI In"
+	] , [
+		a lv2:OutputPort , lv2:AudioPort ;
+		lv2:index 1 ;
+		lv2:symbol "out_l" ;
+		lv2:name "Out L"
+	] , [
+		a lv2:OutputPort , lv2:AudioPort ;
+		lv2:index 2 ;
+		lv2:symbol "out_r" ;
+		lv2:name "Out R"
+	] , [
+		a lv2:InputPort , lv2:ControlPort ;
+		lv2:index 3 ;
+		lv2:symbol "map" ;
+		lv2:name "Tone Map" ;
+		lv2:default 0 ;
+		lv2:minimum 0 ;
+		lv2:maximum 4 ;
+		lv2:portProperty lv2:integer , lv2:enumeration ;
+		lv2:scalePoint [ rdfs:label "Default" ; rdf:value 0 ] ;
+		lv2:scalePoint [ rdfs:label "SC-55"   ; rdf:value 1 ] ;
+		lv2:scalePoint [ rdfs:label "SC-88"   ; rdf:value 2 ] ;
+		lv2:scalePoint [ rdfs:label "SC-88Pro"; rdf:value 3 ] ;
+		lv2:scalePoint [ rdfs:label "SC-8820" ; rdf:value 4 ]
+	] .

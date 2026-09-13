@@ -38,11 +38,14 @@ struct pe_image {
   unsigned char *base;      /* where the image is mapped */
   size_t size;
   uint64_t entry;           /* DllMain, image-relative */
+  int tls_index;            /* slot this image was given, -1 if none */
 };
 
 /* Map, relocate, bind imports, run the entry point. NULL on failure. */
 struct pe_image *pe_load(const char *path, char *err, size_t errlen);
 /* Look an export up by name. NULL if absent. */
 void *pe_symbol(struct pe_image *img, const char *name);
+/* Unmap an image and give its TLS slot back. Safe to call on an engine that
+   has been deactivated; do not call TG_terminate first, it calls exit(). */
 void pe_unload(struct pe_image *img);
 #endif
