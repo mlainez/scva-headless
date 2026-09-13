@@ -67,7 +67,9 @@ int main(int argc, char **argv)
 {
   const char *core = "dll/SCCore.dll";
   double rate = 48000.0;
-  int block = 256, maxblock = 4096, i, use_guard = 0, gap = 0;
+  /* block and room are read after siglongjmp, so they must survive it */
+  volatile int block = 256;
+  int maxblock = 4096, i, use_guard = 0, gap = 0;
   static const unsigned char gs_reset[] = {
     0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
   struct pe_image *img;
@@ -77,7 +79,7 @@ int main(int argc, char **argv)
   tg_short_midi_fn shortmidi; tg_long_midi_fn longmidi;
   tg_process_fn process; tg_set_config_fn set_config;
   float *left, *right;
-  size_t room;
+  volatile size_t room;
   struct sigaction sa;
 
   for (i = 1; i < argc; ++i) {

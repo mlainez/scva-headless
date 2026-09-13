@@ -177,8 +177,12 @@ static MSABI long  ms_UnhandledExceptionFilter(void *p) { (void)p; return 1; }
 static MSABI void  ms_TerminateProcess(void *h, uint32_t c)
 { (void)h; fprintf(stderr, "pe: image called TerminateProcess(%u)\n", c); _exit((int)c); }
 static MSABI int ms_QueryPerformanceCounter(int64_t *v)
-{ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
-  if (v) *v = (int64_t)t.tv_sec * 1000000000 + t.tv_nsec; return 1; }
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  if (v) *v = (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+  return 1;
+}
 static MSABI void ms_GetSystemTimeAsFileTime(uint64_t *ft)
 { struct timespec t; clock_gettime(CLOCK_REALTIME, &t);
   if (ft) *ft = ((uint64_t)t.tv_sec + 11644473600ULL) * 10000000ULL + t.tv_nsec / 100; }

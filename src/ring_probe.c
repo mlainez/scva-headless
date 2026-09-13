@@ -30,7 +30,6 @@
 
 /* image-relative; the image maps at its preferred base 0x180000000 */
 #define RVA_AVAIL   0x1a62cbc   /* int32: samples resampled into the rings  */
-#define RVA_READIDX 0x1a62cd0   /* int32: how far the last drain got        */
 #define RVA_SRC_L   0x1a18f70   /* 32 floats: resampler input -> left  out  */
 #define RVA_SRC_R   0x1a18ff0   /* 32 floats: resampler input -> right out  */
 #define SRC_N       32
@@ -76,7 +75,7 @@ int main(int argc, char **argv)
   tg_set_max_block_fn set_block; tg_activate_fn activate;
   tg_short_midi_fn shortmidi; tg_long_midi_fn longmidi;
   tg_process_fn process; tg_set_config_fn set_config;
-  volatile int32_t *avail, *readidx;
+  volatile int32_t *avail;
   float *src_l, *src_r, *left, *right;
   float poison = poison_value();
   int total_l = 0, total_r = 0;
@@ -106,7 +105,6 @@ int main(int argc, char **argv)
 #undef GET
 
   avail   = (volatile int32_t *)(img->base + RVA_AVAIL);
-  readidx = (volatile int32_t *)(img->base + RVA_READIDX);
   src_l   = (float *)(img->base + RVA_SRC_L);
   src_r   = (float *)(img->base + RVA_SRC_R);
 
