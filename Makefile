@@ -17,7 +17,6 @@ BUILD  := build
 
 WINFLAGS := -O2 -Wall
 ALSA     := $(shell pkg-config --cflags --libs alsa 2>/dev/null || echo -lasound)
-SNDFILE  := $(shell pkg-config --libs sndfile 2>/dev/null)
 
 LINUX_BINS   := $(BUILD)/scva-native $(BUILD)/scva-daemon
 WINDOWS_BINS := $(BUILD)/scva_render.exe $(BUILD)/scva_engine.exe \
