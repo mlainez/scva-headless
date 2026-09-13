@@ -104,8 +104,8 @@ the cells they share. Validated against the tone file on 17 cells - every cell
 the file says the two maps share renders byte-identical, every cell it says
 they disagree on renders differently, in both directions.
 
-A GS reset returns every part to the default map, so the map must be re-sent
-after one.
+A GS reset returns every part to the default map, so the map has to be sent
+again before each program change rather than once at the start.
 
 Not the selector, measured against a tone the maps disagree about: the GS tone
 map parameter `40 1n 42` (no effect), `TG_initialize` 0-16 (no effect),

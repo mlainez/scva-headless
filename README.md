@@ -62,8 +62,8 @@ one another: the same program and bank is a different sound in each.
 **The default is the SC-8820 map.** If you are using this as an SC-88 proxy,
 pass `--map 88` or you are comparing against the wrong instrument.
 
-The map is Bank Select LSB (CC32), sent on all 16 parts after the reset and
-again after any GS reset in the file, because a GS reset clears it.
+The map is Bank Select LSB (CC32). A program change latches it and a GS reset
+clears it, so it is sent on the part immediately before every program change.
 
 ## Run it as a MIDI device
 
