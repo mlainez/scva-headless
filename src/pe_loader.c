@@ -16,7 +16,6 @@
    FS and leaves GS alone, so GS can be pointed at a block we build - which is
    what makes running this image without wine possible at all. Without it the
    image's own CRT start-up faults on the first gs:[..] it touches. */
-static unsigned char *g_image_base;
 static unsigned char *g_teb;
 static unsigned char *g_peb;
 
@@ -196,50 +195,12 @@ static MSABI void  ms_RtlVirtualUnwind(uint32_t a, uint64_t b, uint64_t c, void 
                                        void *e, void *f, void *g, void *h)
 { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; }
 
-/* Zeroed. Windows hands a fresh page back for anything sizeable, so an engine
-   that never clears its own delay lines still starts from silence there; glibc
-   happily returns a dirty recycled chunk and the same code starts from noise.
-   Without this the output differs run to run. */
-static MSABI void *ms_malloc(size_t n)
-{
-  /* PE_MALLOC_FILL replaces the zeroing with a byte pattern. It is a probe,
-     not an option: if some part of the engine reads memory it never wrote,
-     the output changes with the pattern, and which channel changes says where
-     the unwritten memory is being read. Zero is the default because that is
-     what Windows hands back for a fresh page. */
-  const char *fill = getenv("PE_MALLOC_FILL");
-  void *p = malloc(n ? n : 1);
-  if (!p) return NULL;
-  memset(p, fill ? (int)strtol(fill, NULL, 0) : 0, n ? n : 1);
-  if (getenv("PE_TRACE_MALLOC")) {
-    /* Every allocation arrives through one CRT wrapper, so its own return
-       address names that wrapper and nothing else. What is wanted is who
-       called it, and the image is compiled without frame pointers - so the
-       stack is scanned for words that land inside the image's code, which is
-       what a return address looks like. */
-    unsigned char **sp = (unsigned char **)&p;
-    size_t depth = 0, shown = 0;
-    fprintf(stderr, "pe: malloc(%zu) -> %p .. %p   callers:",
-            n, p, (char *)p + n);
-    for (depth = 0; depth < 256 && shown < 6; ++depth) {
-      unsigned char *v = sp[depth];
-      if (g_image_base && v > g_image_base + 0x1000 &&
-          v < g_image_base + 0x92000) {
-        fprintf(stderr, " image+0x%tx", v - g_image_base);
-        ++shown;
-      }
-    }
-    fprintf(stderr, "\n");
-  }
-  return p;
-}
+/* Zeroed: Windows hands back a fresh page where glibc recycles a dirty one. */
+static MSABI void *ms_malloc(size_t n) { return calloc(1, n ? n : 1); }
 static MSABI void  ms_free(void *p) { free(p); }
 static MSABI int   ms_callnewh(size_t n) { (void)n; return 0; }
-/* Forwarded to glibc, and the ABI boundary is the compiler's problem, not
-   ours: ms_abi makes XMM6-XMM15 callee-saved where System V treats them as
-   scratch, and GCC spills all ten - plus RDI and RSI - around the call into
-   glibc. Read the generated prologue if in doubt; the movaps pairs are there.
-   Nothing hand-written is needed. */
+/* ms_abi makes XMM6-XMM15, RDI and RSI callee-saved where System V does not;
+   GCC spills them around the call into glibc, so no thunk is needed. */
 static MSABI void *ms_memcpy(void *d, const void *s, size_t n) { return memcpy(d, s, n); }
 static MSABI void *ms_memset(void *d, int c, size_t n) { return memset(d, c, n); }
 
@@ -504,7 +465,6 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     }
   }
 
-  g_image_base = base;
   g_img.base = base; g_img.size = oh->imagesz; g_img.entry = oh->entry;
   if (oh->entry) {
     MSABI int (*dllmain)(void *, uint32_t, void *) =

@@ -27,13 +27,13 @@
 typedef int (*tg_initialize_fn)(int);
 typedef void (*tg_set_sample_rate_fn)(float);
 typedef void (*tg_set_max_block_fn)(int);
-/* rate is a float in XMM0; the second argument is the max block size */
+/* rate in XMM0; second argument is the max block size */
 typedef int (*tg_activate_fn)(float, int);
 typedef void (*tg_deactivate_fn)(void);
 typedef void (*tg_terminate_fn)(void);
-/* second argument is a timestamp in samples, not a length or a flag */
+/* second argument is a timestamp in samples */
 typedef void (*tg_short_midi_fn)(unsigned int, int);
-/* the message is F7-terminated, so this second argument is a timestamp */
+/* F7-terminated, so the second argument is a timestamp too */
 typedef void (*tg_long_midi_fn)(const unsigned char *, int);
 typedef void (*tg_process_fn)(float *, float *, int);
 typedef int (*tg_running_voices_fn)(void);
@@ -70,6 +70,8 @@ struct api {
 int main(int argc, char **argv)
 {
   const char *core = NULL, *midi = NULL, *out = NULL, *reset = "gs";
+  const char *mapname = "default";
+  int mapval = 0;
   double rate = 48000.0, tail = 3.0;
   int maxblock = 4096;
   static const unsigned char gs_reset[] = {
@@ -81,8 +83,6 @@ int main(int argc, char **argv)
   unsigned char *bytes;
   size_t n = 0, ei = 0;
   FILE *wav;
-  /* Sized to the declared maximum, which is what the engine's own rings are
-     sized to. TG_Process writes exactly the frames it is asked for. */
   float *left, *right;
   uint64_t frame = 0, at = 0;
   uint32_t total = 0, tempo = 500000;
@@ -100,11 +100,17 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--rate") && i + 1 < argc) rate = atof(argv[++i]);
     else if (!strcmp(argv[i], "--tail") && i + 1 < argc) tail = atof(argv[++i]);
     else if (!strcmp(argv[i], "--reset") && i + 1 < argc) reset = argv[++i];
+    else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
     else if (!strcmp(argv[i], "--maxblock") && i + 1 < argc) maxblock = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--flat-out")) realtime = 0;
     else { fprintf(stderr, "usage: scva_render --core DLL --midi FILE --out FILE\n"); return 2; }
   }
   if (!midi || !out) { fprintf(stderr, "need --midi and --out\n"); return 2; }
+  mapval = scva_map_value(mapname);
+  if (mapval < 0) {
+    fprintf(stderr, "--map wants default, 55, 88, 88pro or 8820\n");
+    return 2;
+  }
 
   core = scva_core_path(core);
   lib = LoadLibraryA(core);
@@ -183,6 +189,11 @@ int main(int argc, char **argv)
     printf("gs reset sent\n"); fflush(stdout); }
   else if (!strcmp(reset, "gm")) { a.long_midi(gm_reset, 0);
     printf("gm reset sent\n"); fflush(stdout); }
+  /* a program change latches CC32, so set it before the music starts */
+  { int ch; for (ch = 0; ch < 16; ++ch)
+      a.short_midi(0xb0u | (unsigned)ch | (0x20u << 8) |
+                    ((unsigned)mapval << 16), 0);
+    printf("tone map %s (CC32=%d)\n", mapname, mapval); fflush(stdout); }
 
   left = calloc((size_t)maxblock, sizeof *left);
   right = calloc((size_t)maxblock, sizeof *right);
@@ -192,10 +203,7 @@ int main(int argc, char **argv)
   if (!wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
   header(wav, (unsigned)rate, 0);
   per_tick = rate * (double)tempo / (1e6 * s.division);
-  /* TG_Process generates on demand: if its ring cannot satisfy the frames
-     asked for it synthesises more and loops until it can. There is nothing to
-     outrun, so --flat-out is correct and simply faster. Pacing to wall-clock
-     is the default only because a daemon wants it. */
+  /* TG_Process generates on demand, so --flat-out is correct and faster */
   start_ms = GetTickCount();
 
   while (ei < s.count || frame < at + (uint64_t)(tail * rate)) {
@@ -212,7 +220,16 @@ int main(int argc, char **argv)
       } else if (e->sysex_len) {
         unsigned char sx[260];
         int sn = sysex_message(e, sx, sizeof sx);
-        if (sn) { a.long_midi(sx, 0); ++sent; }
+        if (sn) {
+          a.long_midi(sx, 0);
+          ++sent;
+          if (mapval && is_gs_reset(sx, sn)) {
+            int ch;
+            for (ch = 0; ch < 16; ++ch)
+              a.short_midi(0xb0u | (unsigned)ch | (0x20u << 8) |
+                            ((unsigned)mapval << 16), 0);
+          }
+        }
       } else {
         unsigned int msg = (unsigned int)e->status |
           ((unsigned int)e->data1 << 8) | ((unsigned int)e->data2 << 16);
@@ -248,8 +265,7 @@ int main(int argc, char **argv)
   rewind(wav);
   header(wav, (unsigned)rate, total);
   fclose(wav);
-  /* before terminating: TG_terminate calls exit(), so nothing after it runs
-     and anything still buffered is lost */
+  /* TG_terminate calls exit(), so print first */
   printf("%s: %u frames at %.0f Hz, %.1f s, peak %.5f, %d messages, voices %d\n",
          out, total, rate, total / rate, peak, sent, a.voices());
   fflush(stdout);

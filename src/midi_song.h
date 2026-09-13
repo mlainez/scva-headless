@@ -87,8 +87,6 @@ static int parse_track(struct song *s, const unsigned char *p, size_t n)
       if (type == 0x2f) break;
     } else if (st == 0xf0 || st == 0xf7) {
       if (!vlq(p, n, &i, &len) || i + len > n) return 0;
-      /* A GS reset or a part-parameter write is exactly what an oracle must
-         receive, so SysEx is delivered rather than stepped over. */
       if (len && len <= 255) {
         e.sysex = p + i;
         e.sysex_len = (uint8_t)len;
@@ -136,10 +134,8 @@ static int parse(struct song *s, const unsigned char *p, size_t n)
   return s->count > 0;
 }
 
-/* A Standard MIDI File stores an F0 event without its leading F0 - the byte
-   is implied by the event type - and the engine wants the whole message. An
-   F7 event is a raw continuation and goes out exactly as it stands.
-   Returns the length written, or 0 if it does not fit. */
+/* An SMF stores an F0 event without its leading F0; the engine wants the whole
+   message. An F7 event is a raw continuation. Returns 0 if it does not fit. */
 static int sysex_message(const struct event *e, unsigned char *buf, size_t cap)
 {
   size_t n = e->sysex_len;
@@ -152,6 +148,34 @@ static int sysex_message(const struct event *e, unsigned char *buf, size_t cap)
   buf[0] = 0xf0;
   memcpy(buf + 1, e->sysex, n);
   return (int)n + 1;
+}
+
+/* Tone map = Bank Select LSB (CC32), latched by a program change.
+   0 Default (= SC-8820), 1 SC-55, 2 SC-88, 3 SC-88Pro, 4 SC-8820; >4 clamps. */
+#define SCVA_MAP_DEFAULT 0
+#define SCVA_MAP_55      1
+#define SCVA_MAP_88      2
+#define SCVA_MAP_88PRO   3
+#define SCVA_MAP_8820    4
+
+/* -1 if the name is not one of them. */
+static int scva_map_value(const char *name)
+{
+  if (!name) return -1;
+  if (!strcmp(name, "default")) return SCVA_MAP_DEFAULT;
+  if (!strcmp(name, "55") || !strcmp(name, "sc55")) return SCVA_MAP_55;
+  if (!strcmp(name, "88") || !strcmp(name, "sc88")) return SCVA_MAP_88;
+  if (!strcmp(name, "88pro") || !strcmp(name, "sc88pro")) return SCVA_MAP_88PRO;
+  if (!strcmp(name, "8820") || !strcmp(name, "sc8820")) return SCVA_MAP_8820;
+  if (name[0] >= '0' && name[0] <= '9' && !name[1]) return name[0] - '0';
+  return -1;
+}
+
+/* A GS reset puts every part back on the default map. */
+static int is_gs_reset(const unsigned char *m, int n)
+{
+  return n >= 10 && m[0] == 0xf0 && m[1] == 0x41 && m[3] == 0x42 &&
+         m[4] == 0x12 && m[5] == 0x40 && m[6] == 0x00 && m[7] == 0x7f;
 }
 
 /* ------------------------------------------------------------------ WAV */
