@@ -84,12 +84,13 @@ int main(int argc, char **argv)
   static const unsigned char gm_reset[] = { 0xf0, 0x7e, 0x7f, 0x09, 0x01, 0xf7 };
   struct pe_image *img;
   char err[256];
-  struct api a;
+  struct api a, b;
+  int have_b = 0;
   struct song s;
   unsigned char *bytes;
   size_t n = 0, ei = 0;
   FILE *wav;
-  float *left, *right;
+  float *left, *right, *left_b = NULL, *right_b = NULL;
   uint64_t frame = 0, at = 0;
   uint32_t total = 0, tempo = 500000;
   uint64_t last_tick = 0;
@@ -149,6 +150,34 @@ int main(int argc, char **argv)
   bytes = slurp(midi, &n);
   if (!bytes || !parse(&s, bytes, n)) { fprintf(stderr, "not a MIDI file this can play\n"); return 1; }
 
+  if (song_ports(&s) > 1) {
+    /* Two-port performance. The core is a fixed 16-part machine, so port B
+       needs an engine of its own; the loader maps a second copy of the image
+       with its own globals. */
+    struct pe_image *img2 = pe_load(core, err, sizeof err);
+    if (!img2) { fprintf(stderr, "pe_load(port B): %s\n", err); return 1; }
+#define GETB(field, name) \
+    b.field = (void *)pe_symbol(img2, name); \
+    if (!b.field) { fprintf(stderr, "missing %s\n", name); return 1; }
+    GETB(initialize, "TG_initialize")
+    GETB(set_sample_rate, "TG_setSampleRate")
+    GETB(set_max_block, "TG_setMaxBlockSize")
+    GETB(activate, "TG_activate")
+    GETB(deactivate, "TG_deactivate")
+    GETB(terminate, "TG_terminate")
+    GETB(short_midi, "TG_ShortMidiIn")
+    GETB(long_midi, "TG_LongMidiIn")
+    GETB(process, "TG_Process")
+    GETB(voices, "TG_XPgetCurTotalRunningVoices")
+    GETB(fatal, "TG_isFatalError")
+    GETB(set_config, "TG_XPsetSystemConfig")
+    GETB(get_config, "TG_XPgetCurSystemConfig")
+    GETB(errors, "TG_getErrorStrings")
+#undef GETB
+    have_b = 1;
+    printf("two-port song: second engine at %p\n", (void *)img2->base);
+  }
+
   printf("initialize(%d) -> %d\n", initarg, a.initialize(initarg));
   /* THE ORDER. See README: the rate is set on both sides of the block size and
      the second call is the last thing before activate. */
@@ -170,19 +199,39 @@ int main(int argc, char **argv)
     printf("activate -> %d, fatal %d\n", act, fat);
     fflush(stdout);
   }
+  if (have_b) {
+    struct tg_system_config cfg;
+    b.initialize(initarg);
+    b.set_sample_rate((float)rate);
+    b.set_max_block(maxblock);
+    cfg.a = cfga; cfg.b = cfgb;
+    b.set_config(&cfg);
+    b.set_sample_rate((float)rate);
+    b.activate((float)rate, maxblock);
+  }
   if (!strcmp(reset, "gs")) { a.long_midi(gs_reset, 0);
+    if (have_b) b.long_midi(gs_reset, 0);
     printf("gs reset sent\n"); fflush(stdout); }
   else if (!strcmp(reset, "gm")) { a.long_midi(gm_reset, 0);
+    if (have_b) b.long_midi(gm_reset, 0);
     printf("gm reset sent\n"); fflush(stdout); }
   /* a program change latches CC32, so set it before the music starts */
-  { int ch; for (ch = 0; ch < 16; ++ch)
-      a.short_midi(0xb0u | (unsigned)ch | (0x20u << 8) |
-                    ((unsigned)mapval << 16), 0);
+  { int ch; for (ch = 0; ch < 16; ++ch) {
+      unsigned int cc = 0xb0u | (unsigned)ch | (0x20u << 8) |
+                        ((unsigned)mapval << 16);
+      a.short_midi(cc, 0);
+      if (have_b) b.short_midi(cc, 0);
+    }
     printf("tone map %s (CC32=%d)\n", mapname, mapval); fflush(stdout); }
 
   left = calloc((size_t)maxblock, sizeof *left);
   right = calloc((size_t)maxblock, sizeof *right);
   if (!left || !right) { fprintf(stderr, "out of memory\n"); return 1; }
+  if (have_b) {
+    left_b = calloc((size_t)maxblock, sizeof *left_b);
+    right_b = calloc((size_t)maxblock, sizeof *right_b);
+    if (!left_b || !right_b) { fprintf(stderr, "out of memory\n"); return 1; }
+  }
 
   wav = fopen(out, "wb");
   if (!wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
@@ -204,21 +253,32 @@ int main(int argc, char **argv)
       } else if (e->sysex_len) {
         unsigned char sx[260];
         int sn = sysex_message(e, sx, sizeof sx);
-        if (sn) { a.long_midi(sx, 0); ++sent; }
+        if (sn) {
+          /* SysEx carries no channel, so it is addressed to the whole
+             machine: both halves of a two-port performance get it. */
+          a.long_midi(sx, 0);
+          if (have_b) b.long_midi(sx, 0);
+          ++sent;
+        }
       } else {
+        struct api *E = (have_b && e->port) ? &b : &a;
         unsigned int msg = (unsigned int)e->status |
           ((unsigned int)e->data1 << 8) | ((unsigned int)e->data2 << 16);
         /* a program change latches the map, so set CC32 on that part first */
         if (mapval && (e->status & 0xf0) == 0xc0)
-          a.short_midi(0xb0u | (unsigned)(e->status & 0x0f) |
-                       (0x20u << 8) | ((unsigned)mapval << 16), 0);
-        a.short_midi(msg, 0);
+          E->short_midi(0xb0u | (unsigned)(e->status & 0x0f) |
+                        (0x20u << 8) | ((unsigned)mapval << 16), 0);
+        E->short_midi(msg, 0);
         ++sent;
       }
       ++ei;
     }
     memset(left, 0, (size_t)maxblock * sizeof *left);
     memset(right, 0, (size_t)maxblock * sizeof *right);
+    if (have_b) {
+      memset(left_b, 0, (size_t)maxblock * sizeof *left_b);
+      memset(right_b, 0, (size_t)maxblock * sizeof *right_b);
+    }
     /* TG_Process generates on demand, so --flat-out is correct and faster */
     if (realtime) {
       double audio_ms = 1000.0 * (double)frame / rate;
@@ -229,6 +289,13 @@ int main(int argc, char **argv)
       }
     }
     a.process(left, right, BLOCK);
+    if (have_b) {
+      b.process(left_b, right_b, BLOCK);
+      for (k = 0; k < BLOCK; ++k) {
+        left[k] += left_b[k];
+        right[k] += right_b[k];
+      }
+    }
     for (k = 0; k < BLOCK; ++k) {
       float l = left[k] < 0 ? -left[k] : left[k];
       float r = right[k] < 0 ? -right[k] : right[k];
@@ -249,6 +316,7 @@ int main(int argc, char **argv)
   printf("%s: %u frames at %.0f Hz, %.1f s, peak %.5f, %d messages, voices %d\n",
          out, total, rate, total / rate, peak, sent, a.voices());
   fflush(stdout);
+  if (have_b) b.deactivate();
   a.deactivate();
   a.terminate();
   return 0;

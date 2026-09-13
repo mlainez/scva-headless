@@ -17,6 +17,7 @@ struct event {
   uint32_t order;
   uint32_t tempo;                       /* nonzero for a tempo change */
   uint8_t status, data1, data2;
+  uint8_t port;                         /* 0 = port A, 1 = port B */
   uint8_t sysex_len;
   const unsigned char *sysex;
 };
@@ -58,11 +59,28 @@ static uint32_t be32(const unsigned char *p)
   return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
 
+/* Roland's 32-part demo files state the port only in the track NAME, as
+   "PartA nch." / "PartB nch.", and carry no FF 21. The name can arrive after
+   events have been pushed, so the port is applied to the whole track at the
+   end rather than as events are read. */
+static int track_name_port(const unsigned char *p, uint32_t len)
+{
+  uint32_t i;
+  for (i = 0; i + 4 < len + 1 && i + 4 <= len; ++i)
+    if ((p[i] == 'P' || p[i] == 'p') && (p[i+1] == 'a' || p[i+1] == 'A') &&
+        (p[i+2] == 'r' || p[i+2] == 'R') && (p[i+3] == 't' || p[i+3] == 'T') &&
+        i + 4 < len && (p[i+4] == 'B' || p[i+4] == 'b'))
+      return 1;
+  return 0;
+}
+
 static int parse_track(struct song *s, const unsigned char *p, size_t n)
 {
   uint64_t tick = 0;
   unsigned char running = 0;
   size_t i = 0;
+  size_t first = s->count;
+  int port = 0;
   while (i < n) {
     struct event e;
     uint32_t delta, len;
@@ -83,6 +101,10 @@ static int parse_track(struct song *s, const unsigned char *p, size_t n)
       if (type == 0x51 && len == 3) {
         e.tempo = (uint32_t)p[i] << 16 | (uint32_t)p[i + 1] << 8 | p[i + 2];
         push(s, &e);
+      } else if (type == 0x03 && track_name_port(p + i, len)) {
+        port = 1;
+      } else if (type == 0x21 && len == 1 && p[i]) {
+        port = p[i] ? 1 : 0;     /* FF 21, when a file bothers to carry it */
       }
       i += len;
       if (type == 0x2f) break;
@@ -103,6 +125,17 @@ static int parse_track(struct song *s, const unsigned char *p, size_t n)
       push(s, &e);
     }
   }
+  if (port)
+    for (i = first; i < s->count; ++i) s->ev[i].port = (uint8_t)port;
+  return 1;
+}
+
+/* How many ports the song actually uses. */
+static int song_ports(const struct song *s)
+{
+  size_t i;
+  for (i = 0; i < s->count; ++i)
+    if (s->ev[i].port) return 2;
   return 1;
 }
 

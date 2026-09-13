@@ -139,6 +139,27 @@ map parameter `40 1n 42` (no effect), `TG_initialize` 0-16 (no effect),
 `TG_XPsetSystemConfig` (field 1 is an enable, field 0 silences the engine),
 Bank Select MSB (the variation axis within a map).
 
+## 16 parts, and what to do about 32
+
+The core is a fixed 16-part machine. Sweeping GS `Rx. Channel` (`40 <block> 02`)
+across every block and playing one note finds parts at `0x10`-`0x1F` and
+nothing above, and `SYSTEM MODE SET` Mode 1 and Mode 2 render byte-identical,
+so the mode byte is accepted and ignored. There is no port field in
+`TG_ShortMidiIn` and no second half to address.
+
+Roland's 32-part demo SMFs state the port only in the track NAME, `PartA nch.`
+/ `PartB nch.`, and carry no `FF 21`. Both halves target the same channels at
+the same ticks with different programs, so collapsing them onto 16 parts plays
+the wrong instrument on every colliding channel.
+
+The way to 32 parts is therefore two engines, one per port, summed - which is
+what the two virtual MIDI sections of the hardware are. The loader maps a
+second copy of the image with its own globals; a relocated instance renders
+identically to one at the preferred base, so the two are interchangeable. On
+Windows the same thing needs a copy of the file under another name, because
+`LoadLibrary` refcounts by path and hands back the first module otherwise -
+the same reason Roland ships 32 byte-different cores in the Mac build.
+
 ## How audio comes out
 
 - Internally **32 kHz**. The resampler consumes 32 input samples and emits 48

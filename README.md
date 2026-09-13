@@ -78,6 +78,14 @@ pass `--map 88` or you are comparing against the wrong instrument.
 The map is Bank Select LSB (CC32). A program change latches it and a GS reset
 clears it, so it is sent on the part immediately before every program change.
 
+## Two-port songs
+
+Roland's demo SMFs are 32-part, two-port performances that name their port in
+the track name (`PartA` / `PartB`). The renderers detect that and drive a
+second engine for port B, because the core itself has only 16 parts. Nothing
+needs to be passed: single-port files are unaffected and render exactly as
+before.
+
 ## Run it as a MIDI device
 
     make linux windows

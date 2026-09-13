@@ -317,8 +317,13 @@ static void *bind(const char *name)
 }
 
 /* ---------- the loader -------------------------------------------------- */
-static struct pe_image g_img;
-static unsigned char *g_file;
+/* The TLS pointer array at gs:[0x58] belongs to the thread, not to an image,
+   so it is allocated once and every image gets its own index - which is what
+   TlsAlloc does on Windows. Without it a second image overwrites the first
+   image's block and the two share thread-local state. */
+static void **g_tls_slots;
+static uint32_t g_tls_next;
+#define PE_TLS_SLOTS 64
 
 void *pe_symbol(struct pe_image *img, const char *name)
 {
@@ -345,6 +350,9 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
 #define FAIL(...) do { snprintf(err, errlen, __VA_ARGS__); return NULL; } while (0)
   int fd = open(path, O_RDONLY);
   off_t fsz;
+  unsigned char *g_file;
+  struct pe_image *img = calloc(1, sizeof *img);
+  if (!img) FAIL("out of memory");
   if (fd < 0) FAIL("cannot open %s", path);
   fsz = lseek(fd, 0, SEEK_END); lseek(fd, 0, SEEK_SET);
   g_file = mmap(NULL, (size_t)fsz, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -446,15 +454,21 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     size_t raw = (size_t)(tls->end - tls->start);
     size_t total = raw + tls->zerofill;
     unsigned char *blockmem = calloc(1, total ? total : 1);
-    void **slots = calloc(64, sizeof *slots);
-    if (!blockmem || !slots) FAIL("out of memory for TLS");
+    uint32_t idx;
+    if (!blockmem) FAIL("out of memory for TLS");
+    if (!g_tls_slots) {
+      g_tls_slots = calloc(PE_TLS_SLOTS, sizeof *g_tls_slots);
+      if (!g_tls_slots) FAIL("out of memory for TLS");
+      *(void **)(g_teb + 0x58) = g_tls_slots;
+    }
+    if (g_tls_next >= PE_TLS_SLOTS) FAIL("out of TLS slots");
+    idx = g_tls_next++;
     if (raw) memcpy(blockmem, (void *)(uintptr_t)tls->start, raw);
-    slots[0] = blockmem;
-    if (tls->index_addr) *(uint32_t *)(uintptr_t)tls->index_addr = 0;
-    *(void **)(g_teb + 0x58) = slots;
+    g_tls_slots[idx] = blockmem;
+    if (tls->index_addr) *(uint32_t *)(uintptr_t)tls->index_addr = idx;
     if (getenv("PE_TRACE"))
-      fprintf(stderr, "pe: TLS block %zu bytes (%zu raw + %u zero)\n",
-              total, raw, tls->zerofill);
+      fprintf(stderr, "pe: TLS slot %u, block %zu bytes (%zu raw + %u zero)\n",
+              idx, total, raw, tls->zerofill);
     if (tls->callbacks) {
       uint64_t *cb = (uint64_t *)(uintptr_t)tls->callbacks;
       while (*cb) {
@@ -465,7 +479,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     }
   }
 
-  g_img.base = base; g_img.size = oh->imagesz; g_img.entry = oh->entry;
+  img->base = base; img->size = oh->imagesz; img->entry = oh->entry;
   if (oh->entry) {
     MSABI int (*dllmain)(void *, uint32_t, void *) =
       (void *)(base + oh->entry);
@@ -473,7 +487,8 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     if (!dllmain(base, 1 /* DLL_PROCESS_ATTACH */, NULL))
       FAIL("DllMain returned FALSE");
   }
-  return &g_img;
+  munmap(g_file, (size_t)fsz);
+  return img;
 #undef FAIL
 }
 
