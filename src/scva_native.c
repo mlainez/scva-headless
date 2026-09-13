@@ -204,19 +204,14 @@ int main(int argc, char **argv)
       } else if (e->sysex_len) {
         unsigned char sx[260];
         int sn = sysex_message(e, sx, sizeof sx);
-        if (sn) {
-          a.long_midi(sx, 0);
-          ++sent;
-          if (mapval && is_gs_reset(sx, sn)) {
-            int ch;
-            for (ch = 0; ch < 16; ++ch)
-              a.short_midi(0xb0u | (unsigned)ch | (0x20u << 8) |
-                            ((unsigned)mapval << 16), 0);
-          }
-        }
+        if (sn) { a.long_midi(sx, 0); ++sent; }
       } else {
         unsigned int msg = (unsigned int)e->status |
           ((unsigned int)e->data1 << 8) | ((unsigned int)e->data2 << 16);
+        /* a program change latches the map, so set CC32 on that part first */
+        if (mapval && (e->status & 0xf0) == 0xc0)
+          a.short_midi(0xb0u | (unsigned)(e->status & 0x0f) |
+                       (0x20u << 8) | ((unsigned)mapval << 16), 0);
         a.short_midi(msg, 0);
         ++sent;
       }

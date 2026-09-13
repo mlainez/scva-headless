@@ -171,13 +171,6 @@ static int scva_map_value(const char *name)
   return -1;
 }
 
-/* A GS reset puts every part back on the default map. */
-static int is_gs_reset(const unsigned char *m, int n)
-{
-  return n >= 10 && m[0] == 0xf0 && m[1] == 0x41 && m[3] == 0x42 &&
-         m[4] == 0x12 && m[5] == 0x40 && m[6] == 0x00 && m[7] == 0x7f;
-}
-
 /* ------------------------------------------------------------------ WAV */
 
 static void put32(FILE *f, uint32_t v) { fwrite(&v, 4, 1, f); }
