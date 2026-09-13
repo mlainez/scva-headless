@@ -35,8 +35,9 @@ LINUX_BINS   := $(BUILD)/scva-native $(BUILD)/scva-daemon
 LINUX32_BINS := $(BUILD)/scva-native32
 LV2_BUNDLE   := $(BUILD)/scva.lv2
 LV2_BUNDLE32 := $(BUILD)/scva32.lv2
-WINDOWS_BINS := $(BUILD)/scva_render.exe $(BUILD)/scva-vst.dll
-WIN32_BINS   := $(BUILD)/scva_render32.exe
+WINDOWS_BINS := $(BUILD)/scva_render.exe $(BUILD)/scva-vst.dll \
+                $(BUILD)/scva-winmidi.exe
+WIN32_BINS   := $(BUILD)/scva_render32.exe $(BUILD)/scva-winmidi32.exe
 
 all: linux windows
 linux: $(LINUX_BINS)
@@ -112,6 +113,14 @@ $(BUILD)/scva-daemon32: src/scva_daemon.c src/pe_loader.c src/pe_loader.h \
 
 $(BUILD)/scva_render.exe: src/scva_render.c src/midi_song.h src/core_path.h | $(BUILD)
 	$(MINGW) $(WINFLAGS) -o $@ $<
+
+$(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/core_path.h src/scva_map.h \
+                           | $(BUILD)
+	$(MINGW) $(WINFLAGS) -o $@ src/scva_winmidi.c -lwinmm
+
+$(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/core_path.h src/scva_map.h \
+                             | $(BUILD)
+	$(MINGW32) $(WINFLAGS) -o $@ src/scva_winmidi.c -lwinmm
 
 $(BUILD)/scva-vst.dll: src/scva_vst_shim.c | $(BUILD)
 	$(MINGW) -O2 -shared -o $@ $< -Wl,--export-all-symbols

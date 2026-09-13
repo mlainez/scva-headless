@@ -163,6 +163,57 @@ pass `--map 88` or you are comparing against the wrong instrument.
 The map is Bank Select LSB (CC32). A program change latches it and a GS reset
 clears it, so it is sent on the part immediately before every program change.
 
+## As a MIDI device on Windows
+
+    make windows
+    build\scva-winmidi.exe --list
+    build\scva-winmidi.exe --midi-in "loopMIDI Port"
+
+Windows has no way for a program to put itself in the MIDI device list. That
+list comes from drivers, which is why the one soft-synth that appears in it
+ships a kernel driver. So this opens a port that already exists instead:
+
+| sending from | needs |
+|---|---|
+| a USB or MIDI-interface keyboard | nothing - it is already an input, pick it with `--midi-in` |
+| a game, DOSBox, a media player | a virtual cable such as loopMIDI |
+| Reaper, Bitwig, Studio One | nothing - use the CLAP plugin instead |
+
+With a virtual cable the game selects the cable's port, not this program:
+
+    game or DOSBox  ->  "loopMIDI Port"  ->  scva-winmidi  ->  speakers
+
+### DOSBox
+
+In `dosbox.conf`, send MIDI to the cable:
+
+    [midi]
+    mididevice = win32
+    midiconfig = 1          ; the device number of loopMIDI Port
+
+DOSBox-X and DOSBox Staging also accept the name: `midiconfig = loopMIDI Port`.
+Then choose **General MIDI** or **Sound Canvas** in the game's own setup
+program, not MT-32 - the SC-88 maps are GM and GS, and an MT-32 score sent to
+them plays the wrong instruments.
+
+    --list             the MIDI inputs this machine has
+    --midi-in          index, or any part of the name
+    --map WHICH        tone map, as above          (default: default)
+    --rate HZ          sample rate                 (default 48000)
+    --block N          frames per block            (default 256)
+    --latency MS       buffered ahead              (default 40)
+    --core DLL         path to SCCore.dll
+
+Audio goes out through waveOut in 16-bit stereo, which every Windows device
+accepts. Latency matters less here than on a keyboard, since a game is playing
+a score rather than responding to fingers.
+
+**Only partly tested.** It builds, enumerates devices, opens audio and renders,
+all verified under wine. The MIDI input path could not be checked here: wine
+reports success from `midiInOpen` and `midiInStart` and then delivers nothing,
+which a forty-line receiver using no part of this project reproduces. That path
+has therefore only been read, not run.
+
 ## As an LV2 plugin
 
     make lv2      # x86-64 bundle, for a 64-bit SCCore.dll
@@ -232,7 +283,7 @@ Windows and x86_64 Mac, and nothing else. So:
 |---|---|
 | Linux x86-64 | LV2, CLAP, renderer, daemon |
 | Linux i386 | LV2, renderer (32-bit core) |
-| Windows x86-64 / x86 | CLAP, renderer |
+| Windows x86-64 / x86 | CLAP, renderer, MIDI device via a virtual cable |
 | ARM, any width | only by emulating x86 - box86 or box64 |
 | macOS | would need a Mach-O loader; not built here |
 

@@ -1,0 +1,336 @@
+/* SPDX-License-Identifier: CC0-1.0
+ *
+ * A standalone Windows synth: opens a MIDI input port and plays it through
+ * SOUND Canvas VA. This is what a game talks to.
+ *
+ * Windows has no way for a program to add itself to the MIDI device list -
+ * that list comes from drivers, which is why the one soft-synth that appears
+ * in it ships a kernel driver. So this opens an input port that already
+ * exists:
+ *
+ *   a USB or MIDI-interface keyboard   works with nothing else installed
+ *   a game or DOSBox                   needs a virtual cable such as loopMIDI,
+ *                                      whose port both sides then select
+ *
+ *   scva-winmidi --list
+ *   scva-winmidi --midi-in "loopMIDI Port"
+ *
+ * Audio goes out through waveOut in 16-bit stereo, which every Windows audio
+ * device accepts. Latency is the buffer count times the block, so it is set
+ * by --latency rather than fixed.
+ */
+#define _WIN32_WINNT 0x0601
+#include <windows.h>
+#include <mmsystem.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "scva_map.h"
+#include "core_path.h"
+
+#define SCVA_CC __cdecl
+typedef SCVA_CC int  (*tg_initialize_fn)(int);
+typedef SCVA_CC void (*tg_set_sample_rate_fn)(float);
+typedef SCVA_CC void (*tg_set_max_block_fn)(int);
+typedef SCVA_CC int  (*tg_activate_fn)(float, int);
+typedef SCVA_CC void (*tg_deactivate_fn)(void);
+typedef SCVA_CC void (*tg_short_midi_fn)(unsigned int, int);
+typedef SCVA_CC void (*tg_long_midi_fn)(const unsigned char *, int);
+typedef SCVA_CC void (*tg_process_fn)(float *, float *, int);
+struct tg_system_config { int a, b; };
+typedef SCVA_CC int (*tg_set_config_fn)(const struct tg_system_config *);
+
+static tg_set_sample_rate_fn set_rate;
+static tg_activate_fn tg_activate;
+static tg_deactivate_fn tg_deactivate;
+static tg_short_midi_fn short_midi;
+static tg_long_midi_fn long_midi;
+static tg_process_fn process_fn;
+
+/* The MIDI callback runs on its own thread, so messages are queued rather
+   than pushed into the engine from under it. */
+#define QCAP     2048
+#define QMSGMAX  256
+struct qmsg {
+  int len;                          /* 1..3 short, or a whole sysex */
+  unsigned char b[QMSGMAX];
+};
+static struct qmsg q[QCAP];
+static volatile LONG q_head, q_tail;   /* head written by MIDI, tail by audio */
+static CRITICAL_SECTION q_lock;
+static long q_dropped;
+
+static void queue_put(const unsigned char *b, int len)
+{
+  if (len < 1 || len > QMSGMAX) return;
+  EnterCriticalSection(&q_lock);
+  if ((q_head + 1) % QCAP == q_tail) {
+    ++q_dropped;                    /* full: better to lose one than block */
+  } else {
+    memcpy(q[q_head].b, b, (size_t)len);
+    q[q_head].len = len;
+    q_head = (q_head + 1) % QCAP;
+  }
+  LeaveCriticalSection(&q_lock);
+}
+
+static int queue_get(struct qmsg *out)
+{
+  int got = 0;
+  EnterCriticalSection(&q_lock);
+  if (q_tail != q_head) {
+    *out = q[q_tail];
+    q_tail = (q_tail + 1) % QCAP;
+    got = 1;
+  }
+  LeaveCriticalSection(&q_lock);
+  return got;
+}
+
+static void CALLBACK midi_cb(HMIDIIN h, UINT msg, DWORD_PTR inst,
+                             DWORD_PTR p1, DWORD_PTR p2)
+{
+  (void)h; (void)inst; (void)p2;
+  if (msg == MIM_DATA) {
+    unsigned char b[3];
+    unsigned int m = (unsigned int)p1;
+    b[0] = (unsigned char)(m & 0xff);
+    b[1] = (unsigned char)((m >> 8) & 0xff);
+    b[2] = (unsigned char)((m >> 16) & 0xff);
+    queue_put(b, 3);
+  } else if (msg == MIM_LONGDATA) {
+    MIDIHDR *hdr = (MIDIHDR *)p1;
+    if (hdr && hdr->dwBytesRecorded > 0)
+      queue_put((const unsigned char *)hdr->lpData, (int)hdr->dwBytesRecorded);
+  }
+}
+
+static void list_inputs(void)
+{
+  UINT n = midiInGetNumDevs(), i;
+  if (!n) {
+    printf("no MIDI input devices.\n"
+           "  a keyboard shows up on its own; for a game, install a virtual\n"
+           "  cable such as loopMIDI and its port appears here\n");
+    return;
+  }
+  printf("MIDI input devices:\n");
+  for (i = 0; i < n; ++i) {
+    MIDIINCAPSA c;
+    if (midiInGetDevCapsA(i, &c, sizeof c) == MMSYSERR_NOERROR)
+      printf("  %u  %s\n", i, c.szPname);
+  }
+}
+
+/* Accepts an index, or any part of a device's name. */
+static int find_input(const char *want)
+{
+  UINT n = midiInGetNumDevs(), i;
+  char *endp;
+  long idx;
+
+  if (!want || !*want) return n ? 0 : -1;
+  idx = strtol(want, &endp, 10);
+  if (*endp == '\0' && idx >= 0 && (UINT)idx < n) return (int)idx;
+  for (i = 0; i < n; ++i) {
+    MIDIINCAPSA c;
+    if (midiInGetDevCapsA(i, &c, sizeof c) == MMSYSERR_NOERROR &&
+        strstr(c.szPname, want))
+      return (int)i;
+  }
+  return -1;
+}
+
+int main(int argc, char **argv)
+{
+  const char *core = NULL, *want_in = NULL, *mapname = "default";
+  unsigned int rate = 48000;
+  int block = 256, latency_ms = 40, mapval = 0, i;
+  unsigned char map_of[16];
+  HMODULE lib;
+  HMIDIIN hin = NULL;
+  HWAVEOUT hout = NULL;
+  HANDLE ev;
+  WAVEFORMATEX wf;
+  MIDIHDR syshdr;
+  static unsigned char sysbuf[1024];
+  WAVEHDR *hdr;
+  short **pcm;
+  float *left, *right;
+  int nbuf, b, dev;
+
+  for (i = 1; i < argc; ++i) {
+    if (!strcmp(argv[i], "--core") && i + 1 < argc) core = argv[++i];
+    else if (!strcmp(argv[i], "--midi-in") && i + 1 < argc) want_in = argv[++i];
+    else if (!strcmp(argv[i], "--rate") && i + 1 < argc) rate = (unsigned)atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--block") && i + 1 < argc) block = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--latency") && i + 1 < argc) latency_ms = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
+    else if (!strcmp(argv[i], "--list")) { list_inputs(); return 0; }
+    else {
+      fprintf(stderr,
+        "usage: scva-winmidi [--midi-in NAME|INDEX] [--core DLL]\n"
+        "                    [--rate HZ] [--block N] [--latency MS]\n"
+        "                    [--map " SCVA_MAP_USAGE "]\n"
+        "\n"
+        "  --list             the MIDI inputs this machine has\n"
+        "  --midi-in          index, or any part of the name\n");
+      return (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) ? 0 : 2;
+    }
+  }
+  mapval = scva_map_value(mapname);
+  if (mapval < 0) {
+    fprintf(stderr, "scva-winmidi: --map wants " SCVA_MAP_USAGE "\n");
+    return 2;
+  }
+  for (i = 0; i < 16; ++i) map_of[i] = (unsigned char)mapval;
+  if (block < SCVA_MIN_BLOCK) {
+    if (block > 0)
+      fprintf(stderr, "scva-winmidi: --block %d is below the engine's "
+                      "minimum, using %d\n", block, SCVA_MIN_BLOCK);
+    block = SCVA_MIN_BLOCK;
+  }
+  nbuf = (int)((double)latency_ms * rate / 1000.0 / block);
+  if (nbuf < 2) nbuf = 2;
+  if (nbuf > 32) nbuf = 32;
+
+  /* ---- the engine ---- */
+  {
+    const char *path = scva_core_path(core);
+    lib = LoadLibraryA(path);
+    if (!lib) {
+      fprintf(stderr, "scva-winmidi: cannot load %s\n"
+                      "  pass --core or set SCVA_DLL_DIR\n", path);
+      return 1;
+    }
+  }
+#define GET(v, t, n) v = (t)(void *)GetProcAddress(lib, n); \
+  if (!v) { fprintf(stderr, "scva-winmidi: the core has no %s\n", n); return 1; }
+  {
+    tg_initialize_fn initialize;
+    tg_set_max_block_fn set_block;
+    tg_set_config_fn set_config;
+    GET(initialize, tg_initialize_fn, "TG_initialize")
+    GET(set_block, tg_set_max_block_fn, "TG_setMaxBlockSize")
+    GET(set_config, tg_set_config_fn, "TG_XPsetSystemConfig")
+    GET(set_rate, tg_set_sample_rate_fn, "TG_setSampleRate")
+    GET(tg_activate, tg_activate_fn, "TG_activate")
+    GET(tg_deactivate, tg_deactivate_fn, "TG_deactivate")
+    GET(short_midi, tg_short_midi_fn, "TG_ShortMidiIn")
+    GET(long_midi, tg_long_midi_fn, "TG_LongMidiIn")
+    GET(process_fn, tg_process_fn, "TG_Process")
+    /* The rate is set on both sides of the block size and again immediately
+       before activate; otherwise the core emits Inf and NaN silently. */
+    initialize(0);
+    set_rate((float)rate);
+    set_block(block);
+    { struct tg_system_config c; c.a = 1; c.b = 1; set_config(&c); }
+    set_rate((float)rate);
+    tg_activate((float)rate, block);
+  }
+#undef GET
+  {
+    static const unsigned char gs_reset[] = {
+      0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
+    long_midi(gs_reset, 0);
+  }
+
+  /* ---- MIDI in ---- */
+  InitializeCriticalSection(&q_lock);
+  dev = find_input(want_in);
+  if (dev < 0) {
+    fprintf(stderr, "scva-winmidi: no MIDI input matching '%s'\n",
+            want_in ? want_in : "(any)");
+    list_inputs();
+    return 1;
+  }
+  if (midiInOpen(&hin, (UINT)dev, (DWORD_PTR)midi_cb, 0,
+                 CALLBACK_FUNCTION) != MMSYSERR_NOERROR) {
+    fprintf(stderr, "scva-winmidi: cannot open MIDI input %d\n", dev);
+    return 1;
+  }
+  memset(&syshdr, 0, sizeof syshdr);
+  syshdr.lpData = (LPSTR)sysbuf;
+  syshdr.dwBufferLength = sizeof sysbuf;
+  midiInPrepareHeader(hin, &syshdr, sizeof syshdr);
+  midiInAddBuffer(hin, &syshdr, sizeof syshdr);
+  midiInStart(hin);
+  {
+    MIDIINCAPSA c;
+    if (midiInGetDevCapsA((UINT)dev, &c, sizeof c) == MMSYSERR_NOERROR)
+      printf("scva-winmidi: listening on %d  %s\n", dev, c.szPname);
+  }
+
+  /* ---- audio out ---- */
+  ev = CreateEventA(NULL, FALSE, FALSE, NULL);
+  memset(&wf, 0, sizeof wf);
+  wf.wFormatTag = WAVE_FORMAT_PCM;
+  wf.nChannels = 2;
+  wf.nSamplesPerSec = rate;
+  wf.wBitsPerSample = 16;
+  wf.nBlockAlign = (WORD)(wf.nChannels * wf.wBitsPerSample / 8);
+  wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
+  if (waveOutOpen(&hout, WAVE_MAPPER, &wf, (DWORD_PTR)ev, 0,
+                  CALLBACK_EVENT) != MMSYSERR_NOERROR) {
+    fprintf(stderr, "scva-winmidi: cannot open an audio device at %u Hz\n",
+            rate);
+    return 1;
+  }
+  printf("scva-winmidi: audio %u Hz, %d x %d frames (%.0f ms), map %s\n",
+         rate, nbuf, block, 1000.0 * nbuf * block / rate, mapname);
+
+  hdr = calloc((size_t)nbuf, sizeof *hdr);
+  pcm = calloc((size_t)nbuf, sizeof *pcm);
+  left = malloc((size_t)block * sizeof *left);
+  right = malloc((size_t)block * sizeof *right);
+  if (!hdr || !pcm || !left || !right) return 1;
+  for (b = 0; b < nbuf; ++b) {
+    pcm[b] = calloc((size_t)block * 2, sizeof **pcm);
+    hdr[b].lpData = (LPSTR)pcm[b];
+    hdr[b].dwBufferLength = (DWORD)(block * 2 * sizeof **pcm);
+    waveOutPrepareHeader(hout, &hdr[b], sizeof hdr[b]);
+    hdr[b].dwFlags |= WHDR_DONE;          /* all free to begin with */
+  }
+
+  printf("scva-winmidi: playing, Ctrl+C to stop\n");
+  for (;;) {
+    int did = 0;
+    for (b = 0; b < nbuf; ++b) {
+      struct qmsg m;
+      int k;
+      if (!(hdr[b].dwFlags & WHDR_DONE)) continue;
+
+      /* whatever arrived since the last block goes in before it is rendered */
+      while (queue_get(&m)) {
+        if (m.b[0] == 0xf0) {
+          long_midi(m.b, 0);
+        } else {
+          unsigned char st = m.b[0] & 0xf0, ch = m.b[0] & 0x0f;
+          unsigned int msg;
+          if (st == 0xb0 && m.len >= 3 && m.b[1] == 0x20)
+            map_of[ch] = m.b[2];
+          else if (st == 0xc0)
+            short_midi(scva_map_cc(ch, map_of[ch]), 0);
+          msg = m.b[0];
+          if (m.len > 1) msg |= (unsigned int)m.b[1] << 8;
+          if (m.len > 2) msg |= (unsigned int)m.b[2] << 16;
+          short_midi(msg, 0);
+        }
+      }
+      process_fn(left, right, block);
+      for (k = 0; k < block; ++k) {
+        float l = left[k], r = right[k];
+        if (l > 1.0f) l = 1.0f; else if (l < -1.0f) l = -1.0f;
+        if (r > 1.0f) r = 1.0f; else if (r < -1.0f) r = -1.0f;
+        pcm[b][2 * k]     = (short)(l * 32767.0f);
+        pcm[b][2 * k + 1] = (short)(r * 32767.0f);
+      }
+      hdr[b].dwFlags &= ~WHDR_DONE;
+      waveOutWrite(hout, &hdr[b], sizeof hdr[b]);
+      did = 1;
+    }
+    if (!did) WaitForSingleObject(ev, 100);
+  }
+  /* Reached only if the loop above is given an exit; the engine is left to
+     the process teardown because TG_terminate calls exit(). */
+}
