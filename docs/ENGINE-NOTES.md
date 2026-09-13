@@ -193,6 +193,38 @@ time are the three condition-variable functions.
 A 5,840,640-frame render is identical byte for byte between `scva-native` and
 `wine scva_render.exe`, and identical run to run on both.
 
+## Hosting the 32-bit core
+
+A 64-bit process cannot host a 32-bit DLL, so the 32-bit core needs its own
+build. The engine is the same - the same MIDI renders to within 109 dB, which
+is float rounding - and the exported functions are cdecl on x86-32, so the
+signatures carry over unchanged.
+
+| | x86-64 | x86-32 |
+|---|---|---|
+| optional header | PE32+ | PE32 |
+| relocation | type 10, DIR64 | type 3, HIGHLOW |
+| thunks | 64-bit, ordinal bit 63 | 32-bit, ordinal bit 31 |
+| thread block | GS via `arch_prctl` | FS via `set_thread_area` |
+| imports needed | 50 | 40, a different set |
+
+Linux leaves the right register free on both: x86-64 keeps its TLS in FS while
+Windows uses GS, and i386 keeps its TLS in GS while Windows uses FS.
+
+The conventions are what bite. On x86-64 there is one and `ms_abi` covers
+everything; on x86-32 the Win32 API is stdcall, the CRT is cdecl, and getting
+one wrong moves the stack pointer by the argument bytes on every call.
+**`DllMain` and the TLS callbacks are WINAPI, so stdcall** - calling them as
+cdecl clears the arguments twice and smashes the caller's frame, which looks
+like the image initialising perfectly and then dying on return.
+`?_type_info_dtor_internal_method` is `__thiscall` taking no arguments, which
+is ABI-compatible with a no-argument stdcall.
+
+The 32-bit core needs no condition variables and no critical sections, but it
+does want `__libm_sse2_pow`, `EncodePointer`/`DecodePointer`, the `_lock` and
+`_onexit` CRT internals, and `operator new`/`operator delete` by their mangled
+names.
+
 ## The VST route is shut
 
 `Wrapper.dll` exports its VST entry as `R2RPluginMain`, so no host opens it

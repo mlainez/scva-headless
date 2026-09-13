@@ -40,6 +40,7 @@ The core is looked for as `--core`, then `$SCVA_DLL_DIR/SCCore.dll`, then
 ## Build
 
     make linux      # native, no wine
+    make linux32    # 32-bit native, for a 32-bit SCCore.dll
     make windows    # 64-bit Windows PE binaries
     make windows32  # 32-bit Windows PE binaries, for a 32-bit SCCore.dll
     make            # linux and windows
@@ -53,6 +54,11 @@ needs the i686 mingw toolchain and is not part of `make`, because a 64-bit
 process cannot host a 32-bit DLL: pick the build that matches your core. The
 32-bit core is the same engine - the same MIDI renders to within 109 dB of the
 64-bit core, which is float rounding, not a musical difference.
+
+`make linux32` builds `scva-native32`, the same renderer hosting a 32-bit core
+with no wine. It needs `libc6-dev-i386`. That is the build to run under box86
+on 32-bit ARM; whether such a machine keeps up is a separate question, and on a
+Pi 2 it probably does not.
 
 ## Render a MIDI file
 
