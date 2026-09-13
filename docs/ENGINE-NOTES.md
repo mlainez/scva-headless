@@ -1,5 +1,10 @@
 # Driving SOUND Canvas VA's core
 
+> **Written by an AI and not independently verified.** Everything below was
+> produced by Claude from disassembly and differential rendering. Both can be
+> wrong, and a plausible reading of a binary is not a correct one. See the
+> notice in the README before relying on any of it.
+
 These fail silently: the engine reports no error and emits plausible audio.
 
 ## Signatures
