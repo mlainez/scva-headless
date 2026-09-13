@@ -113,6 +113,22 @@ by ear, instrument for instrument, while `--map 55` is audibly a different
 instrument. The residual is level and alignment, not tone selection: our render
 is about 3x louder in RMS and lands 0.46 s off.
 
+## Where the engine is not a reference
+
+It is an SC-8820 playing a compatibility map, so agreement with SC-88 hardware
+is material-dependent. Measured against hardware single-note recordings: good
+on mixes, worse per instrument, and wrong by an octave in at least one place.
+
+Percussive Organ (program 17) plays an octave below the note, on every map.
+Hardware reads the note, and on both sides the harmonic product spectrum and
+the loudest partial agree, so neither reading is a registration artefact.
+
+Do not use it as a per-instrument reference for organs. The drawbar family in
+particular cannot be judged by pitch detection at all - a 16' register puts the
+strongest periodicity an octave down on hardware too - and the sub-octave
+content differs by map, so Organ 1 moves an octave between the 88 map and the
+other four.
+
 Not the selector, measured against a tone the maps disagree about: the GS tone
 map parameter `40 1n 42` (no effect), `TG_initialize` 0-16 (no effect),
 `TG_XPsetSystemConfig` (field 1 is an enable, field 0 silences the engine),
