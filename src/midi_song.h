@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "scva_map.h"
 
 struct event {
   uint64_t tick;
@@ -148,27 +149,6 @@ static int sysex_message(const struct event *e, unsigned char *buf, size_t cap)
   buf[0] = 0xf0;
   memcpy(buf + 1, e->sysex, n);
   return (int)n + 1;
-}
-
-/* Tone map = Bank Select LSB (CC32), latched by a program change.
-   0 Default (= SC-8820), 1 SC-55, 2 SC-88, 3 SC-88Pro, 4 SC-8820; >4 clamps. */
-#define SCVA_MAP_DEFAULT 0
-#define SCVA_MAP_55      1
-#define SCVA_MAP_88      2
-#define SCVA_MAP_88PRO   3
-#define SCVA_MAP_8820    4
-
-/* -1 if the name is not one of them. */
-static int scva_map_value(const char *name)
-{
-  if (!name) return -1;
-  if (!strcmp(name, "default")) return SCVA_MAP_DEFAULT;
-  if (!strcmp(name, "55") || !strcmp(name, "sc55")) return SCVA_MAP_55;
-  if (!strcmp(name, "88") || !strcmp(name, "sc88")) return SCVA_MAP_88;
-  if (!strcmp(name, "88pro") || !strcmp(name, "sc88pro")) return SCVA_MAP_88PRO;
-  if (!strcmp(name, "8820") || !strcmp(name, "sc8820")) return SCVA_MAP_8820;
-  if (name[0] >= '0' && name[0] <= '9' && !name[1]) return name[0] - '0';
-  return -1;
 }
 
 /* ------------------------------------------------------------------ WAV */

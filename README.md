@@ -89,6 +89,7 @@ Creates an ALSA sequencer port called **SCVA**:
     aconnect 24:0 'SCVA':0
     aplaymidi -p 'SCVA' song.mid
 
+    --map WHICH      tone map, as above         (default: default)
     --name NAME      port name                  (default SCVA)
     --pcm DEV        ALSA output device         (default "default")
     --rate HZ        sample rate                (default 44100)
@@ -97,6 +98,16 @@ Creates an ALSA sequencer port called **SCVA**:
     --engine EXE     engine binary              (default build/scva_engine.exe)
 
 The PCM device sets the pace; there is no timer in the daemon.
+
+### Changing the map while it runs
+
+Send **CC32** on the channel you want to change. The daemon adopts it for that
+part and uses it from then on, so any sequencer, controller or DAW can switch
+map live - it is ordinary MIDI, not a private control channel.
+
+`--map` sets what every part starts with. For parts the incoming stream never
+sets, the daemon sends the configured map before each program change, which is
+what makes it stick: a program change latches CC32 and a GS reset clears it.
 
 ## Driving the engine
 

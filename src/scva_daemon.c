@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <poll.h>
+#include "scva_map.h"
 
 static volatile sig_atomic_t stop_now;
 static void on_signal(int sig) { (void)sig; stop_now = 1; }
@@ -49,6 +50,12 @@ int main(int argc, char **argv)
   const char *dll_dir = getenv("SCVA_DLL_DIR");
   const char *engine  = getenv("SCVA_ENGINE");
   const char *pcm_name = "default";
+  const char *mapname = "default";
+  int mapval = 0;
+  /* One map per part. A program change latches CC32, so it is sent again
+     before every one; a CC32 arriving on the wire replaces it for that
+     channel, which is how the map changes while the daemon runs. */
+  unsigned char map_of[16];
   const char *port_name = "SCVA";
   unsigned int rate = 44100;
   int block = 256, i;
@@ -61,13 +68,21 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--name") && i + 1 < argc) port_name = argv[++i];
     else if (!strcmp(argv[i], "--rate") && i + 1 < argc) rate = (unsigned)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--block") && i + 1 < argc) block = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
     else {
       fprintf(stderr,
         "usage: scva-daemon [--dll-dir DIR] [--engine EXE] [--pcm DEV]\n"
-        "                   [--name NAME] [--rate HZ] [--block N]\n");
+        "                   [--name NAME] [--rate HZ] [--block N]\n"
+        "                   [--map " SCVA_MAP_USAGE "]\n");
       return 2;
     }
   }
+  mapval = scva_map_value(mapname);
+  if (mapval < 0) {
+    fprintf(stderr, "scva-daemon: --map wants " SCVA_MAP_USAGE "\n");
+    return 2;
+  }
+  memset(map_of, (unsigned char)mapval, sizeof map_of);
   if (!dll_dir) dll_dir = "dll";
   if (!engine)  engine  = "build/scva_engine.exe";
   snprintf(dll_path, sizeof dll_path, "%s/SCCore.dll", dll_dir);
@@ -159,8 +174,23 @@ int main(int argc, char **argv)
       while (snd_seq_event_input(seq, &ev) >= 0) {
         long n = snd_midi_event_decode(coder, mbuf, sizeof mbuf, ev);
         if (n > 0) {
-          if (mbuf[0] == 0xF0) frame_sysex(to_engine[1], mbuf, (unsigned)n);
-          else                 frame_short(to_engine[1], mbuf, (int)n);
+          if (mbuf[0] == 0xF0) {
+            frame_sysex(to_engine[1], mbuf, (unsigned)n);
+          } else {
+            unsigned char st = mbuf[0] & 0xf0, ch = mbuf[0] & 0x0f;
+            if (st == 0xB0 && n >= 3 && mbuf[1] == 0x20) {
+              map_of[ch] = mbuf[2];
+              fprintf(stderr, "scva-daemon: channel %d -> map %d\n",
+                      ch + 1, mbuf[2]);
+            } else if (st == 0xC0) {
+              unsigned char cc[3];
+              cc[0] = (unsigned char)(0xB0 | ch);
+              cc[1] = 0x20;
+              cc[2] = map_of[ch];
+              frame_short(to_engine[1], cc, 3);
+            }
+            frame_short(to_engine[1], mbuf, (int)n);
+          }
         }
         snd_seq_free_event(ev);
         if (snd_seq_event_input_pending(seq, 0) <= 0) break;
