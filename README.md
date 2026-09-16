@@ -140,7 +140,7 @@ for a 32-bit `SCCore.dll`. It is ALSA, so Linux only.
 
 Type it in the terminal the daemon is running in:
 
-    SC-88          every part
+    88             every part
     10 55          one part, channels numbered 1 to 16
     <enter>        what each part is currently set to
     q              stop
@@ -148,7 +148,7 @@ Type it in the terminal the daemon is running in:
 Under systemd there is no terminal to type into, so the same commands go over a
 control socket, which the daemon opens in `$XDG_RUNTIME_DIR`:
 
-    scva-daemon --send "SC-88"
+    scva-daemon --send "88"
     scva-daemon --send "10 55"
     scva-daemon --send ""          # what each part is set to
 
@@ -183,8 +183,8 @@ one another: the same program and bank is a different sound in each.
     --map 88      SC-88       --map 8820    SC-8820
     --map default same as 8820
 
-Case, a leading `SC` and any dashes, spaces or underscores are ignored, so
-`SC-88`, `sc88` and `88` are the same thing. The raw CC32 value works too, but
+Don't prefix with `SC` and any dashes or spaces.
+To get the `SC-88` map, just type `88`. The raw CC32 value works too, but
 only 0 to 4: higher values are not a map at all - 5, 6, 7 and 9 all render the
 same as each other and as none of the five - so they are refused.
 
