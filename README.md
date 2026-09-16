@@ -194,7 +194,7 @@ pass `--map 88` or you are comparing against the wrong instrument.
 The map is Bank Select LSB (CC32). A program change latches it and a GS reset
 clears it, so it is sent on the part immediately before every program change.
 
-## Run it as a MIDI device on Linux
+## Run it as a MIDI device on Windows
 
 This requires that you have loopMIDI installed.
 
