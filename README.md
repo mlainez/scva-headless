@@ -38,10 +38,10 @@ Nothing else is used. The name files change no audio.
 The core is looked for as `--core`, then `$SCVA_DLL_DIR/SCCore.dll`, then
 `dll/SCCore.dll`. Same on Linux and Windows.
 
-Cores with whit this has been tested:
+Cores that have been tested:
 
-1.1.6 (64 bits) sha1: cf9dce5a0cabee06792e884673b8beef806f1aed md5: dbd9a30c168efef577d40a28d9adf37d
-1.0.3 (32 Bits) sha1: 41911c21d7e1d6da5574cb42c35c7ba96ea110e0 md5: d44d1b8c9a6f956ca2324f2f5d348c44
+| 1.1.6 (64 bits) | sha1: cf9dce5a0cabee06792e884673b8beef806f1aed | md5: dbd9a30c168efef577d40a28d9adf37d |
+| 1.0.3 (32 Bits) | sha1: 41911c21d7e1d6da5574cb42c35c7ba96ea110e0 | md5: d44d1b8c9a6f956ca2324f2f5d348c44 |
 
 ## Build
 
