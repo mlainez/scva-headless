@@ -71,6 +71,7 @@ static tg_process_fn process_fn;
 #define QMSGMAX  256
 struct qmsg {
   int len;                          /* 1..3 short, or a whole sysex */
+  unsigned int when;                /* ms since midiInStart, from the driver */
   unsigned char b[QMSGMAX];
 };
 static struct qmsg q[QCAP];
@@ -78,7 +79,7 @@ static volatile LONG q_head, q_tail;   /* head written by MIDI, tail by audio */
 static CRITICAL_SECTION q_lock;
 static long q_dropped;
 
-static void queue_put(const unsigned char *b, int len)
+static void queue_put(const unsigned char *b, int len, unsigned int when)
 {
   if (len < 1 || len > QMSGMAX) return;
   EnterCriticalSection(&q_lock);
@@ -87,19 +88,34 @@ static void queue_put(const unsigned char *b, int len)
   } else {
     memcpy(q[q_head].b, b, (size_t)len);
     q[q_head].len = len;
+    q[q_head].when = when;
     q_head = (q_head + 1) % QCAP;
   }
   LeaveCriticalSection(&q_lock);
 }
 
-static int queue_get(struct qmsg *out)
+/* Takes the next message only if it is due by `until`, a frame position in
+   the stream being rendered. Draining the whole queue into each block instead
+   is what makes a large buffer ruin the rhythm: every event that arrived
+   during the buffer window lands on the same instant, so the timing error is
+   the buffer size. Honouring the arrival time keeps it at one block. */
+static int queue_get_due(struct qmsg *out, uint64_t until, double rate,
+                         unsigned int latency_ms, uint64_t horizon)
 {
   int got = 0;
   EnterCriticalSection(&q_lock);
   if (q_tail != q_head) {
-    *out = q[q_tail];
-    q_tail = (q_tail + 1) % QCAP;
-    got = 1;
+    uint64_t due = (uint64_t)(((double)q[q_tail].when + latency_ms)
+                              * rate / 1000.0);
+    /* The card's clock and the system timer are not the same clock. If they
+       drift apart far enough that a message would be held back further than
+       the buffer is deep, play it rather than let the queue grow for ever. */
+    if (due > until + horizon) due = until;
+    if (due <= until) {
+      *out = q[q_tail];
+      q_tail = (q_tail + 1) % QCAP;
+      got = 1;
+    }
   }
   LeaveCriticalSection(&q_lock);
   return got;
@@ -108,18 +124,21 @@ static int queue_get(struct qmsg *out)
 static void CALLBACK midi_cb(HMIDIIN h, UINT msg, DWORD_PTR inst,
                              DWORD_PTR p1, DWORD_PTR p2)
 {
-  (void)h; (void)inst; (void)p2;
+  (void)h; (void)inst;
+  /* p2 is the arrival time in milliseconds since midiInStart. Keeping it is
+     what lets the rhythm survive a deep output buffer. */
   if (msg == MIM_DATA) {
     unsigned char b[3];
     unsigned int m = (unsigned int)p1;
     b[0] = (unsigned char)(m & 0xff);
     b[1] = (unsigned char)((m >> 8) & 0xff);
     b[2] = (unsigned char)((m >> 16) & 0xff);
-    queue_put(b, 3);
+    queue_put(b, 3, (unsigned int)p2);
   } else if (msg == MIM_LONGDATA) {
     MIDIHDR *hdr = (MIDIHDR *)p1;
     if (hdr && hdr->dwBytesRecorded > 0)
-      queue_put((const unsigned char *)hdr->lpData, (int)hdr->dwBytesRecorded);
+      queue_put((const unsigned char *)hdr->lpData,
+                (int)hdr->dwBytesRecorded, (unsigned int)p2);
   }
 }
 
@@ -183,6 +202,7 @@ int main(int argc, char **argv)
   short **pcm;
   float *left, *right;
   int nbuf, b, dev;
+  uint64_t rendered = 0;            /* frames handed to the device so far */
 
   for (i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--core") && i + 1 < argc) core = argv[++i];
@@ -338,8 +358,12 @@ int main(int argc, char **argv)
       int k;
       if (!(hdr[b].dwFlags & WHDR_DONE)) continue;
 
-      /* whatever arrived since the last block goes in before it is rendered */
-      while (queue_get(&m)) {
+      /* Only what is due by the end of this block, so the timing error is one
+         block rather than the whole output buffer. Anything already late goes
+         in here too: it cannot be put back. */
+      rendered += block;
+      while (queue_get_due(&m, rendered, (double)rate, (unsigned)latency_ms,
+                           (uint64_t)nbuf * block)) {
         if (m.b[0] == 0xf0) {
           long_midi(m.b, 0);
         } else {
