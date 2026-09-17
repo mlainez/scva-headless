@@ -15,7 +15,7 @@
 > on, especially before using it as a reference for other work.
 
 Roland's **SOUND Canvas VA** engine as a file renderer and a MIDI
-device for Linux, and Windows from 98 SE onwards.
+device for Linux, and Windows from 98 onwards.
 
 You supply the required DLL and other optional files from your own installation.
 
