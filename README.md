@@ -14,8 +14,8 @@
 > for any purpose, and no support of any kind. Verify anything you intend to rely
 > on, especially before using it as a reference for other work.
 
-Roland's **SOUND Canvas VA** engine without a GUI: a file renderer, a MIDI
-device, an LV2 and a CLAP plugin. Linux, and Windows from 98 SE onwards.
+Roland's **SOUND Canvas VA** engine as a file renderer and a MIDI
+device for Linux, and Windows from 98 SE onwards.
 
 You supply the required DLL and other optional files from your own installation.
 
@@ -62,12 +62,23 @@ Always use a 64 bits `SCCore.dll` with the 64 bits versions of the svca-headless
 If you want to run on ARM, use the 32 bits binaries under box86 on 32-bit ARM; bear in mind that
 it may lead to poor performance. It is still untested.
 
-## Render a MIDI file
+## Tone maps
+
+The engine is an **SC-8820** and holds four tone maps. They are not subsets of
+one another: the same program and bank is a different sound in each.
+
+    --map 55      SC-55       --map 88pro   SC-88Pro
+    --map 88      SC-88       --map 8820    SC-8820
+    --map default same as 8820
+
+**The default is the SC-8820 map.** If you are using this as an SC-88 proxy,
+pass `--map 88` or you are comparing against the wrong instrument.
+
+## Linux
+
+### Render a MIDI file
 
     ./build/scva-native --midi song.mid --out song.wav --map 88
-
-    # If you are testing the windows builds on Linux (Wine is not needed for the Linux native version)
-    wine build/scva_render.exe --midi song.mid --out song.wav --map 88 
 
     --midi FILE      input Standard MIDI File        (required)
     --out FILE       output stereo WAV                (required)
@@ -76,16 +87,14 @@ it may lead to poor performance. It is still untested.
     --rate HZ        sample rate                     (default 48000)
     --tail SECONDS   silence after the last event    (default 3)
     --bits 16|32     16 plays anywhere, 32 is float  (default 32)
-    --play           to the sound card instead of a file (Windows)
     --reset gs|gm|none                               (default gs)
     --maxblock N     declared maximum block          (default 4096)
     --flat-out       render as fast as possible rather than in real time
     --init N         TG_initialize argument          (default 0)
     --cfg A B        TG_XPsetSystemConfig fields     (default 1 1)
 
-## Run it as a MIDI device on Linux
+### Run it as a MIDI device
 
-    make linux
     ./build/scva-daemon
 
     --map WHICH      tone map, as above         (default: default)
@@ -102,7 +111,6 @@ Creates an ALSA sequencer port called **SCVA**:
     aconnect -l
     aconnect 24:0 'SCVA':0
     aplaymidi -p 'SCVA' song.mid
-
 
 Audio goes where the system sends it: ALSA's `default`, then PipeWire, Pulse or
 JACK if a server holds the card and `default` therefore cannot open it. It
@@ -130,7 +138,7 @@ TG_activate below 255, so smaller values are refused rather than passed on.
 `--core` to force a Roland core location. By default we look in the relative path for
 `dll/SCCore.dll`. `$SCVA_DLL_DIR` works too.
 
-### Changing the map while it runs
+#### Changing the map while it runs
 
 Type it in the terminal the daemon is running in:
 
@@ -160,7 +168,7 @@ from then on, so any sequencer, controller or DAW switches map live. It is
 awkward only from a shell: `aseqsend` arrived in alsa-utils 1.2.10, and `amidi`
 talks to raw `hw:` ports rather than sequencer clients.
 
-### Launch the SCVA Headless MIDI device at startup
+#### Launch at startup with systemd
 
 `scva-daemon` can be launched at startup with this systemd service.
 Create `/etc/systemd/system/scva-headless.service` containing:
@@ -183,28 +191,37 @@ Start it, and check:
     sudo systemctl start scva-headless.service
     systemctl status scva-headless.service
 
-## Tone maps
+## Windows
 
-The engine is an **SC-8820** and holds four tone maps. They are not subsets of
-one another: the same program and bank is a different sound in each.
+### Render to a file
 
-    --map 55      SC-55       --map 88pro   SC-88Pro
-    --map 88      SC-88       --map 8820    SC-8820
-    --map default same as 8820
+    build\scva_render.exe --midi song.mid --out song.wav --map 88
+    build\scva_render32.exe --midi song.mid --out song.wav --map 88
 
-**The default is the SC-8820 map.** If you are using this as an SC-88 proxy,
-pass `--map 88` or you are comparing against the wrong instrument.
+    --midi FILE      input Standard MIDI File        (required)
+    --out FILE       output stereo WAV                (required)
+    --map WHICH      default | 55 | 88 | 88pro | 8820   (default: default)
+    --core DLL       path to SCCore.dll
+    --rate HZ        sample rate                     (default 48000)
+    --tail SECONDS   silence after the last event    (default 3)
+    --bits 16|32     16 plays anywhere, 32 is float  (default 32)
+    --reset gs|gm|none                               (default gs)
+    --maxblock N     declared maximum block          (default 4096)
+    --flat-out       render as fast as possible rather than in real time
+    --init N         TG_initialize argument          (default 0)
+    --cfg A B        TG_XPsetSystemConfig fields     (default 1 1)
 
-## Play a MIDI file on Windows
+### Play to the sound card
 
+    build\scva_render.exe --midi song.mid --play
     build\scva_render32.exe --midi song.mid --play
 
-No driver, no virtual cable, no MIDI mapper. `--play` is Windows only.
+The `--play` option sends audio directly to the sound card instead of writing a file.
+No driver, no virtual cable, no MIDI mapper.
 
-## Run it as a MIDI device on Windows
+### Run it as a MIDI device
 
-Only needed for live MIDI, from a keyboard or another program, and only then
-does it need a virtual cable:
+For live MIDI from a keyboard or another program, you need a virtual cable:
 
 | Windows | cable | ports |
 |---|---|---|
@@ -214,7 +231,6 @@ does it need a virtual cable:
 Whatever sends the MIDI writes to the cable's output; `--midi-in` reads its
 input.
 
-    make windows
     build\scva-winmidi.exe --list
     build\scva-winmidi.exe --midi-in "loopMIDI Port"
 
@@ -252,23 +268,9 @@ With a virtual cable the game selects the cable's port, not this program:
 
     game or DOSBox  ->  "loopMIDI Port"  ->  scva-winmidi  ->  speakers
 
-### DOSBox
+### Version requirements
 
-In `dosbox.conf`, use loopMIDI too:
-
-    [midi]
-    mididevice = win32
-    midiconfig = 1          ; the device number of loopMIDI Port
-
-DOSBox-X and DOSBox Staging also accept the name: `midiconfig = loopMIDI Port`.
-Then choose **General MIDI** or **Sound Canvas** in the game's own setup
-program.
-
-Audio goes out through waveOut in 16-bit stereo, which every Windows device
-should accept. Latency matters less here than on a keyboard, since a game is playing
-a score rather than responding to fingers.
-
-### What Windows needs besides the DLL
+#### What the system must provide
 
 | build | how the core is loaded | what the system must provide |
 |---|---|---|
@@ -277,7 +279,7 @@ a score rather than responding to fingers.
 
 No Roland installer and no activation either way.
 
-### Windows 98
+#### Windows 98
 
 The 32-bit binaries target it: subsystem 4.0, and `pe_loader.c` maps the core,
 which the system loader would refuse twice over - `MSVCR100.dll`, and a
@@ -292,6 +294,12 @@ K6 or Pentium II has no SSE and will not run it. See
 
 Windows 95 is untested.
 
+**Tested on Windows 98 SE, Athlon XP**, 947 and 6 shim sites applied:
+rendering to a file, `--play`, and live MIDI through Hubi's LoopBack at
+`--block 1024 --latency 200`.
+
+#### Windows XP
+
 Windows XP depends on the core, not on this program, which is built against
 the XP API and uses nothing newer. Check what your copy demands:
 
@@ -301,12 +309,45 @@ the XP API and uses nothing newer. Check what your copy demands:
 
 5.1 is XP and 6.0 is Vista. The 64-bit core tested here reports **6.0** and imports
 `VCRUNTIME140.dll` and the Universal CRT, so XP will refuse to load it however
-the host program is built. It should be possible to run this on Windows XP but may
-require some tweaking with `--latency`.
+the host program is built. 
 
-**Tested on Windows 98 SE, Athlon XP**, 947 and 6 shim sites applied:
-rendering to a file, `--play`, and live MIDI through Hubi's LoopBack at
-`--block 1024 --latency 200`.
+**Tested and works on Windows XP**, rendering to a file and with `--play` to the sound card.
+May require tweaking `--latency` on older hardware.
+
+### DOSBox
+
+Games in DOSBox can play through scva-winmidi using a virtual cable.
+
+In `dosbox.conf`, configure MIDI to use loopMIDI:
+
+    [midi]
+    mididevice = win32
+    midiconfig = 1          ; the device number of loopMIDI Port
+
+DOSBox-X and DOSBox Staging also accept the name: `midiconfig = loopMIDI Port`.
+Then choose **General MIDI** or **Sound Canvas** in the game's own setup
+program.
+
+Audio goes out through waveOut in 16-bit stereo, which every Windows device
+should accept. Latency matters less here than on a keyboard, since a game is playing
+a score rather than responding to fingers.
+
+## DOSBox on Linux
+
+Games in DOSBox on Linux can also play through scva-daemon using MIDI:
+
+In `dosbox.conf`:
+
+    [midi]
+    mididevice = alsa
+    midiconfig = SCVA
+
+Connect the scva-daemon MIDI input to the DOSBox MIDI output as usual:
+
+    aconnect -l
+    aconnect DOSBox-output 'SCVA':0
+
+Then choose **General MIDI** or **Sound Canvas** in the game's own setup program.
 
 Wine is no substitute for testing this. It ships its own `msvcr100.dll`,
 ignores the subsystem field, and reports success from `midiInOpen` then
