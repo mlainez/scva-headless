@@ -5,6 +5,7 @@
  */
 #ifndef SCVA_CORE_PATH_H
 #define SCVA_CORE_PATH_H
+#include "win9x.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

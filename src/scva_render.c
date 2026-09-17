@@ -19,6 +19,17 @@
 #include <windows.h>
 #include "midi_song.h"
 #include "core_path.h"
+#if defined(__i386__)
+/* The 32-bit core imports MSVCR100 and declares a subsystem newer than
+   Windows 98, so the system loader refuses it there. src/pe_loader.c maps it
+   and supplies that runtime itself, which is the same thing it does on Linux,
+   and it applies the SSE shims on the way. */
+#define SCVA_OWN_LOADER 1
+#include "pe_loader.h"
+#else
+#define SCVA_SHIM_HOST_APPLY 1     /* the system loader path applies them */
+#include "sse3_shim.h"
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,7 +81,9 @@ struct api {
 /* Windows refcounts modules by path: a second LoadLibrary of the same file
    hands back the first module, globals and all. A copy under another name
    loads as a separate module - the same trick Roland uses by shipping 32
-   byte-different cores in the Mac build. */
+   byte-different cores in the Mac build. Our own loader has no such rule, so
+   where it is used the second engine is simply a second mapping. */
+#ifndef SCVA_OWN_LOADER
 static HMODULE load_second_core(const char *core, char *made, size_t madelen)
 {
   char dir[MAX_PATH];
@@ -91,8 +104,10 @@ static HMODULE load_second_core(const char *core, char *made, size_t madelen)
   fclose(out);
   h = LoadLibraryA(made);
   if (!h) DeleteFileA(made);
+  else scva_sse3_apply(h);
   return h;
 }
+#endif
 
 int main(int argc, char **argv)
 {
@@ -172,10 +187,21 @@ int main(int argc, char **argv)
   }
 
   core = scva_core_path(core);
+#ifdef SCVA_OWN_LOADER
+  /* pe_load maps the image, binds the runtime the core wants and applies the
+     SSE shims, so nothing here depends on what the system loader will accept. */
+  lib = pe_load(core, peerr, sizeof peerr);
+  if (!lib) { fprintf(stderr, "pe_load(%s): %s\n", core, peerr); return 1; }
+#else
   lib = LoadLibraryA(core);
   if (!lib) { fprintf(stderr, "LoadLibrary(%s) failed: %lu\n", core, GetLastError()); return 1; }
+  {
+    int n = scva_sse3_apply(lib);
+    if (n) printf("SSE3 shim: %d sites patched\n", n);
+  }
+#endif
 #define GET(field, name) \
-  a.field = (void *)GetProcAddress(lib, name); \
+  a.field = SCVA_SYM(lib, name); \
   if (!a.field) { fprintf(stderr, "missing %s\n", name); return 1; }
   GET(initialize, "TG_initialize")
   GET(set_sample_rate, "TG_setSampleRate")
@@ -196,19 +222,31 @@ int main(int argc, char **argv)
   bytes = slurp(midi, &n);
   if (!bytes || !parse(&s, bytes, n)) { fprintf(stderr, "not a MIDI file this can play\n"); return 1; }
 
+  /* One buffer for the longest SysEx in the song: a GS bulk dump runs well
+     past the 255 bytes a byte-sized length could hold. */
+  if (s.sysex_max) {
+    sysex_buf = malloc((size_t)s.sysex_max + 1);
+    if (!sysex_buf) { fprintf(stderr, "out of memory\n"); return 1; }
+  }
+
   /* get_config before initialize removed: under test */
 
   /* The setters dereference state that initialize creates - calling them
      first faults on a null pointer - so the order is fixed: initialize,
      then rate and block size, then activate. */
-  if (song_ports(&s) > 1) {
+  nports = song_ports(&s);
+  if (nports > 1) {
+#ifdef SCVA_OWN_LOADER
+    lib_b = pe_load(core, peerr, sizeof peerr);       /* a second mapping */
+#else
     lib_b = load_second_core(core, coreb, sizeof coreb);
+#endif
     if (!lib_b) {
       fprintf(stderr, "cannot open a second core for port B\n");
       return 1;
     }
 #define GETB(field, name) \
-    b.field = (void *)GetProcAddress(lib_b, name); \
+    b.field = SCVA_SYM(lib_b, name); \
     if (!b.field) { fprintf(stderr, "missing %s\n", name); return 1; }
     GETB(initialize, "TG_initialize")
     GETB(set_sample_rate, "TG_setSampleRate")
@@ -427,22 +465,44 @@ int main(int argc, char **argv)
       float r = right[k] < 0 ? -right[k] : right[k];
       if (l > peak) peak = l;
       if (r > peak) peak = r;
-      fwrite(left + k, 4, 1, wav);
-      fwrite(right + k, 4, 1, wav);
+      if (play) {
+        wbuf[wb][2 * k]     = to_s16(left[k]);
+        wbuf[wb][2 * k + 1] = to_s16(right[k]);
+      } else {
+        put_frame(wav, left[k], right[k], bits);
+      }
+    }
+    if (play) {
+      whdr[wb].dwFlags &= ~WHDR_DONE;
+      waveOutWrite(hout, &whdr[wb], sizeof whdr[wb]);
+      wb = (wb + 1) % nbuf;
     }
     frame += BLOCK;
     total += BLOCK;
   }
-  rewind(wav);
-  header(wav, (unsigned)rate, total, bits);
-  fclose(wav);
+  if (play) {
+    int j;                                   /* let the tail drain */
+    for (j = 0; j < nbuf; ++j)
+      while (!(whdr[(wb + j) % nbuf].dwFlags & WHDR_DONE))
+        WaitForSingleObject(wev, 100);
+    waveOutReset(hout);
+    waveOutClose(hout);
+  } else {
+    rewind(wav);
+    header(wav, (unsigned)rate, total, bits);
+    fclose(wav);
+  }
   /* TG_terminate calls exit(), so print first */
   printf("%s: %u frames at %.0f Hz, %.1f s, peak %.5f, %d messages, voices %d\n",
-         out, total, rate, total / rate, peak, sent, a.voices());
+         play ? "played" : out, total, rate, total / rate, peak, sent, a.voices());
   fflush(stdout);
   if (have_b) {
     b.deactivate();
+#ifdef SCVA_OWN_LOADER
+    (void)coreb;
+#else
     FreeLibrary(lib_b);
+#endif
     DeleteFileA(coreb);
   }
   a.deactivate();

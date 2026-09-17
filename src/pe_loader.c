@@ -1,19 +1,38 @@
 /* SPDX-License-Identifier: CC0-1.0  -- see pe_loader.h */
 #define _GNU_SOURCE
 #include "pe_loader.h"
+#include "win9x.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <time.h>
 #include <math.h>
 #include <stdarg.h>
+#ifdef _WIN32
+/* Windows already gives a thread block, structured exception handling and a
+   loader-shaped address space, so the port needs only the memory calls. The
+   point of using this loader there rather than LoadLibrary is that the core
+   asks for MSVCR100 and declares a subsystem newer than Windows 98, neither
+   of which the system loader will forgive - while the bindings below supply
+   that runtime and nothing checks a subsystem field. */
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <asm/prctl.h>
 #include <asm/ldt.h>
 #include <sys/syscall.h>
+#endif
+
+/* stub space reserved past the image: SSE3 stubs then the SSE2 arena */
+#define SCVA_SHIM_SPACE 0x10000
+#include "sse3_shim.h"
+#if defined(__i386__)
+#include "sse2_shim.h"
+#endif
+
 
 /* Windows reads its thread block through a segment register, and on both
    widths Linux happens to leave that exact register alone: 64-bit Windows
@@ -42,8 +61,46 @@
 #define PE_TIB_PEB        0x30
 #endif
 
+#ifdef _WIN32
+static void *pe_reserve(void *want, size_t n)
+{
+  void *p = want ? VirtualAlloc(want, n, MEM_COMMIT | MEM_RESERVE,
+                                PAGE_READWRITE) : NULL;
+  if (!p) p = VirtualAlloc(NULL, n, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  return p;
+}
+static void pe_release(void *p, size_t n) { (void)n; VirtualFree(p, 0, MEM_RELEASE); }
+static void pe_setprot(void *p, size_t n, int exec, int write)
+{
+  DWORD old;
+  DWORD f = exec ? (write ? PAGE_EXECUTE_READWRITE : PAGE_EXECUTE_READ)
+                 : (write ? PAGE_READWRITE : PAGE_READONLY);
+  VirtualProtect(p, n, f, &old);
+}
+/* The thread block, the exception chain and the segment register are all the
+   real thing here. */
+static int install_teb(void) { return 1; }
+#else
 static unsigned char *g_teb;
 static unsigned char *g_peb;
+
+static void *pe_reserve(void *want, size_t n)
+{
+  void *p = mmap(want, n, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | (want ? MAP_FIXED_NOREPLACE : 0),
+                 -1, 0);
+  if (p == MAP_FAILED || (want && p != want)) {
+    if (p != MAP_FAILED) munmap(p, n);
+    p = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  }
+  return p == MAP_FAILED ? NULL : p;
+}
+static void pe_release(void *p, size_t n) { munmap(p, n); }
+static void pe_setprot(void *p, size_t n, int exec, int write)
+{
+  int prot = PROT_READ | (exec ? PROT_EXEC : 0) | (write ? PROT_WRITE : 0);
+  mprotect(p, n, prot);
+}
 
 static int install_teb(void)
 {
@@ -108,6 +165,7 @@ static int install_teb(void)
 #endif
   return 1;
 }
+#endif
 
 /* ---------- the little of the PE format that matters -------------------- */
 #pragma pack(push, 1)
@@ -171,10 +229,15 @@ struct exp_dir {
    convention. They are deliberately minimal: this host is single-threaded and
    drives the engine synchronously, so locks and events have nothing to do. */
 
+#ifndef _WIN32
 /* Real locks and condition variables. The image asks for the condition
    variable trio by name through GetProcAddress and calls what it is given, so
    they must resolve. A Windows CRITICAL_SECTION has room for a pthread mutex;
-   a CONDITION_VARIABLE is a single pointer, so it holds one we allocate. */
+   a CONDITION_VARIABLE is a single pointer, so it holds one we allocate.
+
+   None of this is built on Windows: every one of these entries has been in
+   kernel32 since Windows 95 and pe_bind() takes the real one. What the system
+   there cannot supply is the C runtime below. */
 typedef struct { long long a, b, c, d, e; } CRIT;
 
 static WINAPI_CC void ms_InitializeCriticalSectionAndSpinCount(CRIT *c, uint32_t n)
@@ -188,6 +251,17 @@ static WINAPI_CC void ms_InitializeCriticalSectionAndSpinCount(CRIT *c, uint32_t
   pthread_mutex_init((pthread_mutex_t *)c, &at);
   pthread_mutexattr_destroy(&at);
 }
+/* The 1.1.2 core reaches the same place through the CRT's own wrapper rather
+   than through kernel32. The flags argument selects things none of which
+   matter to a recursive mutex. */
+static CDECL_CC int ms_vcrt_InitializeCriticalSectionEx(CRIT *c, uint32_t spin,
+                                                        uint32_t flags)
+{
+  (void)flags;
+  ms_InitializeCriticalSectionAndSpinCount(c, spin);
+  return 1;
+}
+
 static WINAPI_CC void ms_DeleteCriticalSection(CRIT *c)
 { if (c) pthread_mutex_destroy((pthread_mutex_t *)c); }
 static WINAPI_CC void ms_EnterCriticalSection(CRIT *c)
@@ -242,10 +316,10 @@ static WINAPI_CC void *ms_GetModuleHandleW(const uint16_t *n)
   } else if (getenv("PE_TRACE")) fprintf(stderr, "pe: GetModuleHandleW(NULL)\n");
   return (void *)0x2000;
 }
-static void *bind(const char *name);
+static void *pe_bind(const char *name);
 static WINAPI_CC void *ms_GetProcAddress(void *m, const char *n)
 {
-  void *r = n ? bind(n) : NULL;
+  void *r = n ? pe_bind(n) : NULL;
   if (getenv("PE_TRACE"))
     fprintf(stderr, "pe: GetProcAddress(%p, \"%s\") -> %s\n",
             m, n ? n : "(ordinal)", r ? "ok" : "NULL");
@@ -277,6 +351,8 @@ static WINAPI_CC void *ms_RtlLookupFunctionEntry(uint64_t pc, uint64_t *base, vo
 static WINAPI_CC void  ms_RtlVirtualUnwind(uint32_t a, uint64_t b, uint64_t c, void *d,
                                        void *e, void *f, void *g, void *h)
 { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; }
+
+#endif  /* !_WIN32 */
 
 /* Zeroed: Windows hands back a fresh page where glibc recycles a dirty one. */
 static CDECL_CC void *ms_malloc(size_t n) { return calloc(1, n ? n : 1); }
@@ -344,6 +420,7 @@ static CDECL_CC int ms_stdio_common_vsprintf(uint64_t opt, char *buf, size_t n,
 /* The 32-bit core asks for a different set: no condition variables and no
    critical sections, but a handful of CRT internals the 64-bit build does
    without, and pow by way of the SSE2 libm entry point. */
+#ifndef _WIN32
 static WINAPI_CC uint32_t ms_GetTickCount(void)
 { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
   return (uint32_t)(t.tv_sec * 1000u + (uint32_t)(t.tv_nsec / 1000000)); }
@@ -355,6 +432,7 @@ static WINAPI_CC long  ms_InterlockedExchange(volatile long *p, long v)
 static WINAPI_CC long  ms_InterlockedCompareExchange(volatile long *p, long x, long c)
 { __atomic_compare_exchange_n(p, &c, x, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
   return c; }
+#endif
 /* Windows obfuscates stored pointers; anything self-consistent will do. */
 static WINAPI_CC void *ms_EncodePointer(void *p) { return p; }
 static WINAPI_CC void *ms_DecodePointer(void *p) { return p; }
@@ -387,11 +465,13 @@ static CDECL_CC void *ms_encoded_null(void) { return NULL; }
 
 struct binding { const char *name; void *fn; };
 static const struct binding BINDINGS[] = {
+#ifndef _WIN32
   {"CloseHandle", ms_CloseHandle}, {"CreateEventW", ms_CreateEventW},
   {"DeleteCriticalSection", ms_DeleteCriticalSection},
   {"EnterCriticalSection", ms_EnterCriticalSection},
   {"LeaveCriticalSection", ms_LeaveCriticalSection},
   {"InitializeCriticalSectionAndSpinCount", ms_InitializeCriticalSectionAndSpinCount},
+  {"__vcrt_InitializeCriticalSectionEx", ms_vcrt_InitializeCriticalSectionEx},
   {"GetCurrentProcess", ms_GetCurrentProcess},
   {"GetCurrentProcessId", ms_GetCurrentProcessId},
   {"GetCurrentThreadId", ms_GetCurrentThreadId},
@@ -411,6 +491,7 @@ static const struct binding BINDINGS[] = {
   {"UnhandledExceptionFilter", ms_UnhandledExceptionFilter},
   {"TerminateProcess", ms_TerminateProcess},
   {"WaitForSingleObjectEx", ms_WaitForSingleObjectEx},
+#endif
   {"_CxxThrowException", ms_CxxThrowException},
   {"__C_specific_handler", ms_C_specific_handler},
   {"__CxxFrameHandler3", ms_CxxFrameHandler3},
@@ -430,14 +511,18 @@ static const struct binding BINDINGS[] = {
   {"_register_onexit_function", ms_register_onexit_function},
   {"_initterm", ms_initterm}, {"_initterm_e", ms_initterm_e},
   {"_seh_filter_dll", ms_seh_filter_dll},
+#ifndef _WIN32
   {"InitializeConditionVariable", ms_InitializeConditionVariable},
   {"SleepConditionVariableCS", ms_SleepConditionVariableCS},
   {"WakeAllConditionVariable", ms_WakeAllConditionVariable},
   {"WakeConditionVariable", ms_WakeConditionVariable},
+#endif
 #if defined(__i386__)
+#ifndef _WIN32
   {"GetTickCount", ms_GetTickCount}, {"Sleep", ms_Sleep},
   {"InterlockedExchange", ms_InterlockedExchange},
   {"InterlockedCompareExchange", ms_InterlockedCompareExchange},
+#endif
   {"EncodePointer", ms_EncodePointer}, {"DecodePointer", ms_DecodePointer},
   {"_amsg_exit", ms_amsg_exit},
   {"_crt_debugger_hook", ms_crt_debugger_hook},
@@ -458,9 +543,20 @@ static const struct binding BINDINGS[] = {
   {NULL, NULL}
 };
 
-static void *bind(const char *name)
+static void *pe_bind(const char *name)
 {
   int i;
+#ifdef _WIN32
+  /* Every Win32 entry the core asks for has been in kernel32 since Windows
+     95, so the real one is used where it exists and the table below covers
+     the rest: the C runtime, and the two pointer obfuscators that arrived
+     with XP SP2 and are therefore missing on 98. */
+  {
+    HMODULE k = GetModuleHandleA("kernel32.dll");
+    void *p = k ? (void *)GetProcAddress(k, name) : NULL;
+    if (p) return p;
+  }
+#endif
   for (i = 0; BINDINGS[i].name; ++i)
     if (!strcmp(BINDINGS[i].name, name)) return BINDINGS[i].fn;
   return NULL;
@@ -471,6 +567,7 @@ static void *bind(const char *name)
    so it is allocated once and every image gets its own index - which is what
    TlsAlloc does on Windows. Without it a second image overwrites the first
    image's block and the two share thread-local state. */
+#ifndef _WIN32
 static void **g_tls_slots;
 static uint32_t g_tls_next;
 #define PE_TLS_SLOTS 64
@@ -478,6 +575,7 @@ static uint32_t g_tls_next;
    instances does not run the array out. */
 static int g_tls_free[PE_TLS_SLOTS];
 static int g_tls_nfree;
+#endif
 
 void *pe_symbol(struct pe_image *img, const char *name)
 {
@@ -502,17 +600,20 @@ void *pe_symbol(struct pe_image *img, const char *name)
 struct pe_image *pe_load(const char *path, char *err, size_t errlen)
 {
 #define FAIL(...) do { snprintf(err, errlen, __VA_ARGS__); return NULL; } while (0)
-  int fd = open(path, O_RDONLY);
-  off_t fsz;
+  long fsz;
   unsigned char *g_file;
+  FILE *fp = fopen(path, "rb");
   struct pe_image *img = calloc(1, sizeof *img);
   if (!img) FAIL("out of memory");
   img->tls_index = -1;
-  if (fd < 0) FAIL("cannot open %s", path);
-  fsz = lseek(fd, 0, SEEK_END); lseek(fd, 0, SEEK_SET);
-  g_file = mmap(NULL, (size_t)fsz, PROT_READ, MAP_PRIVATE, fd, 0);
-  close(fd);
-  if (g_file == MAP_FAILED) FAIL("cannot map %s", path);
+  if (!fp) FAIL("cannot open %s", path);
+  fseek(fp, 0, SEEK_END); fsz = ftell(fp); rewind(fp);
+  g_file = malloc((size_t)fsz);
+  if (!g_file || fread(g_file, 1, (size_t)fsz, fp) != (size_t)fsz) {
+    free(g_file); fclose(fp);
+    FAIL("cannot read %s", path);
+  }
+  fclose(fp);
 
   if (!install_teb()) FAIL("cannot install a thread block on GS");
   if (getenv("PE_TRACE")) fprintf(stderr, "pe: GS points at a TEB\n");
@@ -531,18 +632,15 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
   /* Prefer the image's own base: then the relocation pass has nothing to do
      and cannot be the thing that is wrong. Falling back to anywhere is fine,
      but if behaviour differs between the two, the relocations are the suspect. */
-  unsigned char *base = mmap((void *)(uintptr_t)oh->imagebase, oh->imagesz,
-                             PROT_READ | PROT_WRITE,
-                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-  if (base == MAP_FAILED || base != (unsigned char *)(uintptr_t)oh->imagebase) {
-    if (base != MAP_FAILED) munmap(base, oh->imagesz);
-    base = mmap(NULL, oh->imagesz, PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (getenv("PE_TRACE")) fprintf(stderr, "pe: relocating (preferred base taken)\n");
-  } else if (getenv("PE_TRACE")) {
-    fprintf(stderr, "pe: mapped at its preferred base, no relocation needed\n");
-  }
-  if (base == MAP_FAILED) FAIL("cannot reserve %u bytes", oh->imagesz);
+  /* Space past the image belongs to the shim stubs, so that the calls which
+     replace each patched site are always within reach of rel32. */
+  size_t mapsz = (size_t)oh->imagesz + SCVA_SHIM_SPACE;
+  unsigned char *base = pe_reserve((void *)(uintptr_t)oh->imagebase, mapsz);
+  if (!base) FAIL("cannot reserve %u bytes", oh->imagesz);
+  if (getenv("PE_TRACE"))
+    fprintf(stderr, base == (unsigned char *)(uintptr_t)oh->imagebase
+            ? "pe: mapped at its preferred base, no relocation needed\n"
+            : "pe: relocating (preferred base taken)\n");
   memcpy(base, g_file, oh->headersz);
   struct sh *sec = (struct sh *)(nt + 4 + sizeof *fh + fh->optsz);
   for (int i = 0; i < fh->nsec; ++i) {
@@ -587,7 +685,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
         if (*oft & PE_ORD_FLAG)
           FAIL("%s imports by ordinal", (char *)(base + im->name));
         const char *nm = (const char *)(base + (*oft & 0xffffffff) + 2);
-        void *fn = bind(nm);
+        void *fn = pe_bind(nm);
         if (!fn) FAIL("no binding for %s (%s)", nm, (char *)(base + im->name));
         *ft = (thunk_t)(uintptr_t)fn;
       }
@@ -595,20 +693,80 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
   }
 
   if (getenv("PE_TRACE")) fprintf(stderr, "pe: %s\n", "imports bound");
+
+  /* The core's interpolation sums four taps with a pair of haddps. Where the
+     processor has no SSE3 that pair becomes a call to an SSE1 stub which
+     pairs the lanes the same way, so the audio does not change. SCVA_SSE3
+     forces it on for testing on a machine that does have SSE3. */
+#if defined(__i386__)
+  {
+    const char *force = getenv("SCVA_SSE2");
+    int want = force ? (*force == '0' ? 0 : 1) : !scva_cpu_has_sse2();
+    if (want) {
+      int left = 0;
+      int done = scva_sse2_patch(base, base + oh->imagesz + 0x1000,
+                                 SCVA_SHIM_SPACE - 0x1000, &left);
+      if (done < 0)
+        fprintf(stderr, "pe: SSE2 shim: this is not the core the table "
+                        "describes, leaving it alone\n");
+      else
+        fprintf(stderr, "pe: SSE2 shim, %d sites patched, %d left\n",
+                done, left);
+    }
+  }
+#endif
+
+  {
+    const char *force = getenv("SCVA_SSE3");
+    int want = force ? (*force == '0' ? 0 : 1) : !scva_cpu_has_sse3();
+    if (want) {
+      int done = 0;
+      for (int i = 0; i < fh->nsec; ++i) {
+        if (!(sec[i].chars & 0x20000000)) continue;      /* code only */
+        done += scva_sse3_patch(base + sec[i].vaddr, sec[i].vsize,
+                                base + oh->imagesz);
+      }
+      if (done || getenv("PE_TRACE"))
+        fprintf(stderr, "pe: SSE3 shim, %d site%s patched\n",
+                done, done == 1 ? "" : "s");
+    }
+  }
+
+  /* SCVA_DUMP_TEXT writes the patched code out so a disassembler can confirm
+     that nothing outside SSE1 survived either pass. */
+  {
+    const char *dump = getenv("SCVA_DUMP_TEXT");
+    if (dump) {
+      FILE *f = fopen(dump, "wb");
+      if (f) {
+        for (int k = 0; k < fh->nsec; ++k)
+          if (sec[k].chars & 0x20000000)
+            fwrite(base + sec[k].vaddr, 1, sec[k].vsize, f);
+        fclose(f);
+        fprintf(stderr, "pe: patched code written to %s\n", dump);
+      }
+    }
+  }
+
   /* protections: everything executable-and-readable is simplest and safe here */
   for (int i = 0; i < fh->nsec; ++i) {
-    int prot = PROT_READ;
-    if (sec[i].chars & 0x20000000) prot |= PROT_EXEC;
-    if (sec[i].chars & 0x80000000) prot |= PROT_WRITE;
     size_t len = (sec[i].vsize + 0xfff) & ~(size_t)0xfff;
-    mprotect(base + (sec[i].vaddr & ~(size_t)0xfff), len, prot);
+    pe_setprot(base + (sec[i].vaddr & ~(size_t)0xfff), len,
+               (sec[i].chars & 0x20000000) != 0,
+               (sec[i].chars & 0x80000000) != 0);
   }
+  pe_setprot(base + oh->imagesz, SCVA_SHIM_SPACE, 1, 0);
 
   if (getenv("PE_TRACE")) fprintf(stderr, "pe: %s\n", "protections set");
   /* Thread-local storage. The image reads gs:[0x58] for its TLS pointer array
      and indexes it: without this the very first thread-local access is
      `mov (%rax,%rcx,8),%rbx` with rax = 0, which is where the first native
-     TG_Process died. */
+     TG_Process died. Windows keeps that array itself, and the 32-bit core
+     carries no TLS directory at all, so this is a Linux concern. */
+#ifdef _WIN32
+  if (oh->dirs[9].size)
+    FAIL("this core wants thread-local storage, which is not handled here");
+#else
   if (oh->dirs[9].size) {
     struct {
       uint64_t start, end, index_addr, callbacks;
@@ -644,8 +802,9 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
       }
     }
   }
+#endif
 
-  img->base = base; img->size = oh->imagesz; img->entry = oh->entry;
+  img->base = base; img->size = mapsz; img->entry = oh->entry;
   if (oh->entry) {
     /* DllMain is WINAPI: stdcall on i386, so the callee clears the arguments
        and the caller must not. */
@@ -655,7 +814,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     if (!dllmain(base, 1 /* DLL_PROCESS_ATTACH */, NULL))
       FAIL("DllMain returned FALSE");
   }
-  munmap(g_file, (size_t)fsz);
+  free(g_file);
   return img;
 #undef FAIL
 }
@@ -663,11 +822,13 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
 void pe_unload(struct pe_image *img)
 {
   if (!img) return;
+#ifndef _WIN32
   if (img->tls_index >= 0 && g_tls_slots) {
     free(g_tls_slots[img->tls_index]);
     g_tls_slots[img->tls_index] = NULL;
     if (g_tls_nfree < PE_TLS_SLOTS) g_tls_free[g_tls_nfree++] = img->tls_index;
   }
-  if (img->base) munmap(img->base, img->size);
+#endif
+  if (img->base) pe_release(img->base, img->size);
   free(img);
 }

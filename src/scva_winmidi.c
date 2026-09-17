@@ -19,19 +19,32 @@
  * device accepts. Latency is the buffer count times the block, so it is set
  * by --latency rather than fixed.
  */
-/* Windows XP. Nothing here needs newer: midiIn, waveOut, LoadLibrary and a
-   critical section are all Win95-era. Whether it runs on an old machine is
-   decided by the core, not by this program - the 64-bit one declares a
-   subsystem version of 6.0 and imports the Universal CRT, so it needs Vista
-   or later. */
+/* midiIn, waveOut, LoadLibrary and a critical section are all Win95-era, so
+   this program itself asks for nothing newer and the 32-bit build sets 0x0400
+   from the Makefile. How old a machine it actually runs on is decided by the
+   core: the 64-bit one declares subsystem 6.0 and imports the Universal CRT,
+   so it wants Vista or later. */
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0501
+#endif
 #include <windows.h>
 #include <mmsystem.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "scva_map.h"
 #include "core_path.h"
+#if defined(__i386__)
+/* The 32-bit core imports MSVCR100 and declares a subsystem newer than
+   Windows 98, so the system loader refuses it there. src/pe_loader.c maps it
+   and supplies that runtime itself, applying the SSE shims on the way. */
+#define SCVA_OWN_LOADER 1
+#include "pe_loader.h"
+#else
+#define SCVA_SHIM_HOST_APPLY 1     /* the system loader path applies them */
+#include "sse3_shim.h"
+#endif
 
 #define SCVA_CC __cdecl
 typedef SCVA_CC int  (*tg_initialize_fn)(int);
@@ -152,7 +165,14 @@ int main(int argc, char **argv)
   unsigned int rate = 48000;
   int block = 256, latency_ms = 40, mapval = 0, i;
   unsigned char map_of[16];
+#ifdef SCVA_OWN_LOADER
+  struct pe_image *lib;
+  char peerr[256];
+#define SCVA_SYM(h, n) pe_symbol(h, n)
+#else
   HMODULE lib;
+#define SCVA_SYM(h, n) ((void *)GetProcAddress(h, n))
+#endif
   HMIDIIN hin = NULL;
   HWAVEOUT hout = NULL;
   HANDLE ev;
@@ -202,14 +222,27 @@ int main(int argc, char **argv)
   /* ---- the engine ---- */
   {
     const char *path = scva_core_path(core);
+#ifdef SCVA_OWN_LOADER
+    lib = pe_load(path, peerr, sizeof peerr);
+    if (!lib) {
+      fprintf(stderr, "scva-winmidi: cannot load %s: %s\n"
+                      "  pass --core or set SCVA_DLL_DIR\n", path, peerr);
+      return 1;
+    }
+#else
     lib = LoadLibraryA(path);
     if (!lib) {
       fprintf(stderr, "scva-winmidi: cannot load %s\n"
                       "  pass --core or set SCVA_DLL_DIR\n", path);
       return 1;
     }
+    {
+      int n = scva_sse3_apply(lib);
+      if (n) printf("scva-winmidi: SSE3 shim, %d sites patched\n", n);
+    }
+#endif
   }
-#define GET(v, t, n) v = (t)(void *)GetProcAddress(lib, n); \
+#define GET(v, t, n) v = (t)SCVA_SYM(lib, n); \
   if (!v) { fprintf(stderr, "scva-winmidi: the core has no %s\n", n); return 1; }
   {
     tg_initialize_fn initialize;
