@@ -14,8 +14,8 @@
 > for any purpose, and no support of any kind. Verify anything you intend to rely
 > on, especially before using it as a reference for other work.
 
-Roland's **SOUND Canvas VA** engine without GUI: as an ALSA MIDI device,
-or as a file renderer. For Linux and Windows.
+Roland's **SOUND Canvas VA** engine without a GUI: a file renderer, a MIDI
+device, an LV2 and a CLAP plugin. Linux, and Windows from 98 SE onwards.
 
 You supply the required DLL and other optional files from your own installation.
 
@@ -39,10 +39,14 @@ select a patch when using this project as a plugin.
 
 Cores that have been tested:
 
-| Version         | sha1                                     | md5
-|-----------------|------------------------------------------|----------------------------------|
-| 1.1.6 (64 bits) | cf9dce5a0cabee06792e884673b8beef806f1aed | dbd9a30c168efef577d40a28d9adf37d |
-| 1.0.3 (32 Bits) | 41911c21d7e1d6da5574cb42c35c7ba96ea110e0 | d44d1b8c9a6f956ca2324f2f5d348c44 |
+| Version | sha1 | md5 |
+|---|---|---|
+| 1.1.6, 64-bit | cf9dce5a0cabee06792e884673b8beef806f1aed | dbd9a30c168efef577d40a28d9adf37d |
+| 1.1.2, 64-bit | ba0d868fd55b3114ce2cfb7dec0a5f6314113791 | 80f1e673d249d1cda67a2936326f866b |
+| 1.0.3, 32-bit | 41911c21d7e1d6da5574cb42c35c7ba96ea110e0 | d44d1b8c9a6f956ca2324f2f5d348c44 |
+
+1.1.2 and 1.1.6 render identically, byte for byte. 1.1.2 wants one function
+more, `__vcrt_InitializeCriticalSectionEx`.
 
 ## Build
 
@@ -66,11 +70,13 @@ it may lead to poor performance. It is still untested.
     wine build/scva_render.exe --midi song.mid --out song.wav --map 88 
 
     --midi FILE      input Standard MIDI File        (required)
-    --out FILE       output float32 stereo WAV       (required)
+    --out FILE       output stereo WAV                (required)
     --map WHICH      default | 55 | 88 | 88pro | 8820   (default: default)
     --core DLL       path to SCCore.dll
     --rate HZ        sample rate                     (default 48000)
     --tail SECONDS   silence after the last event    (default 3)
+    --bits 16|32     16 plays anywhere, 32 is float  (default 32)
+    --play           to the sound card instead of a file (Windows)
     --reset gs|gm|none                               (default gs)
     --maxblock N     declared maximum block          (default 4096)
     --flat-out       render as fast as possible rather than in real time
@@ -133,9 +139,9 @@ Type it in the terminal the daemon is running in:
     <enter>        what each part is currently set to
     q              stop
 
-Don't prefix with `SC` and any dashes or spaces.
-To get the `SC-88` map, just type `88`.
-The raw CC32 value works too, but only 0 to 4.
+Case, an `SC` in front and any dashes, spaces or underscores are ignored, so
+`88`, `SC-88` and `sc 88` are the same thing. The raw CC32 value works too,
+0 to 4.
 
 Under systemd there is no terminal to type into, so the same commands go over a
 control socket, which the daemon opens in `$XDG_RUNTIME_DIR`:
@@ -172,9 +178,10 @@ Then, reload systemd and enable the service:
     sudo systemctl daemon-reload
     sudo systemctl enable scva-headless.service
 
-And check that it's running:
+Start it, and check:
 
     sudo systemctl start scva-headless.service
+    systemctl status scva-headless.service
 
 ## Tone maps
 
@@ -188,9 +195,24 @@ one another: the same program and bank is a different sound in each.
 **The default is the SC-8820 map.** If you are using this as an SC-88 proxy,
 pass `--map 88` or you are comparing against the wrong instrument.
 
+## Play a MIDI file on Windows
+
+    build\scva_render32.exe --midi song.mid --play
+
+No driver, no virtual cable, no MIDI mapper. `--play` is Windows only.
+
 ## Run it as a MIDI device on Windows
 
-This requires that you have loopMIDI installed.
+Only needed for live MIDI, from a keyboard or another program, and only then
+does it need a virtual cable:
+
+| Windows | cable | ports |
+|---|---|---|
+| XP and later | loopMIDI | named when you create them |
+| 9x | Hubi's LoopBack 2.51, `mdlbk251.zip`, installs from Control Panel | `LB1` to `LB4` |
+
+Whatever sends the MIDI writes to the cable's output; `--midi-in` reads its
+input.
 
     make windows
     build\scva-winmidi.exe --list
@@ -203,6 +225,18 @@ This requires that you have loopMIDI installed.
     --block N          frames per block            (default 256)
     --latency MS       buffered ahead              (default 40)
     --core DLL         path to SCCore.dll
+
+The defaults suit a modern PC; an older one needs its own settings.
+
+| | what it is | when to raise it |
+|---|---|---|
+| `--block` | audio rendered at a time | first, if the sound breaks up. Small blocks interrupt the driver constantly, which old drivers handle badly |
+| `--latency` | how far ahead of the speaker | only if a bigger block was not enough. It is the delay between key and sound |
+
+Timing does not suffer from a large `--latency`: each message plays where its
+arrival time says, to within one `--block`.
+
+Athlon XP 2 GHz, Windows 98, Sound Blaster Live!: `--block 1024 --latency 200`.
 
 Windows has no way for a program to put itself in the MIDI device list. That
 list comes from drivers, which is why the one soft-synth that appears in it
@@ -236,31 +270,27 @@ a score rather than responding to fingers.
 
 ### What Windows needs besides the DLL
 
-The Roland core imports 50 functions,
-and not all of them come with Windows out of the box:
+| build | how the core is loaded | what the system must provide |
+|---|---|---|
+| 32-bit | `pe_loader.c` maps it, as on Linux | nothing. Its own imports stop at Windows 95, plus `msvcrt.dll`, which ships with 98 |
+| 64-bit | `LoadLibrary` | the Universal CRT, so Windows 10 or 11, or the VC++ redistributable |
 
-    KERNEL32.dll                26   always present
-    VCRUNTIME140.dll             9   Visual C++ 2015-2022 redistributable
-    api-ms-win-crt-{heap,stdio,runtime}
-                                15   Universal CRT: built into Windows 10 and
-                                     11, a Windows Update on 7 and 8
+No Roland installer and no activation either way.
 
-So on Windows 10 or 11 the redistributable is all that might be missing, and it
-is usually there already. No Roland installer, no activation: the engine is the
-DLL.
+### Windows 98
 
-On Linux none of this applies, because `pe_loader.c` supplies those imports
-itself rather than asking the system for them. This is how we can run the core 
-without needing Wine.
+The 32-bit binaries target it: subsystem 4.0, and `pe_loader.c` maps the core,
+which the system loader would refuse twice over - `MSVCR100.dll`, and a
+declared subsystem of 5.1.
 
-### Old Windows
+The processor decides, not the Windows version. The core is compiled for SSE3
+and never asks `cpuid`, so on anything older it faults on the first note.
+`sse3_shim.h` and `sse2_shim.h` rewrite those instructions as the core loads,
+putting the floor at **SSE1: a Pentium III or an Athlon XP**. A plain Athlon,
+K6 or Pentium II has no SSE and will not run it. See
+[docs/ENGINE-NOTES.md](docs/ENGINE-NOTES.md).
 
-Not Windows 98, for the following reasons:
-
-- mingw-w64 emits NT binaries and does not target Win9x at all
-- the 32-bit one still wants the Universal CRT, which Windows 98 never had
-- Roland built this in 2015; the instruction set it assumes in it's DLL is not what a
-  Windows 98 machine has
+Windows 95 is untested.
 
 Windows XP depends on the core, not on this program, which is built against
 the XP API and uses nothing newer. Check what your copy demands:
@@ -274,10 +304,13 @@ the XP API and uses nothing newer. Check what your copy demands:
 the host program is built. It should be possible to run this on Windows XP but may
 require some tweaking with `--latency`.
 
-**Only partly tested.** It builds, enumerates devices, opens audio and renders,
-all verified under wine but not a real Windows. The MIDI input path could not be
-checked here: wine reports success from `midiInOpen` and `midiInStart` and then delivers
-nothing so far.
+**Tested on Windows 98 SE, Athlon XP**, 947 and 6 shim sites applied:
+rendering to a file, `--play`, and live MIDI through Hubi's LoopBack at
+`--block 1024 --latency 200`.
+
+Wine is no substitute for testing this. It ships its own `msvcr100.dll`,
+ignores the subsystem field, and reports success from `midiInOpen` then
+delivers nothing - it forgives exactly what an old Windows does not.
 
 ## As an LV2 plugin
 
@@ -341,16 +374,21 @@ Roland 32-bit and 64-bit Windows versions. So:
 |---|---|
 | Linux x86-64 | LV2, CLAP, renderer, daemon |
 | Linux i386 | LV2, renderer (32-bit core) |
-| Windows x86-64 / x86 | CLAP, renderer, MIDI device via a virtual cable |
+| Windows x86-64 | CLAP, renderer, MIDI device via a virtual cable |
+| Windows x86, 98 and up | renderer, `--play`, MIDI device via a virtual cable |
 | ARM, any width | only by emulating x86 - box86 or box64 |
 | macOS | would need a Mach-O loader; not built here |
 
-## Two-port songs (in progress)
+## 32-part, two-port songs
 
-Roland's demo SMFs are 32-part, two-port performances that name their port in
-the track name (`PartA` / `PartB`). The renderers detect that and drive a
-second engine for port B, because the core itself has only 16 parts. Nothing
-needs to be passed: single-port files are unaffected and render as expected.
+The core has 16 parts. Roland's demo SMFs are 32-part performances that name
+their port in the track name (`PartA` / `PartB`); others carry `FF 21`. The
+**renderers** detect either and drive a second engine for port B. Nothing has
+to be passed, and single-port files are unaffected.
+
+The daemon, `scva-winmidi` and the plugins are 16-part: they receive MIDI
+rather than read a file, so nothing tells them which port a note belongs to.
+Two instances, fed separately, is the way round it.
 
 ## Driving the engine directly
 

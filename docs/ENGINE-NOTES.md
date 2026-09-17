@@ -299,6 +299,161 @@ does want `__libm_sse2_pow`, `EncodePointer`/`DecodePointer`, the `_lock` and
 `_onexit` CRT internals, and `operator new`/`operator delete` by their mangled
 names.
 
+## What the cores ask of the C runtime
+
+| core | C runtime | imports |
+|---|---|---|
+| 1.1.6, x86-64, subsystem 6.0 | Universal CRT: `VCRUNTIME140` 9, `api-ms-win-crt-runtime` 11, `-heap` 3, `-stdio` 1 | 24 CRT + 26 KERNEL32 = 50 |
+| 1.0.3, i386, subsystem 5.1 | `MSVCR100.dll`, Visual C++ 2010 | 24 CRT + 16 KERNEL32 = 40 |
+
+**The 32-bit core does not touch the Universal CRT at all.** Its whole CRT
+surface is `malloc`/`free`/`memset`/`vsprintf`, operator new and delete by
+their mangled names, the `_initterm`/`_onexit`/`__dllonexit` startup
+machinery, `__CxxFrameHandler3`/`_except_handler4_common`/`__CppXcptFilter`,
+and `__libm_sse2_pow`. `src/pe_loader.c` supplies all 40.
+
+Its KERNEL32 set is Win95-era but for `EncodePointer`/`DecodePointer`, which
+arrived in XP SP2. The loader binds its own, so that is not a constraint.
+
+## Instruction set
+
+Counted over the `.text` sections:
+
+| | 32-bit core | 64-bit core | oldest processor |
+|---|---|---|---|
+| SSE1 | 46,663 | present | Pentium III, 1999 |
+| SSE2 | 947 | present | Pentium 4, 2001 |
+| SSE3, `haddps` only | 12 | 12 | Prescott Pentium 4 2004, Athlon 64 rev E 2005 |
+| SSSE3, SSE4 | none | none | |
+| `cpuid` | none | none | |
+
+Neither core asks `cpuid`, so an older processor faults on an invalid opcode
+rather than choosing another path. The `haddps` pairs sum the four taps of the
+sample interpolation and sit in the voice render path, so the fault arrives
+with the first note that sounds.
+
+The 32-bit SSE2 is 879 `movq` (447 stores, 432 loads), 54 double-precision
+instructions around the `__libm_sse2_pow` call that turns a note into a pitch
+ratio, and eight others.
+
+## The SSE3 shim
+
+`src/sse3_shim.h` rewrites each `haddps` pair into a call to a stub written in
+SSE1. The stub pairs the lanes the way `haddps` does - (x0+x1) and (x2+x3),
+then those two - so it rounds identically and the audio does not change.
+
+| | 32-bit core | 64-bit core |
+|---|---|---|
+| span | 13 bytes, a `movss [ebp-0x30],xmm2` between the two | 8 bytes, adjacent |
+| scratch | xmm2, already spilled into the slot the next `mulss` reads | xmm1, saved on the stack with `movups` |
+| sites | 6 | 6 |
+
+The SSE1 sum needs 17 bytes, so it cannot sit in either span and each site
+becomes `call rel32` with the remainder as `nop`. The loader reserves one page
+past the image for the stubs, which keeps the call in reach of `rel32`; the
+Windows hosts open the code with `VirtualProtect` and take a page from
+`VirtualAlloc`.
+
+Applied when `cpuid` reports no SSE3. `SCVA_SSE3=1` forces it on, `=0` off.
+Renders are byte-for-byte identical with it and without, on both cores,
+natively and under wine.
+
+## The SSE2 shim
+
+`src/sse2_shim.h` takes the 32-bit core the rest of the way down to SSE1, which
+is what a Pentium III or an Athlon XP has. 947 instructions are outside SSE1
+and each has an SSE1 form computing the same bits:
+
+| what | sites | becomes |
+|---|---|---|
+| `movq m64,xmm` | 447 | `movlps m64,xmm`, the same 64 bits stored |
+| `movq xmm,m64`, upper lane dead | 317 | `movlps xmm,m64` |
+| `movq`/`movsd` load, upper lane live | 133 | `xorps` then `movlps`, in a stub |
+| `movd xmm,m32`, `pxor xmm,xmm` | 8 | `movss`, `xorps` |
+| `cvtdq2ps` | 6 | `cvtsi2ss`, which SSE1 already has |
+| `cvtsd2ss`, `cvtps2pd`, `cvtpd2ps` | 35 | the x87 converts, `fld` then `fstp` |
+| `sqrtsd` | 1 | `fld`, `fsqrt`, `fstp` |
+
+Three of them are worth knowing about before touching this again.
+
+**The spare byte goes in front.** `movlps` is one byte shorter than `movq`, and
+putting the `nop` after it would shift the displacement one byte away from the
+offset the relocation table records. Everything works until a second engine is
+mapped off its preferred base, and then only the relocated one breaks.
+
+**The stubs must not disturb EFLAGS.** At `0x1004dfbe` the loop counter is
+decremented six instructions before the `jne` that reads it, with the
+conversion in between; a `sub esp,8` in the stub costs those flags and the loop
+never ends. Every stack adjustment here is an `lea`.
+
+**Four bytes will not hold a jump.** The conversions are three or four bytes, so
+each is merged with a neighbouring SSE1 instruction into a span of five or
+more, and the stub replays that neighbour around the conversion. Twenty-five
+merge forwards, sixteen backwards over the `cvtsi2ss` that feeds them. No
+branch target lands inside any of the spans. The jump is a `jmp` rather than a
+`call` so that `esp` is what a replayed neighbour expects.
+
+The x87 sequences are bit-exact against the instructions they replace: `fld
+qword`/`fstp dword` rounds once, to nearest even, exactly as `cvtsd2ss` does.
+Six million random values per form, denormals, infinities and NaN included,
+produce no difference.
+
+Applied when `cpuid` reports no SSE2, which implies the SSE3 pass as well.
+`SCVA_SSE2=1` forces it on, `=0` off, and `SCVA_DUMP_TEXT=path` writes the
+patched code out. Disassembling that dump is the check that matters: with both
+passes applied it holds 37,185 xmm instructions and every one is SSE1.
+
+## Playing a file without a MIDI driver
+
+Windows builds its MIDI device list from drivers, so no program can add itself
+to it, and routing a file into this engine otherwise means a virtual cable and
+the MIDI mapper agreeing with each other. `scva_render32.exe --play` skips all
+of that: the renderer already reads the file and already paces itself in real
+time, so it opens waveOut and puts the audio out directly. No driver, no cable,
+no mapper, and none of it depends on the `midiIn` path that has never been seen
+to deliver a note.
+
+Live input from a keyboard or a sequencer still needs `scva-winmidi.exe` and a
+virtual cable; playing a file does not.
+
+The output buffer must not decide the timing. Windows stamps every message
+with its arrival time and `scva-winmidi.exe` releases each one into the block
+its stamp falls in, so the error is one block whatever the buffer depth is.
+Draining the queue into each block instead - which is what it did first - puts
+every message that arrived during one buffer window on the same instant, so a
+buffer deep enough to stop the audio breaking up is also deep enough to
+destroy the rhythm, and there is no setting that gives both.
+
+## Targeting Windows 98
+
+The 32-bit binaries are built for it, and they map the core themselves rather
+than calling LoadLibrary. The system loader there refuses it twice over: the
+core imports `MSVCR100.dll`, which Windows 98 does not have and cannot be
+given, and it declares a subsystem of 5.1 against a loader that is 4.10.
+`pe_loader.c` answers both, because it supplies that runtime from the same
+bindings it uses on Linux and nothing in it reads a subsystem field. The port
+is smaller than the Linux one: the thread block, the exception chain and the
+segment register are all native there, and the 32-bit core carries no
+thread-local storage.
+
+| | |
+|---|---|
+| subsystem | 4.0 |
+| core loading | `pe_loader.c`, not the system loader |
+| imports | nothing newer than Windows 95, and `msvcrt.dll`, which ships with 98 |
+
+Confirmed on the hardware it was written for: the renderer runs under Windows
+98 SE on an Athlon XP, which has SSE1 and nothing above it, reporting 947 and 6
+sites patched and producing audio. Everything before that point had been
+checked statically or under wine, and wine forgives both of the things Windows
+98 does not - it ships its own `msvcr100.dll` and ignores the subsystem field.
+| stdio | msvcrt's own, through `__USE_MINGW_ANSI_STDIO=0`. mingw's pulls in `GetModuleHandleW` and the `MultiByteToWideChar` pair, which are stubs on Win9x |
+| API | `midiIn`, `waveOut`, `LoadLibrary` and critical sections, all Win95-era and all the A variants |
+
+The floor is the processor rather than the OS, and with both shims applied it
+is SSE1: a Pentium III or an Athlon XP. 46,663 SSE1 instructions are the floor
+underneath that, and no rewriting reaches a Pentium II or a K6.
+
 ## The VST route is shut
 
 `Wrapper.dll` exports its VST entry as `R2RPluginMain`, so no host opens it
