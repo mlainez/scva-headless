@@ -104,21 +104,36 @@ int main(int argc, char **argv)
   static const unsigned char gs_reset[] = {
     0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
   static const unsigned char gm_reset[] = { 0xf0, 0x7e, 0x7f, 0x09, 0x01, 0xf7 };
+#ifdef SCVA_OWN_LOADER
+  struct pe_image *lib = NULL, *lib_b = NULL;
+  char peerr[256];
+#define SCVA_SYM(h, n) pe_symbol(h, n)
+#else
   HMODULE lib, lib_b = NULL;
+#define SCVA_SYM(h, n) ((void *)GetProcAddress(h, n))
+#endif
   struct api a, b;
   int have_b = 0;
   char coreb[MAX_PATH] = "";
   struct song s;
   unsigned char *bytes;
   size_t n = 0, ei = 0;
-  FILE *wav;
+  FILE *wav = NULL;
   float *left, *right, *left_b = NULL, *right_b = NULL;
+  unsigned char *sysex_buf = NULL;
   uint64_t frame = 0, at = 0;
   uint32_t total = 0, tempo = 500000;
   uint64_t last_tick = 0;
   double per_tick;
   float peak = 0.0f;
-  int i, sent = 0;
+  int bits = 32;                     /* --bits 16 for integer PCM */
+  int play = 0;                      /* --play: to the sound card, no file */
+  HWAVEOUT hout = NULL;
+  WAVEHDR *whdr = NULL;
+  short **wbuf = NULL;
+  HANDLE wev = NULL;
+  int nbuf = 0, wb = 0;
+  int i, sent = 0, nports;
   int realtime = 1;
   DWORD start_ms;
 
@@ -196,6 +211,10 @@ int main(int argc, char **argv)
     GETB(errors, "TG_getErrorStrings")
 #undef GETB
     have_b = 1;
+    if (nports > 2)
+      fprintf(stderr, "this song names %d ports; the engine is a two-port "
+                      "machine here, so everything past A shares port B\n",
+              nports);
     printf("two-port song: second core from %s\n", coreb);
   }
 
@@ -298,15 +317,14 @@ int main(int argc, char **argv)
       last_tick = e->tick;
       if (e->tempo) {
         tempo = e->tempo;
-        per_tick = rate * (double)tempo / (1e6 * s.division);
+        per_tick = song_frames_per_tick(&s, rate, tempo);
       } else if (e->sysex_len) {
-        unsigned char sx[260];
-        int sn = sysex_message(e, sx, sizeof sx);
+        int sn = sysex_message(e, sysex_buf, (size_t)s.sysex_max + 1);
         if (sn) {
           /* SysEx carries no channel: it addresses the whole machine, so both
              halves of a two-port performance get it. */
-          a.long_midi(sx, 0);
-          if (have_b) b.long_midi(sx, 0);
+          a.long_midi(sysex_buf, 0);
+          if (have_b) b.long_midi(sysex_buf, 0);
           ++sent;
         }
       } else {

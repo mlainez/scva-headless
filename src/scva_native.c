@@ -91,12 +91,14 @@ int main(int argc, char **argv)
   size_t n = 0, ei = 0;
   FILE *wav;
   float *left, *right, *left_b = NULL, *right_b = NULL;
+  unsigned char *sysex_buf = NULL;
   uint64_t frame = 0, at = 0;
   uint32_t total = 0, tempo = 500000;
   uint64_t last_tick = 0;
   double per_tick;
   float peak = 0.0f;
-  int i, sent = 0;
+  int bits = 32;                     /* --bits 16 for integer PCM */
+  int i, sent = 0, nports;
   int realtime = 1;
   int dump = 0;
   int initarg = 0;
@@ -150,7 +152,15 @@ int main(int argc, char **argv)
   bytes = slurp(midi, &n);
   if (!bytes || !parse(&s, bytes, n)) { fprintf(stderr, "not a MIDI file this can play\n"); return 1; }
 
-  if (song_ports(&s) > 1) {
+  /* One buffer for the longest SysEx in the song: a GS bulk dump runs well
+     past the 255 bytes a byte-sized length could hold. */
+  if (s.sysex_max) {
+    sysex_buf = malloc((size_t)s.sysex_max + 1);
+    if (!sysex_buf) { fprintf(stderr, "out of memory\n"); return 1; }
+  }
+
+  nports = song_ports(&s);
+  if (nports > 1) {
     /* Two-port performance. The core is a fixed 16-part machine, so port B
        needs an engine of its own; the loader maps a second copy of the image
        with its own globals. */
@@ -175,6 +185,10 @@ int main(int argc, char **argv)
     GETB(errors, "TG_getErrorStrings")
 #undef GETB
     have_b = 1;
+    if (nports > 2)
+      fprintf(stderr, "this song names %d ports; the engine is a two-port "
+                      "machine here, so everything past A shares port B\n",
+              nports);
     printf("two-port song: second engine at %p\n", (void *)img2->base);
   }
 
@@ -254,15 +268,14 @@ int main(int argc, char **argv)
       last_tick = e->tick;
       if (e->tempo) {
         tempo = e->tempo;
-        per_tick = rate * (double)tempo / (1e6 * s.division);
+        per_tick = song_frames_per_tick(&s, rate, tempo);
       } else if (e->sysex_len) {
-        unsigned char sx[260];
-        int sn = sysex_message(e, sx, sizeof sx);
+        int sn = sysex_message(e, sysex_buf, (size_t)s.sysex_max + 1);
         if (sn) {
           /* SysEx carries no channel, so it is addressed to the whole
              machine: both halves of a two-port performance get it. */
-          a.long_midi(sx, 0);
-          if (have_b) b.long_midi(sx, 0);
+          a.long_midi(sysex_buf, 0);
+          if (have_b) b.long_midi(sysex_buf, 0);
           ++sent;
         }
       } else {
