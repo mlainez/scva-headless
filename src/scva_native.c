@@ -111,6 +111,13 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--out") && i + 1 < argc) out = argv[++i];
     else if (!strcmp(argv[i], "--rate") && i + 1 < argc) rate = atof(argv[++i]);
     else if (!strcmp(argv[i], "--tail") && i + 1 < argc) tail = atof(argv[++i]);
+    else if (!strcmp(argv[i], "--bits") && i + 1 < argc) {
+      bits = atoi(argv[++i]);
+      if (bits != 16 && bits != 32) {
+        fprintf(stderr, "--bits takes 16 or 32\n");
+        return 2;
+      }
+    }
     else if (!strcmp(argv[i], "--reset") && i + 1 < argc) reset = argv[++i];
     else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
     else if (!strcmp(argv[i], "--maxblock") && i + 1 < argc) maxblock = atoi(argv[++i]);
@@ -118,7 +125,9 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--init") && i + 1 < argc) initarg = (int)strtol(argv[++i], NULL, 0);
     else if (!strcmp(argv[i], "--cfg") && i + 2 < argc) { cfga = atoi(argv[++i]); cfgb = atoi(argv[++i]); }
     else if (!strcmp(argv[i], "--flat-out")) realtime = 0;
-    else { fprintf(stderr, "usage: scva-native --core DLL --midi FILE --out FILE\n"); return 2; }
+    else { fprintf(stderr, "usage: scva-native --core DLL --midi FILE --out FILE\n"
+                     "  --bits 16   integer PCM every player accepts\n"
+                     "  --bits 32   float, the engine's own format (default)\n"); return 2; }
   }
   if (!midi || !out) { fprintf(stderr, "need --midi and --out\n"); return 2; }
   mapval = scva_map_value(mapname);
@@ -254,8 +263,8 @@ int main(int argc, char **argv)
 
   wav = fopen(out, "wb");
   if (!wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
-  header(wav, (unsigned)rate, 0);
-  per_tick = rate * (double)tempo / (1e6 * s.division);
+  header(wav, (unsigned)rate, 0, bits);
+  per_tick = song_frames_per_tick(&s, rate, tempo);
   start_ms = now_ms();
 
   while (ei < s.count || frame < at + (uint64_t)(tail * rate)) {
@@ -321,14 +330,13 @@ int main(int argc, char **argv)
       if (r > peak) peak = r;
       if (dump && (int)(total + k) < dump)
         printf("  [%5u] L %.9g  R %.9g\n", total + k, left[k], right[k]);
-      fwrite(left + k, 4, 1, wav);
-      fwrite(right + k, 4, 1, wav);
+      put_frame(wav, left[k], right[k], bits);
     }
     frame += BLOCK;
     total += BLOCK;
   }
   rewind(wav);
-  header(wav, (unsigned)rate, total);
+  header(wav, (unsigned)rate, total, bits);
   fclose(wav);
   /* TG_terminate calls exit(), so print first */
   printf("%s: %u frames at %.0f Hz, %.1f s, peak %.5f, %d messages, voices %d\n",

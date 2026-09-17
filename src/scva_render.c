@@ -143,13 +143,28 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--out") && i + 1 < argc) out = argv[++i];
     else if (!strcmp(argv[i], "--rate") && i + 1 < argc) rate = atof(argv[++i]);
     else if (!strcmp(argv[i], "--tail") && i + 1 < argc) tail = atof(argv[++i]);
+    else if (!strcmp(argv[i], "--bits") && i + 1 < argc) {
+      bits = atoi(argv[++i]);
+      if (bits != 16 && bits != 32) {
+        fprintf(stderr, "--bits takes 16 or 32\n");
+        return 2;
+      }
+    }
     else if (!strcmp(argv[i], "--reset") && i + 1 < argc) reset = argv[++i];
     else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
     else if (!strcmp(argv[i], "--maxblock") && i + 1 < argc) maxblock = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--flat-out")) realtime = 0;
-    else { fprintf(stderr, "usage: scva_render --core DLL --midi FILE --out FILE\n"); return 2; }
+    else if (!strcmp(argv[i], "--play")) play = 1;
+    else { fprintf(stderr, "usage: scva_render --core DLL --midi FILE --out FILE\n"
+                     "  --bits 16   integer PCM every player accepts\n"
+                     "  --bits 32   float, the engine's own format (default)\n"
+                     "  --play      straight to the sound card, no file and\n"
+                     "              no MIDI driver anywhere in the way\n"); return 2; }
   }
-  if (!midi || !out) { fprintf(stderr, "need --midi and --out\n"); return 2; }
+  if (!midi || (!out && !play)) {
+    fprintf(stderr, "need --midi, and --out FILE or --play\n");
+    return 2;
+  }
   mapval = scva_map_value(mapname);
   if (mapval < 0) {
     fprintf(stderr, "--map wants default, 55, 88, 88pro or 8820\n");
@@ -300,10 +315,49 @@ int main(int argc, char **argv)
     if (!left_b || !right_b) { fprintf(stderr, "out of memory\n"); return 1; }
   }
 
-  wav = fopen(out, "wb");
-  if (!wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
-  header(wav, (unsigned)rate, 0);
-  per_tick = rate * (double)tempo / (1e6 * s.division);
+  if (play) {
+    /* Windows offers no way for a program to join the MIDI device list, so
+       rather than route a file through a driver and a virtual cable, the
+       renderer reads it and puts the audio out itself. waveOut in 16-bit
+       stereo is what every Windows sound device accepts. */
+    WAVEFORMATEX wf;
+    int j;
+    nbuf = (int)((double)200.0 * rate / 1000.0 / BLOCK);   /* ~200 ms ahead */
+    if (nbuf < 4) nbuf = 4;
+    if (nbuf > 64) nbuf = 64;
+    wev = CreateEventA(NULL, FALSE, FALSE, NULL);
+    memset(&wf, 0, sizeof wf);
+    wf.wFormatTag = WAVE_FORMAT_PCM;
+    wf.nChannels = 2;
+    wf.nSamplesPerSec = (DWORD)rate;
+    wf.wBitsPerSample = 16;
+    wf.nBlockAlign = (WORD)(wf.nChannels * wf.wBitsPerSample / 8);
+    wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
+    if (waveOutOpen(&hout, WAVE_MAPPER, &wf, (DWORD_PTR)wev, 0,
+                    CALLBACK_EVENT) != MMSYSERR_NOERROR) {
+      fprintf(stderr, "cannot open an audio device at %.0f Hz\n", rate);
+      return 1;
+    }
+    whdr = calloc((size_t)nbuf, sizeof *whdr);
+    wbuf = calloc((size_t)nbuf, sizeof *wbuf);
+    if (!whdr || !wbuf) { fprintf(stderr, "out of memory\n"); return 1; }
+    for (j = 0; j < nbuf; ++j) {
+      wbuf[j] = calloc((size_t)BLOCK * 2, sizeof **wbuf);
+      if (!wbuf[j]) { fprintf(stderr, "out of memory\n"); return 1; }
+      whdr[j].lpData = (LPSTR)wbuf[j];
+      whdr[j].dwBufferLength = (DWORD)(BLOCK * 2 * sizeof **wbuf);
+      waveOutPrepareHeader(hout, &whdr[j], sizeof whdr[j]);
+      whdr[j].dwFlags |= WHDR_DONE;                  /* all free to begin */
+    }
+    printf("playing, %d x %d frames buffered (%.0f ms)\n",
+           nbuf, BLOCK, 1000.0 * nbuf * BLOCK / rate);
+    fflush(stdout);
+  } else {
+    wav = fopen(out, "wb");
+    if (!wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
+    header(wav, (unsigned)rate, 0, bits);
+  }
+  per_tick = song_frames_per_tick(&s, rate, tempo);
   /* TG_Process generates on demand, so --flat-out is correct and faster */
   start_ms = GetTickCount();
 
@@ -346,7 +400,10 @@ int main(int argc, char **argv)
       memset(left_b, 0, (size_t)maxblock * sizeof *left_b);
       memset(right_b, 0, (size_t)maxblock * sizeof *right_b);
     }
-    if (realtime) {
+    if (play) {
+      /* waveOut is the clock now: wait for a buffer to come free */
+      while (!(whdr[wb].dwFlags & WHDR_DONE)) WaitForSingleObject(wev, 100);
+    } else if (realtime) {
       double audio_ms = 1000.0 * (double)frame / rate;
       for (;;) {
         double elapsed = (double)(GetTickCount() - start_ms);
@@ -377,7 +434,7 @@ int main(int argc, char **argv)
     total += BLOCK;
   }
   rewind(wav);
-  header(wav, (unsigned)rate, total);
+  header(wav, (unsigned)rate, total, bits);
   fclose(wav);
   /* TG_terminate calls exit(), so print first */
   printf("%s: %u frames at %.0f Hz, %.1f s, peak %.5f, %d messages, voices %d\n",

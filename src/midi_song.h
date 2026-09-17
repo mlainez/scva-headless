@@ -225,15 +225,45 @@ static int sysex_message(const struct event *e, unsigned char *buf, size_t cap)
 static void put32(FILE *f, uint32_t v) { fwrite(&v, 4, 1, f); }
 static void put16(FILE *f, uint16_t v) { fwrite(&v, 2, 1, f); }
 
-static void header(FILE *f, unsigned rate, uint32_t frames)
+/* bits is 32 for float samples, the engine's own format, or 16 for the
+   integer PCM that every player accepts. */
+static void header(FILE *f, unsigned rate, uint32_t frames, int bits)
 {
-  uint32_t data = frames * 2u * 4u;
+  unsigned bytes = bits == 16 ? 2u : 4u;
+  uint32_t data = frames * 2u * bytes;
   fwrite("RIFF", 1, 4, f); put32(f, 36u + data);
   fwrite("WAVEfmt ", 1, 8, f); put32(f, 16);
-  put16(f, 3); put16(f, 2);
-  put32(f, rate); put32(f, rate * 8u);
-  put16(f, 8); put16(f, 32);
+  put16(f, bits == 16 ? 1 : 3); put16(f, 2);
+  put32(f, rate); put32(f, rate * 2u * bytes);
+  put16(f, (uint16_t)(2u * bytes)); put16(f, (uint16_t)bits);
   fwrite("data", 1, 4, f); put32(f, data);
+}
+
+/* Scaling by 32768 rather than 32767 is what makes this reproducible: it is a
+   power of two, so the multiply is exact whatever width the machine evaluates
+   in, and the truncation that follows cannot land either side of an integer
+   depending on whether an x87 register held 80 bits or 32. */
+static int16_t to_s16(float v)
+{
+  int n;
+  if (v > 1.0f) v = 1.0f; else if (v < -1.0f) v = -1.0f;
+  n = (int)(v * 32768.0f);
+  if (n > 32767) n = 32767;
+  if (n < -32768) n = -32768;
+  return (int16_t)n;
+}
+
+/* One frame out. Float is what the engine produced; 16-bit clips, because
+   summed voices can pass full scale and an integer sample cannot. */
+static void put_frame(FILE *f, float l, float r, int bits)
+{
+  if (bits != 16) {
+    fwrite(&l, 4, 1, f);
+    fwrite(&r, 4, 1, f);
+    return;
+  }
+  put16(f, (uint16_t)to_s16(l));
+  put16(f, (uint16_t)to_s16(r));
 }
 
 static unsigned char *slurp(const char *path, size_t *n)

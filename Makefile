@@ -112,7 +112,7 @@ $(BUILD)/scva-daemon32: src/scva_daemon.c src/pe_loader.c src/pe_loader.h \
 	      $(ALSA32) -lpthread -lm
 
 $(BUILD)/scva_render.exe: src/scva_render.c src/midi_song.h src/core_path.h | $(BUILD)
-	$(MINGW) $(WINFLAGS) -o $@ $<
+	$(MINGW) $(WINFLAGS) -o $@ $< -lwinmm
 
 $(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/core_path.h src/scva_map.h \
                            | $(BUILD)
@@ -131,7 +131,7 @@ $(BUILD)/scva-vst.dll: src/scva_vst_shim.c | $(BUILD)
 
 $(BUILD)/scva_render32.exe: src/scva_render.c src/midi_song.h src/core_path.h \
                             src/scva_map.h | $(BUILD)
-	$(MINGW32) $(WINFLAGS) -o $@ $<
+	$(MINGW32) $(WINFLAGS) -o $@ $< -lwinmm
 
 clean:
 	rm -rf $(BUILD)
