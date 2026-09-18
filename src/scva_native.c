@@ -2,7 +2,7 @@
 /* Render a Standard MIDI File through SOUND Canvas VA's engine to a WAV,
  * with no wine: the core is mapped into this process by src/pe_loader.c.
  *
- *   ./build/scva-native --core dll/SCCore.dll --midi in.mid --out out.wav
+ *   ./build/scva-render --core dll/SCCore.dll --midi in.mid --out out.wav
  *
  * Deliberately call-for-call the same as src/scva_render.c, which runs the
  * same engine under wine. That is what makes the two comparable: any
@@ -143,7 +143,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--latency") && i + 1 < argc)
       latency_us = (unsigned)atoi(argv[++i]) * 1000u;
 #endif
-    else { fprintf(stderr, "usage: scva-native --core DLL --midi FILE --out FILE\n"
+    else { fprintf(stderr, "usage: scva-render --core DLL --midi FILE --out FILE\n"
                      "  --bits 16   integer PCM every player accepts\n"
                      "  --bits 32   float, the engine's own format (default)\n"
                      "  --play      straight to the sound card, no file and\n"
@@ -159,8 +159,8 @@ int main(int argc, char **argv)
 #ifndef SCVA_HAVE_PCM
   if (play) {
     fprintf(stderr, "this build has no --play: it was built without ALSA "
-                    "(scva-native32 usually has none). Use --out and play "
-                    "the file, or build scva-native instead.\n");
+                    "(scva-render32 usually has none). Use --out and play "
+                    "the file, or build scva-render instead.\n");
     return 2;
   }
 #endif

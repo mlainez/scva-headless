@@ -264,8 +264,10 @@ time are the three condition-variable functions.
   instead changes neither channel by a sample, so nothing reads uninitialised
   memory.
 
-A 5,840,640-frame render is identical byte for byte between `scva-native` and
-`wine scva-render.exe`, and identical run to run on both.
+A 5,840,640-frame render is identical byte for byte between this native Linux
+binary and the Windows one under `wine scva-render.exe` - the same tool
+either way, which is why they share a name - and identical run to run on
+both.
 
 ## Hosting the 32-bit core
 

@@ -57,7 +57,7 @@ more, `__vcrt_InitializeCriticalSectionEx`.
     make            # linux and windows
 
 Always use a 64 bits `SCCore.dll` with the 64 bits versions of the svca-headless binaries. 
-`make linux32` builds `scva-native32`, the same renderer for a 32-bit core. It needs `libc6-dev-i386`.
+`make linux32` builds `scva-render32`, the same renderer for a 32-bit core. It needs `libc6-dev-i386`.
 
 If you want to run on ARM, use the 32 bits binaries under box86 on 32-bit ARM; bear in mind that
 it may lead to poor performance. It is still untested.
@@ -78,7 +78,7 @@ pass `--map 88` or you are comparing against the wrong instrument.
 
 ### Render a MIDI file
 
-    ./build/scva-native --midi song.mid --out song.wav --map 88
+    ./build/scva-render --midi song.mid --out song.wav --map 88
 
     --midi FILE      input Standard MIDI File        (required)
     --out FILE       output stereo WAV                (required)
@@ -98,7 +98,7 @@ pass `--map 88` or you are comparing against the wrong instrument.
     --latency MS     delay before a note is heard, --play only (default 20)
 
 `--out` and `--play` are not exclusive: give both to render a file and listen
-at the same time. `--play` needs `scva-native`, not `scva-native32` - the
+at the same time. `--play` needs `scva-render`, not `scva-render32` - the
 32-bit build stays free of the 32-bit ALSA dependency it would otherwise
 force on `linux32`/box86 builds that never asked for it, so it errors out
 instead of failing to link.
@@ -483,7 +483,7 @@ exactly the collapse the renderers exist to avoid - and can produce notes and
 instruments neither the hardware nor our own renderer plays. **Unless the
 player you are using is known to honour this file's own port convention, play
 these songs with the renderer's `--play`** (`scva-render32.exe --midi ... --play`
-on Windows, `scva-native --midi ... --play` on Linux), never with a generic
+on Windows, `scva-render --midi ... --play` on Linux), never with a generic
 player.
 
 ## Driving the engine directly
