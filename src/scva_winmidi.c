@@ -29,6 +29,7 @@
 #endif
 #include <windows.h>
 #include <mmsystem.h>
+#include <conio.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -176,6 +177,75 @@ static int find_input(const char *want)
       return (int)i;
   }
   return -1;
+}
+
+/* One typed line. Mirrors scva-daemon's console_command exactly - same
+   commands, same wording - so switching platforms costs nothing. Returns 1
+   when it asked to stop. */
+static int console_command(char *line, unsigned char *map_of)
+{
+  int ch, want, off = 0;
+  size_t n = strlen(line);
+
+  while (n > 0 && line[n - 1] == ' ') line[--n] = '\0';
+  if (!line[0]) {
+    printf("map:");
+    for (ch = 0; ch < 16; ++ch) printf(" %d", map_of[ch]);
+    printf("\n");
+    return 0;
+  }
+  if (!strcmp(line, "q") || !strcmp(line, "quit")) return 1;
+
+  /* "<channel> <map>" sets one part, a bare map name sets all of them */
+  if (sscanf(line, "%d %n", &ch, &off) == 1 && off > 0 && line[off] &&
+      ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
+    map_of[ch - 1] = (unsigned char)want;
+    short_midi(scva_map_cc(ch - 1, want), 0);
+    printf("channel %d -> map %d\n", ch, want);
+    return 0;
+  }
+  if ((want = scva_map_value(line)) >= 0) {
+    for (ch = 0; ch < 16; ++ch) {
+      map_of[ch] = (unsigned char)want;
+      short_midi(scva_map_cc(ch, want), 0);
+    }
+    printf("all parts -> map %d\n", want);
+    return 0;
+  }
+  printf("type a map (" SCVA_MAP_USAGE "), or\n"
+         "  <channel 1-16> <map>   one part only\n"
+         "  <enter>                what each part is set to\n"
+         "  q                      stop\n");
+  return 0;
+}
+
+/* _kbhit()/_getch() rather than ReadFile/ReadConsole on the standard input
+   handle: those read a whole line under the console's default line-editing
+   mode, which would stall the audio loop behind the Enter key exactly the
+   way a note would stall behind one. This checks and returns immediately
+   when nothing has been typed, so it costs nothing to call every time round
+   the loop; the worst case for noticing a keystroke is one iteration, the
+   same as the 100 ms this loop can already wait for a wave buffer to free.
+   Returns 1 when it was told to stop. */
+static int poll_console(unsigned char *map_of)
+{
+  static char line[256];
+  static size_t len = 0;
+  while (_kbhit()) {
+    int c = _getch();
+    if (c == '\r' || c == '\n') {
+      putchar('\n');
+      line[len] = '\0';
+      len = 0;
+      if (console_command(line, map_of)) return 1;
+    } else if (c == '\b' || c == 127) {
+      if (len > 0) { --len; printf("\b \b"); }
+    } else if (len + 1 < sizeof line) {
+      line[len++] = (char)c;
+      putchar(c);
+    }
+  }
+  return 0;
 }
 
 int main(int argc, char **argv)
@@ -350,9 +420,11 @@ int main(int argc, char **argv)
     hdr[b].dwFlags |= WHDR_DONE;          /* all free to begin with */
   }
 
-  printf("scva-winmidi: playing, Ctrl+C to stop\n");
+  printf("scva-winmidi: playing. Type a map (" SCVA_MAP_USAGE "), <enter> to\n"
+         "show it, q or Ctrl+C to stop.\n");
   for (;;) {
     int did = 0;
+    if (poll_console(map_of)) break;
     for (b = 0; b < nbuf; ++b) {
       struct qmsg m;
       int k;
@@ -393,6 +465,7 @@ int main(int argc, char **argv)
     }
     if (!did) WaitForSingleObject(ev, 100);
   }
-  /* Reached only if the loop above is given an exit; the engine is left to
-     the process teardown because TG_terminate calls exit(). */
+  printf("scva-winmidi: stopping\n");
+  tg_deactivate();
+  return 0;
 }
