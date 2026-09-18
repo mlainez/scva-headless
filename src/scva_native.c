@@ -12,6 +12,9 @@
 #include "pe_loader.h"
 #include "midi_song.h"
 #include "core_path.h"
+#ifdef SCVA_HAVE_PCM
+#include "scva_pcm.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,7 +92,7 @@ int main(int argc, char **argv)
   struct song s;
   unsigned char *bytes;
   size_t n = 0, ei = 0;
-  FILE *wav;
+  FILE *wav = NULL;
   float *left, *right, *left_b = NULL, *right_b = NULL;
   unsigned char *sysex_buf = NULL;
   uint64_t frame = 0, at = 0;
@@ -104,6 +107,15 @@ int main(int argc, char **argv)
   int initarg = 0;
   int cfga = 1, cfgb = 1;
   uint64_t start_ms;
+  int play = 0;                      /* --play: straight to the sound card */
+#ifdef SCVA_HAVE_PCM
+  const char *pcm_name = NULL;       /* --pcm DEV, otherwise auto-detected */
+  const char *pcm_opened = NULL;
+  snd_pcm_t *pcm = NULL;
+  unsigned int latency_us = 20000;
+  float *inter = NULL;
+  long underruns = 0;
+#endif
 
   for (i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--core") && i + 1 < argc) core = argv[++i];
@@ -125,11 +137,33 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--init") && i + 1 < argc) initarg = (int)strtol(argv[++i], NULL, 0);
     else if (!strcmp(argv[i], "--cfg") && i + 2 < argc) { cfga = atoi(argv[++i]); cfgb = atoi(argv[++i]); }
     else if (!strcmp(argv[i], "--flat-out")) realtime = 0;
+    else if (!strcmp(argv[i], "--play")) play = 1;
+#ifdef SCVA_HAVE_PCM
+    else if (!strcmp(argv[i], "--pcm") && i + 1 < argc) pcm_name = argv[++i];
+    else if (!strcmp(argv[i], "--latency") && i + 1 < argc)
+      latency_us = (unsigned)atoi(argv[++i]) * 1000u;
+#endif
     else { fprintf(stderr, "usage: scva-native --core DLL --midi FILE --out FILE\n"
                      "  --bits 16   integer PCM every player accepts\n"
-                     "  --bits 32   float, the engine's own format (default)\n"); return 2; }
+                     "  --bits 32   float, the engine's own format (default)\n"
+                     "  --play      straight to the sound card, no file and\n"
+                     "              no MIDI driver anywhere in the way\n"
+                     "  --pcm DEV   force one PCM device; otherwise detected\n"
+                     "  --latency MS  delay before a note is heard "
+                     "(default 20)\n"); return 2; }
   }
-  if (!midi || !out) { fprintf(stderr, "need --midi and --out\n"); return 2; }
+  if (!midi || (!out && !play)) {
+    fprintf(stderr, "need --midi, and --out FILE or --play\n");
+    return 2;
+  }
+#ifndef SCVA_HAVE_PCM
+  if (play) {
+    fprintf(stderr, "this build has no --play: it was built without ALSA "
+                    "(scva-native32 usually has none). Use --out and play "
+                    "the file, or build scva-native instead.\n");
+    return 2;
+  }
+#endif
   mapval = scva_map_value(mapname);
   if (mapval < 0) {
     fprintf(stderr, "--map wants default, 55, 88, 88pro or 8820\n");
@@ -261,9 +295,30 @@ int main(int argc, char **argv)
     if (!left_b || !right_b) { fprintf(stderr, "out of memory\n"); return 1; }
   }
 
-  wav = fopen(out, "wb");
-  if (!wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
-  header(wav, (unsigned)rate, 0, bits);
+#ifdef SCVA_HAVE_PCM
+  if (play) {
+    inter = calloc((size_t)BLOCK * 2, sizeof *inter);
+    if (!inter) { fprintf(stderr, "out of memory\n"); return 1; }
+    pcm = open_pcm(pcm_name, (unsigned)rate, latency_us, &pcm_opened, 0);
+    if (!pcm) {
+      fprintf(stderr, "no PCM device would take float32 stereo at %.0f Hz",
+              rate);
+      if (pcm_name) fprintf(stderr, " ('%s')", pcm_name);
+      fprintf(stderr, "\n");
+      return 1;
+    }
+    printf("playing on %s\n", pcm_opened);
+    /* The PCM device's own blocking write sets the pace, the same way
+       scva-daemon lets the card be the clock, so the wall-clock wait below
+       is for --out alone and would only fight it here. */
+    realtime = 0;
+  }
+#endif
+  if (out) {
+    wav = fopen(out, "wb");
+    if (!wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
+    header(wav, (unsigned)rate, 0, bits);
+  }
   per_tick = song_frames_per_tick(&s, rate, tempo);
   start_ms = now_ms();
 
@@ -330,18 +385,42 @@ int main(int argc, char **argv)
       if (r > peak) peak = r;
       if (dump && (int)(total + k) < dump)
         printf("  [%5u] L %.9g  R %.9g\n", total + k, left[k], right[k]);
-      put_frame(wav, left[k], right[k], bits);
+      if (wav) put_frame(wav, left[k], right[k], bits);
+#ifdef SCVA_HAVE_PCM
+      if (inter) { inter[2 * k] = left[k]; inter[2 * k + 1] = right[k]; }
+#endif
     }
+#ifdef SCVA_HAVE_PCM
+    if (pcm) {
+      snd_pcm_sframes_t w = snd_pcm_writei(pcm, inter, (snd_pcm_uframes_t)BLOCK);
+      if (w < 0) {
+        ++underruns;
+        if (snd_pcm_recover(pcm, (int)w, 1) < 0) break;
+      }
+    }
+#endif
     frame += BLOCK;
     total += BLOCK;
   }
-  rewind(wav);
-  header(wav, (unsigned)rate, total, bits);
-  fclose(wav);
+  if (wav) {
+    rewind(wav);
+    header(wav, (unsigned)rate, total, bits);
+    fclose(wav);
+  }
   /* TG_terminate calls exit(), so print first */
   printf("%s: %u frames at %.0f Hz, %.1f s, peak %.5f, %d messages, voices %d\n",
-         out, total, rate, total / rate, peak, sent, a.voices());
+         out ? out : "(play)", total, rate, total / rate, peak, sent,
+         a.voices());
+#ifdef SCVA_HAVE_PCM
+  if (underruns)
+    printf("%ld dropout%s on the PCM device - raise --latency\n",
+           underruns, underruns == 1 ? "" : "s");
+#endif
   fflush(stdout);
+#ifdef SCVA_HAVE_PCM
+  if (pcm) snd_pcm_close(pcm);
+  free(inter);
+#endif
   if (have_b) b.deactivate();
   a.deactivate();
   a.terminate();
