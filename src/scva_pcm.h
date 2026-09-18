@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: CC0-1.0
  *
  * Finding and opening an ALSA PCM playback device that will take float32
- * stereo, shared by scva-daemon and scva-native's --play so both pick a
+ * stereo, shared by scva-daemon and scva-render's --play so both pick a
  * card the same way.
  */
 #ifndef SCVA_PCM_H
