@@ -176,8 +176,10 @@ int main(int argc, char **argv)
   unsigned int latency_us = 20000;
   int mapval = 0, block = 256, i;
   /* One map per part. A program change latches CC32, so it is sent again
-     before every one; a CC32 arriving on the wire replaces it for that
-     channel, which is how the map changes while the daemon runs. */
+     before every one; only the console or --send changes it while the
+     daemon runs, never a CC32 arriving on the wire - that is ordinary
+     Bank Select LSB, which files and sequencers send constantly on their
+     own, and would fight whatever was chosen here. */
   unsigned char map_of[16];
   unsigned char last_pc[16];        /* each part's last program change, so
                                         the console can re-send it when the
@@ -471,11 +473,14 @@ int main(int argc, char **argv)
           } else {
             unsigned char st = mbuf[0] & 0xf0, ch = mbuf[0] & 0x0f;
             unsigned int msg;
-            if (st == 0xB0 && n >= 3 && mbuf[1] == 0x20) {
-              map_of[ch] = mbuf[2];
-              fprintf(stderr, "scva-daemon: channel %d -> map %d\n",
-                      ch + 1, mbuf[2]);
-            } else if (st == 0xC0) {
+            /* CC32 arriving here is not honoured as a map change: it is
+               ordinary Bank Select LSB, which real files and sequencers
+               send constantly as routine GM/GS housekeeping (0 alongside
+               almost every program change), not a request to switch the
+               SC map. Only the console and --send do that; this still
+               re-asserts whatever they chose right before every program
+               change, so a file's own bank-select traffic cannot fight it. */
+            if (st == 0xC0) {
               last_pc[ch] = mbuf[1];
               short_midi(scva_map_cc(ch, map_of[ch]), 0);
             }

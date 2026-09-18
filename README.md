@@ -172,6 +172,14 @@ this also re-sends each part's own last program right after CC32, rather
 than leaving the new map to sit unheard until something happens to send a
 fresh program change on its own.
 
+This is the only way to change the map. A CC32 arriving on the wire - from
+whatever file or sequencer is playing - is never treated as a request to
+switch it, because that is ordinary Bank Select LSB, which real files send
+constantly as routine GM/GS housekeeping (0 alongside almost every program
+change) with no intent to touch the SC map at all. Honouring it would let a
+file's own bank-select traffic silently undo whatever was chosen here within
+seconds - which is exactly what it looked like before this was fixed.
+
 Under systemd there is no terminal to type into, so the same commands go over a
 control socket, which the daemon opens in `$XDG_RUNTIME_DIR`, named after
 `--name` (`scva-daemon-SCVA.sock` by default):
@@ -297,6 +305,12 @@ only re-resolves a part's tone on a program change, so along with CC32 this
 re-sends each part's own last program too - otherwise typing a map here
 would show the confirmation line and change nothing you could hear until
 whatever is playing happened to send a fresh program change of its own.
+
+This is the only way to change the map - a CC32 arriving over MIDI-in is
+never treated as one, since that is ordinary Bank Select LSB that real
+files send constantly as GM/GS housekeeping, not a request to switch it.
+Otherwise a file's own bank-select traffic would undo the console's choice
+within seconds.
 
 The defaults suit a modern PC; an older one needs its own settings.
 
