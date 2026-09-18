@@ -46,17 +46,26 @@ typedef MSABI int (*tg_set_config_fn)(const struct tg_system_config *);
 static volatile sig_atomic_t stop_now;
 static void on_signal(int sig) { (void)sig; stop_now = 1; }
 
-/* $XDG_RUNTIME_DIR is where a user service is meant to keep its socket. */
-static const char *control_path(const char *given)
+/* $XDG_RUNTIME_DIR is where a user service is meant to keep its socket. The
+   default folds in --name, so two daemons started under different names
+   never fight over the same socket without anyone having to remember
+   --control too; asking for the same --control path on both is still a
+   collision, because that is what naming one by hand instead means. */
+static const char *control_path(const char *given, const char *name)
 {
   static char buf[256];
   const char *run;
+  char safe[128];
+  size_t i;
   if (given && *given) return given;
+  for (i = 0; name[i] && i + 1 < sizeof safe; ++i)
+    safe[i] = (name[i] == '/') ? '_' : name[i];
+  safe[i] = '\0';
   run = getenv("XDG_RUNTIME_DIR");
   if (run && *run)
-    snprintf(buf, sizeof buf, "%s/scva-daemon.sock", run);
+    snprintf(buf, sizeof buf, "%s/scva-daemon-%s.sock", run, safe);
   else
-    snprintf(buf, sizeof buf, "/tmp/scva-daemon-%u.sock",
+    snprintf(buf, sizeof buf, "/tmp/scva-daemon-%s-%u.sock", safe,
              (unsigned)getuid());
   return buf;
 }
@@ -183,6 +192,7 @@ int main(int argc, char **argv)
   long underruns = 0;
   int console = 1;          /* typed commands on stdin */
   const char *ctl_path = NULL;
+  const char *send_text = NULL;
   int ctl_fd = -1, ctl_slot = -1;
 
   for (i = 1; i < argc; ++i) {
@@ -195,8 +205,9 @@ int main(int argc, char **argv)
       latency_us = (unsigned)atoi(argv[++i]) * 1000u;
     else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
     else if (!strcmp(argv[i], "--control") && i + 1 < argc) ctl_path = argv[++i];
-    else if (!strcmp(argv[i], "--send") && i + 1 < argc)
-      return control_send(control_path(ctl_path), argv[++i]);
+    /* Deferred rather than acted on here: it needs --name resolved first to
+       find the right socket, and that must not depend on argument order. */
+    else if (!strcmp(argv[i], "--send") && i + 1 < argc) send_text = argv[++i];
     else if (!strcmp(argv[i], "--list-pcm")) {
       struct pcm_cand cand[64];
       size_t n, k;
@@ -219,14 +230,18 @@ int main(int argc, char **argv)
         "                   [--map " SCVA_MAP_USAGE "]\n"
         "\n"
         "  --latency MS       delay before a note is heard (default 20)\n"
-        "  --control PATH     control socket (default under $XDG_RUNTIME_DIR)\n"
+        "  --control PATH     control socket (default under $XDG_RUNTIME_DIR,\n"
+        "                     named after --name so two daemons with\n"
+        "                     different names never share one)\n"
         "  --send TEXT        send one command to a running daemon and exit\n"
+        "                     (needs the same --name if it was not default)\n"
         "  --list-pcm         what this machine offers, in try order\n"
         "  --pcm DEV          force one; otherwise it is detected\n");
       return argc > 1 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))
              ? 0 : 2;
     }
   }
+  if (send_text) return control_send(control_path(ctl_path, port_name), send_text);
   mapval = scva_map_value(mapname);
   if (mapval < 0) {
     fprintf(stderr, "scva-daemon: --map wants " SCVA_MAP_USAGE "\n");
@@ -320,7 +335,7 @@ int main(int argc, char **argv)
             pcm_opened, rate, 1000.0 * (double)bufsz / rate);
   }
 
-  ctl_path = control_path(ctl_path);
+  ctl_path = control_path(ctl_path, port_name);
   ctl_fd = control_listen(ctl_path);
   if (ctl_fd >= 0)
     fprintf(stderr, "scva-daemon: control socket %s\n", ctl_path);

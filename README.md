@@ -129,7 +129,11 @@ would play wherever the card happens to go - often an HDMI monitor.
 
 `--map` sets the map at startup (55, 88, 88pro, 8820, default is 8820).
 
-`--name` allows you to decide on the name that will be shown in your midi devices.
+`--name` allows you to decide on the name that will be shown in your midi
+devices. It also names the control socket below, so several daemons started
+with different names never collide - `scva-daemon --name SCVA-88 --map 88`
+and `scva-daemon --name SCVA-55 --map 55` run side by side as two separate
+devices with two separate sockets, with nothing else to configure.
 
 `--pcm` overrides all of that, so a device that will not
 open produces an error. Anything `aplay -L` lists should work.
@@ -162,13 +166,20 @@ Case, an `SC` in front and any dashes, spaces or underscores are ignored, so
 0 to 4.
 
 Under systemd there is no terminal to type into, so the same commands go over a
-control socket, which the daemon opens in `$XDG_RUNTIME_DIR`:
+control socket, which the daemon opens in `$XDG_RUNTIME_DIR`, named after
+`--name` (`scva-daemon-SCVA.sock` by default):
 
     scva-daemon --send "88"
     scva-daemon --send "10 55"
     scva-daemon --send ""          # what each part is set to
 
-`--control PATH` puts it elsewhere. It is a plain Unix socket, so anything can drive it.
+Talking to a daemon started with `--name SCVA-88` needs the same `--name` on
+the `--send` side too, so it finds that daemon's socket rather than the
+default one - order does not matter, `--send "88" --name SCVA-88` and
+`--name SCVA-88 --send "88"` both work.
+
+`--control PATH` puts it elsewhere, overriding the name-based default
+entirely. It is a plain Unix socket, so anything can drive it.
 `socat - UNIX-CONNECT:...`, or any programming language. `--send` is there so nothing extra
 has to be installed.
 
@@ -251,6 +262,13 @@ input.
     --block N          frames per block            (default 256)
     --latency MS       buffered ahead              (default 40)
     --core DLL         path to SCCore.dll
+    --name NAME        window title                (default SCVA)
+
+`--name` sets the window title, so running several of these side by side -
+one per `--midi-in`, for several devices on one machine - shows which is
+which. Unlike the daemon there is no socket to collide on: nothing here is
+addressable from outside its own console, so `--name` is only about telling
+the windows apart.
 
 #### Changing the map while it runs
 
