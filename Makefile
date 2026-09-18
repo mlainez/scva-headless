@@ -70,10 +70,15 @@ windows32: $(WIN32_BINS)
 $(BUILD):
 	@mkdir -p $(BUILD)
 
+# scva-native --play needs ALSA. scva-native32 does not link it - it exists
+# for a 32-bit SCCore.dll and for box86 on 32-bit ARM, both places a 32-bit
+# alsa-lib is unlikely to be installed, the same reason daemon32 is kept out
+# of linux32 - so --play is a --out-and-play-the-file error there instead.
 $(BUILD)/scva-native: src/scva_native.c src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
-                      src/midi_song.h src/core_path.h | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ src/scva_native.c src/pe_loader.c -lpthread -lm
+                      src/midi_song.h src/core_path.h src/scva_pcm.h | $(BUILD)
+	$(CC) $(CFLAGS) -DSCVA_HAVE_PCM -o $@ src/scva_native.c src/pe_loader.c \
+	      $(ALSA) -lpthread -lm
 
 $(BUILD)/scva-native32: src/scva_native.c src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
@@ -122,13 +127,13 @@ $(LV2_BUNDLE32)/scva.so: src/scva_lv2.c src/pe_loader.c src/pe_loader.h src/sse3
 
 $(BUILD)/scva-daemon: src/scva_daemon.c src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
-                      src/core_path.h src/scva_map.h | $(BUILD)
+                      src/core_path.h src/scva_map.h src/scva_pcm.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ src/scva_daemon.c src/pe_loader.c \
 	      $(ALSA) -lpthread -lm
 
 $(BUILD)/scva-daemon32: src/scva_daemon.c src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
-                        src/core_path.h src/scva_map.h | $(BUILD)
+                        src/core_path.h src/scva_map.h src/scva_pcm.h | $(BUILD)
 	$(CC) -m32 $(CFLAGS) -o $@ src/scva_daemon.c src/pe_loader.c \
 	      $(ALSA32) -lpthread -lm
 

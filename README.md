@@ -92,6 +92,16 @@ pass `--map 88` or you are comparing against the wrong instrument.
     --flat-out       render as fast as possible rather than in real time
     --init N         TG_initialize argument          (default 0)
     --cfg A B        TG_XPsetSystemConfig fields     (default 1 1)
+    --play           straight to the sound card, no file and no MIDI
+                     driver anywhere in the way             (needs ALSA)
+    --pcm DEV        force one PCM device, as with the daemon below
+    --latency MS     delay before a note is heard, --play only (default 20)
+
+`--out` and `--play` are not exclusive: give both to render a file and listen
+at the same time. `--play` needs `scva-native`, not `scva-native32` - the
+32-bit build stays free of the 32-bit ALSA dependency it would otherwise
+force on `linux32`/box86 builds that never asked for it, so it errors out
+instead of failing to link.
 
 ### Run it as a MIDI device
 
@@ -413,9 +423,9 @@ Roland 32-bit and 64-bit Windows versions. So:
 
 | | |
 |---|---|
-| Linux x86-64 | LV2, CLAP, renderer, daemon |
-| Linux i386 | LV2, renderer (32-bit core) |
-| Windows x86-64 | CLAP, renderer, MIDI device via a virtual cable |
+| Linux x86-64 | LV2, CLAP, renderer, `--play`, daemon |
+| Linux i386 | LV2, renderer (32-bit core), no `--play` |
+| Windows x86-64 | CLAP, renderer, `--play`, MIDI device via a virtual cable |
 | Windows x86, 98 and up | renderer, `--play`, MIDI device via a virtual cable |
 | ARM, any width | only by emulating x86 - box86 or box64 |
 | macOS | would need a Mach-O loader; not built here |
@@ -430,6 +440,18 @@ to be passed, and single-port files are unaffected.
 The daemon, `scva-winmidi` and the plugins are 16-part: they receive MIDI
 rather than read a file, so nothing tells them which port a note belongs to.
 Two instances, fed separately, is the way round it.
+
+**This is not our limitation alone - it is anyone's.** `PartA`/`PartB` in a
+track name, or `FF 21`, is not something a generic MIDI player or the OS's own
+MIDI routing knows to look for. Windows Media Player, `aplaymidi` into
+`scva-daemon`, or any other player/sequencer that was not specifically taught
+this file's convention will merge both ports onto one 16-channel device -
+exactly the collapse the renderers exist to avoid - and can produce notes and
+instruments neither the hardware nor our own renderer plays. **Unless the
+player you are using is known to honour this file's own port convention, play
+these songs with the renderer's `--play`** (`scva_render32.exe --midi ... --play`
+on Windows, `scva-native --midi ... --play` on Linux), never with a generic
+player.
 
 ## Driving the engine directly
 
