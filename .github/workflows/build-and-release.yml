@@ -1,0 +1,137 @@
+name: Build and release
+
+# Every push and PR builds everything in this repo can build without Roland's
+# own DLL (never redistributed here - see README's Remarks). A push to main
+# additionally replaces the rolling "latest" pre-release with what was just
+# built, so there is always a downloadable build of the current main without
+# anyone having to remember to tag one.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross toolchains and headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-multilib g++-multilib libc6-dev-i386 \
+            libasound2-dev \
+            lv2-dev \
+            gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
+
+      # Header-only, MIT (https://github.com/free-audio/clap), not vendored -
+      # same source the Makefile's CLAP_DIR comment already points at.
+      - name: Fetch the CLAP SDK headers
+        run: git clone --depth 1 https://github.com/free-audio/clap /tmp/clap
+
+      - name: make linux (scva-native, scva-daemon)
+        run: make linux
+
+      - name: make linux32 (scva-native32, no ALSA by design)
+        run: make linux32
+
+      - name: make lv2
+        run: make lv2
+
+      - name: make windows (64-bit)
+        run: make windows
+
+      - name: make windows32 (Windows 98 target)
+        run: make windows32
+
+      - name: make clap (native .clap and win64 .clap)
+        run: make clap CLAP_DIR=/tmp/clap/include
+
+      - name: make clap-win32
+        run: make clap-win32 CLAP_DIR=/tmp/clap/include
+
+      - name: Smoke-test the Linux binaries
+        run: |
+          # No SCCore.dll here (Roland's, never redistributed), so this only
+          # proves each binary starts, parses its arguments and exits with
+          # the usage error - not that it can drive the engine.
+          #
+          # GitHub Actions runs `run:` under `bash -e`, on by default before
+          # this script's first line - wrapping the call in a function does
+          # not shield it, only bracketing the call itself with set +e/-e
+          # does.
+          set +e
+          ./build/scva-native
+          rc=$?
+          set -e
+          if [ "$rc" -ne 2 ]; then
+            echo "scva-native exited $rc, expected 2 (usage error)"; exit 1
+          fi
+
+          set +e
+          ./build/scva-native32
+          rc=$?
+          set -e
+          if [ "$rc" -ne 2 ]; then
+            echo "scva-native32 exited $rc, expected 2 (usage error)"; exit 1
+          fi
+
+          ./build/scva-daemon --list-pcm
+
+      - name: Package release assets
+        run: |
+          set -e
+          rel=release
+          mkdir -p "$rel"
+          tar czf "$rel/scva-linux-x86_64.tar.gz" \
+            -C build scva-native scva-daemon -C .. README.md
+          tar czf "$rel/scva-linux-i386.tar.gz" \
+            -C build scva-native32 -C .. README.md
+          tar czf "$rel/scva-lv2-x86_64.tar.gz" -C build scva.lv2
+          tar czf "$rel/scva-clap-linux-x86_64.tar.gz" -C build scva.clap
+          ( cd build && zip -j "../$rel/scva-windows-x86_64.zip" \
+              scva_render.exe scva-vst.dll scva-winmidi.exe )
+          ( cd build && zip -j "../$rel/scva-windows98-x86.zip" \
+              scva_render32.exe scva-winmidi32.exe )
+          ( cd build && zip -j "../$rel/scva-clap-windows-x86_64.zip" scva-win64.clap )
+          ( cd build && zip -j "../$rel/scva-clap-windows-x86.zip" scva-win32.clap )
+          ls -la "$rel"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scva-headless-build
+          path: release/*
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: scva-headless-build
+          path: release
+
+      - name: Replace the rolling "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest release/* \
+            --title "Latest build ($(git rev-parse --short HEAD))" \
+            --prerelease \
+            --notes "Automatic build of main@$(git rev-parse HEAD).
+
+          Overwritten on every push to main - not a tagged version, and
+          nothing here is a substitute for a release you asked for by name.
+          These binaries need your own copy of SCCore.dll; none of Roland's
+          code is redistributed in this repository or in these archives.
+          See README.md for what runs where and how to point --core at it."
