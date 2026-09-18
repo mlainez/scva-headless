@@ -205,8 +205,8 @@ Start it, and check:
 
 ### Render to a file
 
-    build\scva_render.exe --midi song.mid --out song.wav --map 88
-    build\scva_render32.exe --midi song.mid --out song.wav --map 88
+    build\scva-render.exe --midi song.mid --out song.wav --map 88
+    build\scva-render32.exe --midi song.mid --out song.wav --map 88
 
     --midi FILE      input Standard MIDI File        (required)
     --out FILE       output stereo WAV                (required)
@@ -223,8 +223,8 @@ Start it, and check:
 
 ### Play to the sound card
 
-    build\scva_render.exe --midi song.mid --play
-    build\scva_render32.exe --midi song.mid --play
+    build\scva-render.exe --midi song.mid --play
+    build\scva-render32.exe --midi song.mid --play
 
 The `--play` option sends audio directly to the sound card instead of writing a file.
 No driver, no virtual cable, no MIDI mapper.
@@ -464,7 +464,7 @@ this file's convention will merge both ports onto one 16-channel device -
 exactly the collapse the renderers exist to avoid - and can produce notes and
 instruments neither the hardware nor our own renderer plays. **Unless the
 player you are using is known to honour this file's own port convention, play
-these songs with the renderer's `--play`** (`scva_render32.exe --midi ... --play`
+these songs with the renderer's `--play`** (`scva-render32.exe --midi ... --play`
 on Windows, `scva-native --midi ... --play` on Linux), never with a generic
 player.
 

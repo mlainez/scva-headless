@@ -94,9 +94,9 @@ jobs:
           tar czf "$rel/scva-lv2-x86_64.tar.gz" -C build scva.lv2
           tar czf "$rel/scva-clap-linux-x86_64.tar.gz" -C build scva.clap
           ( cd build && zip -j "../$rel/scva-windows-x86_64.zip" \
-              scva_render.exe scva-vst.dll scva-winmidi.exe )
+              scva-render.exe scva-vst.dll scva-winmidi.exe )
           ( cd build && zip -j "../$rel/scva-windows98-x86.zip" \
-              scva_render32.exe scva-winmidi32.exe )
+              scva-render32.exe scva-winmidi32.exe )
           ( cd build && zip -j "../$rel/scva-clap-windows-x86_64.zip" scva-win64.clap )
           ( cd build && zip -j "../$rel/scva-clap-windows-x86.zip" scva-win32.clap )
           ls -la "$rel"

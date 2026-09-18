@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: CC0-1.0 */
 /* Render a Standard MIDI File through SOUND Canvas VA's engine to a WAV.
  *
- *   wine scva_render.exe --core SCCore.dll --midi in.mid --out out.wav
+ *   wine scva-render.exe --core SCCore.dll --midi in.mid --out out.wav
  *                        [--rate 48000] [--tail 3] [--reset gs|gm|none]
  *
  * This is an **oracle wrapper**: it is the wall between the reference
@@ -170,7 +170,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--maxblock") && i + 1 < argc) maxblock = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--flat-out")) realtime = 0;
     else if (!strcmp(argv[i], "--play")) play = 1;
-    else { fprintf(stderr, "usage: scva_render --core DLL --midi FILE --out FILE\n"
+    else { fprintf(stderr, "usage: scva-render --core DLL --midi FILE --out FILE\n"
                      "  --bits 16   integer PCM every player accepts\n"
                      "  --bits 32   float, the engine's own format (default)\n"
                      "  --play      straight to the sound card, no file and\n"

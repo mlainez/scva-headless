@@ -49,9 +49,9 @@ LINUX_BINS   := $(BUILD)/scva-native $(BUILD)/scva-daemon
 LINUX32_BINS := $(BUILD)/scva-native32
 LV2_BUNDLE   := $(BUILD)/scva.lv2
 LV2_BUNDLE32 := $(BUILD)/scva32.lv2
-WINDOWS_BINS := $(BUILD)/scva_render.exe $(BUILD)/scva-vst.dll \
+WINDOWS_BINS := $(BUILD)/scva-render.exe $(BUILD)/scva-vst.dll \
                 $(BUILD)/scva-winmidi.exe
-WIN32_BINS   := $(BUILD)/scva_render32.exe $(BUILD)/scva-winmidi32.exe
+WIN32_BINS   := $(BUILD)/scva-render32.exe $(BUILD)/scva-winmidi32.exe
 
 all: linux windows
 linux: $(LINUX_BINS)
@@ -137,7 +137,7 @@ $(BUILD)/scva-daemon32: src/scva_daemon.c src/pe_loader.c src/pe_loader.h src/ss
 	$(CC) -m32 $(CFLAGS) -o $@ src/scva_daemon.c src/pe_loader.c \
 	      $(ALSA32) -lpthread -lm
 
-$(BUILD)/scva_render.exe: src/scva_render.c src/midi_song.h src/core_path.h | $(BUILD)
+$(BUILD)/scva-render.exe: src/scva_render.c src/midi_song.h src/core_path.h | $(BUILD)
 	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ $< -lwinmm
 
 $(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/core_path.h src/scva_map.h \
@@ -161,7 +161,7 @@ $(BUILD)/scva-vst.dll: src/scva_vst_shim.c | $(BUILD)
 # The 32-bit Windows binaries carry src/pe_loader.c: the system loader will
 # not take a core that imports MSVCR100 and declares a subsystem newer than
 # Windows 98, so the image is mapped here instead, exactly as on Linux.
-$(BUILD)/scva_render32.exe: src/scva_render.c src/pe_loader.c src/pe_loader.h \
+$(BUILD)/scva-render32.exe: src/scva_render.c src/pe_loader.c src/pe_loader.h \
                             src/midi_song.h src/core_path.h src/scva_map.h \
                             src/sse3_shim.h src/sse2_shim.h src/sse2_sites.h \
                             src/sse2_cvt.h | $(BUILD)
