@@ -251,6 +251,10 @@ static int poll_console(unsigned char *map_of)
 int main(int argc, char **argv)
 {
   const char *core = NULL, *want_in = NULL, *mapname = "default";
+  const char *name = "SCVA";        /* --name: the window title and the
+                                        name status lines print, so several
+                                        of these running at once can be told
+                                        apart */
   unsigned int rate = 48000;
   int block = 256, latency_ms = 40, mapval = 0, i;
   unsigned char map_of[16];
@@ -281,18 +285,22 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--block") && i + 1 < argc) block = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--latency") && i + 1 < argc) latency_ms = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
+    else if (!strcmp(argv[i], "--name") && i + 1 < argc) name = argv[++i];
     else if (!strcmp(argv[i], "--list")) { list_inputs(); return 0; }
     else {
       fprintf(stderr,
         "usage: scva-winmidi [--midi-in NAME|INDEX] [--core DLL]\n"
         "                    [--rate HZ] [--block N] [--latency MS]\n"
-        "                    [--map " SCVA_MAP_USAGE "]\n"
+        "                    [--map " SCVA_MAP_USAGE "] [--name NAME]\n"
         "\n"
         "  --list             the MIDI inputs this machine has\n"
-        "  --midi-in          index, or any part of the name\n");
+        "  --midi-in          index, or any part of the name\n"
+        "  --name             window title, so several of these running\n"
+        "                     at once can be told apart (default SCVA)\n");
       return (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) ? 0 : 2;
     }
   }
+  SetConsoleTitleA(name);
   mapval = scva_map_value(mapname);
   if (mapval < 0) {
     fprintf(stderr, "scva-winmidi: --map wants " SCVA_MAP_USAGE "\n");
@@ -386,7 +394,7 @@ int main(int argc, char **argv)
   {
     MIDIINCAPSA c;
     if (midiInGetDevCapsA((UINT)dev, &c, sizeof c) == MMSYSERR_NOERROR)
-      printf("scva-winmidi: listening on %d  %s\n", dev, c.szPname);
+      printf("scva-winmidi[%s]: listening on %d  %s\n", name, dev, c.szPname);
   }
 
   /* ---- audio out ---- */
@@ -404,8 +412,8 @@ int main(int argc, char **argv)
             rate);
     return 1;
   }
-  printf("scva-winmidi: audio %u Hz, %d x %d frames (%.0f ms), map %s\n",
-         rate, nbuf, block, 1000.0 * nbuf * block / rate, mapname);
+  printf("scva-winmidi[%s]: audio %u Hz, %d x %d frames (%.0f ms), map %s\n",
+         name, rate, nbuf, block, 1000.0 * nbuf * block / rate, mapname);
 
   hdr = calloc((size_t)nbuf, sizeof *hdr);
   pcm = calloc((size_t)nbuf, sizeof *pcm);
@@ -420,8 +428,8 @@ int main(int argc, char **argv)
     hdr[b].dwFlags |= WHDR_DONE;          /* all free to begin with */
   }
 
-  printf("scva-winmidi: playing. Type a map (" SCVA_MAP_USAGE "), <enter> to\n"
-         "show it, q or Ctrl+C to stop.\n");
+  printf("scva-winmidi[%s]: playing. Type a map (" SCVA_MAP_USAGE "), <enter>\n"
+         "to show it, q or Ctrl+C to stop.\n", name);
   for (;;) {
     int did = 0;
     if (poll_console(map_of)) break;
@@ -465,7 +473,7 @@ int main(int argc, char **argv)
     }
     if (!did) WaitForSingleObject(ev, 100);
   }
-  printf("scva-winmidi: stopping\n");
+  printf("scva-winmidi[%s]: stopping\n", name);
   tg_deactivate();
   return 0;
 }
