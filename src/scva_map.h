@@ -55,4 +55,16 @@ static inline unsigned int scva_map_cc(int chan, int mapval)
   return 0xb0u | (unsigned)(chan & 0x0f) | (0x20u << 8) |
          ((unsigned)mapval << 16);
 }
+
+/* A Program Change for one channel, packed for TG_ShortMidiIn. The engine
+   only re-resolves a part's sound when a program change arrives - CC32
+   alone just latches which map the *next* one will read from - so changing
+   the map from the console has nothing to sound different until whatever
+   is playing happens to send a fresh program change on its own, which may
+   be never. Re-sending the part's own last program right after CC32 is
+   what makes the new map audible immediately instead. */
+static inline unsigned int scva_map_pc(int chan, int program)
+{
+  return 0xc0u | (unsigned)(chan & 0x0f) | ((unsigned)program << 8);
+}
 #endif

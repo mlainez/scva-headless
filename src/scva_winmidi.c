@@ -182,7 +182,8 @@ static int find_input(const char *want)
 /* One typed line. Mirrors scva-daemon's console_command exactly - same
    commands, same wording - so switching platforms costs nothing. Returns 1
    when it asked to stop. */
-static int console_command(char *line, unsigned char *map_of)
+static int console_command(char *line, unsigned char *map_of,
+                           const unsigned char *last_pc)
 {
   int ch, want, off = 0;
   size_t n = strlen(line);
@@ -196,11 +197,16 @@ static int console_command(char *line, unsigned char *map_of)
   }
   if (!strcmp(line, "q") || !strcmp(line, "quit")) return 1;
 
-  /* "<channel> <map>" sets one part, a bare map name sets all of them */
+  /* "<channel> <map>" sets one part, a bare map name sets all of them. CC32
+     alone would sit unheard until the next program change happens to arrive
+     on the wire - which may be never, if nothing plays a new instrument in
+     the meantime - so the part's own last program is re-sent right after it
+     to make the change audible now. */
   if (sscanf(line, "%d %n", &ch, &off) == 1 && off > 0 && line[off] &&
       ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
     map_of[ch - 1] = (unsigned char)want;
     short_midi(scva_map_cc(ch - 1, want), 0);
+    short_midi(scva_map_pc(ch - 1, last_pc[ch - 1]), 0);
     printf("channel %d -> map %d\n", ch, want);
     return 0;
   }
@@ -208,6 +214,7 @@ static int console_command(char *line, unsigned char *map_of)
     for (ch = 0; ch < 16; ++ch) {
       map_of[ch] = (unsigned char)want;
       short_midi(scva_map_cc(ch, want), 0);
+      short_midi(scva_map_pc(ch, last_pc[ch]), 0);
     }
     printf("all parts -> map %d\n", want);
     return 0;
@@ -227,7 +234,7 @@ static int console_command(char *line, unsigned char *map_of)
    the loop; the worst case for noticing a keystroke is one iteration, the
    same as the 100 ms this loop can already wait for a wave buffer to free.
    Returns 1 when it was told to stop. */
-static int poll_console(unsigned char *map_of)
+static int poll_console(unsigned char *map_of, const unsigned char *last_pc)
 {
   static char line[256];
   static size_t len = 0;
@@ -237,7 +244,7 @@ static int poll_console(unsigned char *map_of)
       putchar('\n');
       line[len] = '\0';
       len = 0;
-      if (console_command(line, map_of)) return 1;
+      if (console_command(line, map_of, last_pc)) return 1;
     } else if (c == '\b' || c == 127) {
       if (len > 0) { --len; printf("\b \b"); }
     } else if (len + 1 < sizeof line) {
@@ -258,6 +265,9 @@ int main(int argc, char **argv)
   unsigned int rate = 48000;
   int block = 256, latency_ms = 40, mapval = 0, i;
   unsigned char map_of[16];
+  unsigned char last_pc[16];        /* each part's last program change, so
+                                        the console can re-send it when the
+                                        map changes */
 #ifdef SCVA_OWN_LOADER
   struct pe_image *lib;
   char peerr[256];
@@ -307,6 +317,7 @@ int main(int argc, char **argv)
     return 2;
   }
   for (i = 0; i < 16; ++i) map_of[i] = (unsigned char)mapval;
+  memset(last_pc, 0, sizeof last_pc);   /* GM default until one arrives */
   if (block < SCVA_MIN_BLOCK) {
     if (block > 0)
       fprintf(stderr, "scva-winmidi: --block %d is below the engine's "
@@ -432,7 +443,7 @@ int main(int argc, char **argv)
          "to show it, q or Ctrl+C to stop.\n", name);
   for (;;) {
     int did = 0;
-    if (poll_console(map_of)) break;
+    if (poll_console(map_of, last_pc)) break;
     for (b = 0; b < nbuf; ++b) {
       struct qmsg m;
       int k;
@@ -451,8 +462,10 @@ int main(int argc, char **argv)
           unsigned int msg;
           if (st == 0xb0 && m.len >= 3 && m.b[1] == 0x20)
             map_of[ch] = m.b[2];
-          else if (st == 0xc0)
+          else if (st == 0xc0) {
+            last_pc[ch] = m.b[1];
             short_midi(scva_map_cc(ch, map_of[ch]), 0);
+          }
           msg = m.b[0];
           if (m.len > 1) msg |= (unsigned int)m.b[1] << 8;
           if (m.len > 2) msg |= (unsigned int)m.b[2] << 16;

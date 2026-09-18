@@ -165,6 +165,13 @@ Case, an `SC` in front and any dashes, spaces or underscores are ignored, so
 `88`, `SC-88` and `sc 88` are the same thing. The raw CC32 value works too,
 0 to 4.
 
+This changes the sound immediately, not just what the next instrument you
+select uses. The engine only re-resolves a part's tone on a program change -
+CC32 alone just latches which map that program change will read from - so
+this also re-sends each part's own last program right after CC32, rather
+than leaving the new map to sit unheard until something happens to send a
+fresh program change on its own.
+
 Under systemd there is no terminal to type into, so the same commands go over a
 control socket, which the daemon opens in `$XDG_RUNTIME_DIR`, named after
 `--name` (`scva-daemon-SCVA.sock` by default):
@@ -284,6 +291,12 @@ This reads a keystroke at a time rather than a whole line, so it never blocks
 the audio loop behind the Enter key - the same reason the loop already waits
 on the sound card rather than a timer. Before this, only `--map` at startup
 worked; there was no way to change it once the program was running.
+
+It also takes effect immediately rather than sitting unheard: the engine
+only re-resolves a part's tone on a program change, so along with CC32 this
+re-sends each part's own last program too - otherwise typing a map here
+would show the confirmation line and change nothing you could hear until
+whatever is playing happened to send a fresh program change of its own.
 
 The defaults suit a modern PC; an older one needs its own settings.
 
