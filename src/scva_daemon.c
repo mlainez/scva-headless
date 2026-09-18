@@ -115,6 +115,7 @@ static int control_send(const char *path, const char *text)
 
 /* One typed line. Returns 1 when it asked to stop. */
 static int console_command(char *line, unsigned char *map_of,
+                           const unsigned char *last_pc,
                            tg_short_midi_fn short_midi, int out)
 {
   int ch, want, off = 0;
@@ -129,11 +130,16 @@ static int console_command(char *line, unsigned char *map_of,
   }
   if (!strcmp(line, "q") || !strcmp(line, "quit")) return 1;
 
-  /* "<channel> <map>" sets one part, a bare map name sets all of them */
+  /* "<channel> <map>" sets one part, a bare map name sets all of them. CC32
+     alone would sit unheard until the next program change happens to arrive
+     on the wire - which may be never, if nothing plays a new instrument in
+     the meantime - so the part's own last program is re-sent right after it
+     to make the change audible now. */
   if (sscanf(line, "%d %n", &ch, &off) == 1 && off > 0 && line[off] &&
       ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
     map_of[ch - 1] = (unsigned char)want;
     short_midi(scva_map_cc(ch - 1, want), 0);
+    short_midi(scva_map_pc(ch - 1, last_pc[ch - 1]), 0);
     dprintf(out, "channel %d -> map %d\n", ch, want);
     return 0;
   }
@@ -141,6 +147,7 @@ static int console_command(char *line, unsigned char *map_of,
     for (ch = 0; ch < 16; ++ch) {
       map_of[ch] = (unsigned char)want;
       short_midi(scva_map_cc(ch, want), 0);
+      short_midi(scva_map_pc(ch, last_pc[ch]), 0);
     }
     dprintf(out, "all parts -> map %d\n", want);
     return 0;
@@ -172,6 +179,9 @@ int main(int argc, char **argv)
      before every one; a CC32 arriving on the wire replaces it for that
      channel, which is how the map changes while the daemon runs. */
   unsigned char map_of[16];
+  unsigned char last_pc[16];        /* each part's last program change, so
+                                        the console can re-send it when the
+                                        map changes */
 
   struct pe_image *img;
   tg_set_sample_rate_fn set_rate;
@@ -248,6 +258,7 @@ int main(int argc, char **argv)
     return 2;
   }
   for (i = 0; i < 16; ++i) map_of[i] = (unsigned char)mapval;
+  memset(last_pc, 0, sizeof last_pc);   /* GM default until one arrives */
   /* The core corrupts its own heap below 255 frames: 254 aborts every time,
      255 renders identically to 4096. 256 is the floor, rounded. */
   if (block < SCVA_MIN_BLOCK) {
@@ -421,7 +432,7 @@ int main(int argc, char **argv)
         buf[n] = '\0';
         while ((nl = strchr(p, '\n')) != NULL) {
           *nl = '\0';
-          if (console_command(p, map_of, short_midi, STDERR_FILENO))
+          if (console_command(p, map_of, last_pc, short_midi, STDERR_FILENO))
             stop_now = 1;
           p = nl + 1;
         }
@@ -439,7 +450,7 @@ int main(int argc, char **argv)
           if (!strchr(buf, '\n')) strcat(buf, "\n");
           while ((nl = strchr(p, '\n')) != NULL) {
             *nl = '\0';
-            if (console_command(p, map_of, short_midi, c)) stop_now = 1;
+            if (console_command(p, map_of, last_pc, short_midi, c)) stop_now = 1;
             p = nl + 1;
           }
         }
@@ -465,6 +476,7 @@ int main(int argc, char **argv)
               fprintf(stderr, "scva-daemon: channel %d -> map %d\n",
                       ch + 1, mbuf[2]);
             } else if (st == 0xC0) {
+              last_pc[ch] = mbuf[1];
               short_midi(scva_map_cc(ch, map_of[ch]), 0);
             }
             msg = mbuf[0];
