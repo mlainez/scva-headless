@@ -252,6 +252,21 @@ input.
     --latency MS       buffered ahead              (default 40)
     --core DLL         path to SCCore.dll
 
+#### Changing the map while it runs
+
+Type it in the console `scva-winmidi` is running in - the same commands as
+the daemon, above:
+
+    88             every part
+    10 55          one part, channels numbered 1 to 16
+    <enter>        what each part is currently set to
+    q              stop (Ctrl+C still works too)
+
+This reads a keystroke at a time rather than a whole line, so it never blocks
+the audio loop behind the Enter key - the same reason the loop already waits
+on the sound card rather than a timer. Before this, only `--map` at startup
+worked; there was no way to change it once the program was running.
+
 The defaults suit a modern PC; an older one needs its own settings.
 
 | | what it is | when to raise it |
