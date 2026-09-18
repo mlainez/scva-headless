@@ -265,7 +265,7 @@ time are the three condition-variable functions.
   memory.
 
 A 5,840,640-frame render is identical byte for byte between `scva-native` and
-`wine scva_render.exe`, and identical run to run on both.
+`wine scva-render.exe`, and identical run to run on both.
 
 ## Hosting the 32-bit core
 
@@ -407,7 +407,7 @@ passes applied it holds 37,185 xmm instructions and every one is SSE1.
 
 Windows builds its MIDI device list from drivers, so no program can add itself
 to it, and routing a file into this engine otherwise means a virtual cable and
-the MIDI mapper agreeing with each other. `scva_render32.exe --play` skips all
+the MIDI mapper agreeing with each other. `scva-render32.exe --play` skips all
 of that: the renderer already reads the file and already paces itself in real
 time, so it opens waveOut and puts the audio out directly. No driver, no cable,
 no mapper, and none of it depends on the `midiIn` path that has never been seen
