@@ -460,9 +460,14 @@ int main(int argc, char **argv)
         } else {
           unsigned char st = m.b[0] & 0xf0, ch = m.b[0] & 0x0f;
           unsigned int msg;
-          if (st == 0xb0 && m.len >= 3 && m.b[1] == 0x20)
-            map_of[ch] = m.b[2];
-          else if (st == 0xc0) {
+          /* CC32 arriving here is not honoured as a map change: it is
+             ordinary Bank Select LSB, which real files and sequencers
+             send constantly as routine GM/GS housekeeping (0 alongside
+             almost every program change), not a request to switch the
+             SC map. Only the console does that; this still re-asserts
+             whatever it chose right before every program change, so a
+             file's own bank-select traffic cannot fight it. */
+          if (st == 0xc0) {
             last_pc[ch] = m.b[1];
             short_midi(scva_map_cc(ch, map_of[ch]), 0);
           }
