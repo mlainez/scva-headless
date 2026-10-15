@@ -10,8 +10,11 @@
  * Nothing of Roland's is distributed here: the core is looked for in
  * $SCVA_DLL_DIR, then beside the plugin.
  *
- * On Windows the core loads through LoadLibrary; on Linux through the PE
- * loader in pe_loader.c. Same engine either way.
+ * On 64-bit Windows the core loads through LoadLibrary. Elsewhere it goes
+ * through the PE loader in pe_loader.c: on Linux because there is no other
+ * way, on 32-bit Windows because the system loader will not take a core that
+ * imports MSVCR100 and declares a subsystem newer than Windows 98. Same
+ * engine either way.
  */
 #define _GNU_SOURCE
 #include "scva_map.h"
@@ -22,7 +25,11 @@
 
 #include <clap/clap.h>
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__i386__)
+#define SCVA_LOADLIBRARY
+#endif
+
+#ifdef SCVA_LOADLIBRARY
 #include <windows.h>
 #define SCVA_CC __cdecl
 #else
@@ -48,7 +55,7 @@ struct scva {
    clap_plugin_t plugin;
    const clap_host_t *host;
 
-#ifdef _WIN32
+#ifdef SCVA_LOADLIBRARY
    HMODULE lib;
 #else
    struct pe_image *img;
@@ -81,21 +88,19 @@ static void apply_selection(struct scva *s);
 
 /* ---- finding and opening the core -------------------------------------- */
 
+/* The directory holding the .clap, from the path the host passes to init. */
+static char g_plugin_dir[1024];
+
 static const char *core_dir(void)
 {
    const char *dir = getenv("SCVA_DLL_DIR");
-   return (dir && *dir) ? dir : ".";
+   if (dir && *dir) return dir;
+   return *g_plugin_dir ? g_plugin_dir : ".";
 }
 
-static int core_path(char *buf, size_t cap, const char *leaf)
+static void core_path(char *buf, size_t cap, const char *leaf)
 {
-   const char *dir = getenv("SCVA_DLL_DIR");
-   if (dir && *dir) {
-      snprintf(buf, cap, "%s/%s", dir, leaf);
-      return 1;
-   }
-   snprintf(buf, cap, "%s", leaf);
-   return 1;
+   snprintf(buf, cap, "%s/%s", core_dir(), leaf);
 }
 
 /* A preset is four numbers; the host only ever passes the string back. */
@@ -117,7 +122,7 @@ static int load_key_parse(const char *k, int *map, int *bank, int *prog,
 
 static void *sym(struct scva *s, const char *n)
 {
-#ifdef _WIN32
+#ifdef SCVA_LOADLIBRARY
    return (void *)GetProcAddress(s->lib, n);
 #else
    return pe_symbol(s->img, n);
@@ -128,7 +133,7 @@ static int open_core(struct scva *s)
 {
    char path[2048];
    core_path(path, sizeof path, "SCCore.dll");
-#ifdef _WIN32
+#ifdef SCVA_LOADLIBRARY
    s->lib = LoadLibraryA(path);
    if (!s->lib) { fprintf(stderr, "scva: cannot load %s\n", path); return 0; }
 #else
@@ -143,7 +148,7 @@ static int open_core(struct scva *s)
 
 static void close_core(struct scva *s)
 {
-#ifdef _WIN32
+#ifdef SCVA_LOADLIBRARY
    if (s->lib) { FreeLibrary(s->lib); s->lib = NULL; }
 #else
    if (s->img) { pe_unload(s->img); s->img = NULL; }
@@ -659,7 +664,15 @@ static const clap_preset_discovery_factory_t s_preset_factory = {
    pd_count, pd_get_descriptor, pd_create
 };
 
-static bool entry_init(const char *path) { (void)path; return true; }
+static bool entry_init(const char *path)
+{
+   const char *slash = NULL, *c;
+   for (c = path ? path : ""; *c; ++c)
+      if (*c == '/' || *c == '\\') slash = c;
+   if (slash && (size_t)(slash - path) < sizeof g_plugin_dir)
+      snprintf(g_plugin_dir, sizeof g_plugin_dir, "%.*s", (int)(slash - path), path);
+   return true;
+}
 static void entry_deinit(void) {}
 static const void *entry_get_factory(const char *id)
 {
