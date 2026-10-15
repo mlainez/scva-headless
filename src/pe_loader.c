@@ -600,6 +600,51 @@ static void *pe_bind(const char *dll, const char *name)
 }
 
 /* ---------- the loader -------------------------------------------------- */
+#if defined(_WIN32) && defined(__i386__)
+/* Implicit TLS on 32-bit Windows. The image finds its block through the
+   array at fs:[0x2c], which only the system loader can extend: on NT it is
+   ntdll's per-module array, on 9x the TlsAlloc slot array. So each
+   `mov eax, fs:[0x2c]` in the image becomes a call to a stub returning an
+   array of our own, whose entry 0 is this thread's copy of the block.
+
+   Every image shares one TlsAlloc slot holding a per-thread list keyed by an
+   id that is never reused, so an image loaded after another was unloaded
+   cannot pick up the old one's block. Nothing tells a mapped image that a
+   thread has ended, so a thread's copies are never freed. */
+struct pe_tls {
+  uint32_t id;
+  unsigned char *tmpl;      /* raw bytes; the rest of the block is zero */
+  size_t raw, total;
+  unsigned char *stub;
+};
+struct pe_tls_node {
+  struct pe_tls_node *next;
+  uint32_t id;
+  void *arr[1];             /* the image indexes this with _tls_index = 0 */
+};
+static DWORD g_tls_slot = TLS_OUT_OF_INDEXES;
+static uint32_t g_tls_ids;
+
+static void **__cdecl pe_tls_array(const struct pe_tls *t)
+{
+  DWORD e = GetLastError();
+  struct pe_tls_node *head = TlsGetValue(g_tls_slot), *n;
+  for (n = head; n; n = n->next)
+    if (n->id == t->id) break;
+  if (!n) {
+    n = calloc(1, sizeof *n + t->total);
+    if (!n) abort();
+    n->next = head;
+    n->id = t->id;
+    n->arr[0] = n + 1;
+    memcpy(n->arr[0], t->tmpl, t->raw);
+    TlsSetValue(g_tls_slot, n);
+  }
+  SetLastError(e);
+  return n->arr;
+}
+#endif
+
 /* The TLS pointer array at gs:[0x58] belongs to the thread, not to an image,
    so it is allocated once and every image gets its own index - which is what
    TlsAlloc does on Windows. Without it a second image overwrites the first
@@ -769,6 +814,56 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     }
   }
 
+#if defined(_WIN32) && defined(__i386__)
+  if (oh->dirs[9].size) {
+    static const unsigned char site[6] = { 0x64, 0xa1, 0x2c, 0, 0, 0 };
+    struct {
+      uint32_t start, end, index_addr, callbacks, zerofill, chars;
+    } *td = (void *)(base + oh->dirs[9].rva);
+    struct pe_tls *t = calloc(1, sizeof *t);
+    unsigned char *s;
+    int sites = 0;
+    if (!t) FAIL("out of memory for TLS");
+    if (g_tls_slot == TLS_OUT_OF_INDEXES) g_tls_slot = TlsAlloc();
+    t->id = ++g_tls_ids;
+    t->raw = td->end - td->start;
+    t->total = t->raw + td->zerofill;
+    t->tmpl = malloc(t->raw ? t->raw : 1);
+    t->stub = pe_reserve(NULL, 0x1000);
+    if (g_tls_slot == TLS_OUT_OF_INDEXES || !t->tmpl || !t->stub)
+      FAIL("cannot set up thread-local storage");
+    memcpy(t->tmpl, (void *)(uintptr_t)td->start, t->raw);
+    /* pushfd; push ecx; push edx; push t; call pe_tls_array; add esp, 4;
+       pop edx; pop ecx; popfd; ret - eax is the only register it changes */
+    s = t->stub;
+    *s++ = 0x9c; *s++ = 0x51; *s++ = 0x52;
+    *s++ = 0x68; memcpy(s, &t, 4); s += 4;
+    *s++ = 0xe8;
+    { int32_t rel = (int32_t)((uintptr_t)pe_tls_array - (uintptr_t)(s + 4));
+      memcpy(s, &rel, 4); s += 4; }
+    *s++ = 0x83; *s++ = 0xc4; *s++ = 0x04;
+    *s++ = 0x5a; *s++ = 0x59; *s++ = 0x9d; *s++ = 0xc3;
+    pe_setprot(t->stub, 0x1000, 1, 0);
+    for (int i = 0; i < fh->nsec; ++i) {
+      unsigned char *c = base + sec[i].vaddr;
+      if (!(sec[i].chars & 0x20000000) || sec[i].vsize < sizeof site) continue;
+      for (size_t k = 0; k + sizeof site <= sec[i].vsize; ++k) {
+        int32_t rel;
+        if (memcmp(c + k, site, sizeof site)) continue;
+        rel = (int32_t)((uintptr_t)t->stub - (uintptr_t)(c + k + 5));
+        c[k] = 0xe8; memcpy(c + k + 1, &rel, 4); c[k + 5] = 0x90;
+        k += sizeof site - 1;
+        ++sites;
+      }
+    }
+    if (td->index_addr) *(uint32_t *)(uintptr_t)td->index_addr = 0;
+    img->tls = t;
+    if (getenv("PE_TRACE"))
+      fprintf(stderr, "pe: TLS through a stub, %d sites, block %u bytes\n",
+              sites, (unsigned)t->total);
+  }
+#endif
+
   /* SCVA_DUMP_TEXT writes the patched code out so a disassembler can confirm
      that nothing outside SSE1 survived either pass. */
   {
@@ -798,15 +893,25 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
   /* Thread-local storage. The image reads gs:[0x58] for its TLS pointer array
      and indexes it: without this the very first thread-local access is
      `mov (%rax,%rcx,8),%rbx` with rax = 0, which is where the first native
-     TG_Process died. Windows keeps that array itself, and the 32-bit core
-     carries no TLS directory at all, so this is a Linux concern. */
-#ifdef _WIN32
+     TG_Process died. 32-bit Windows is handled above, before the code
+     was made read-only. */
+#if defined(_WIN32) && !defined(__i386__)
   if (oh->dirs[9].size)
     FAIL("this core wants thread-local storage, which is not handled here");
+#elif defined(_WIN32)
+  if (oh->dirs[9].size) {
+    uint32_t *cb = (uint32_t *)(uintptr_t)
+      ((uint32_t *)(base + oh->dirs[9].rva))[3];
+    while (cb && *cb) {
+      WINAPI_CC void (*f)(void *, uint32_t, void *) = (void *)(uintptr_t)*cb;
+      f(base, 1, NULL);
+      ++cb;
+    }
+  }
 #else
   if (oh->dirs[9].size) {
     struct {
-      uint64_t start, end, index_addr, callbacks;
+      thunk_t start, end, index_addr, callbacks;
       uint32_t zerofill, chars;
     } *tls = (void *)(base + oh->dirs[9].rva);
     size_t raw = (size_t)(tls->end - tls->start);
@@ -830,7 +935,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
       fprintf(stderr, "pe: TLS slot %u, block %zu bytes (%zu raw + %u zero)\n",
               idx, total, raw, tls->zerofill);
     if (tls->callbacks) {
-      uint64_t *cb = (uint64_t *)(uintptr_t)tls->callbacks;
+      thunk_t *cb = (thunk_t *)(uintptr_t)tls->callbacks;
       while (*cb) {
         /* PIMAGE_TLS_CALLBACK is WINAPI: stdcall on i386. */
         WINAPI_CC void (*f)(void *, uint32_t, void *) = (void *)(uintptr_t)*cb;
@@ -864,6 +969,14 @@ void pe_unload(struct pe_image *img)
     free(g_tls_slots[img->tls_index]);
     g_tls_slots[img->tls_index] = NULL;
     if (g_tls_nfree < PE_TLS_SLOTS) g_tls_free[g_tls_nfree++] = img->tls_index;
+  }
+#endif
+#if defined(_WIN32) && defined(__i386__)
+  if (img->tls) {
+    struct pe_tls *t = img->tls;
+    pe_release(t->stub, 0x1000);
+    free(t->tmpl);
+    free(t);
   }
 #endif
   if (img->base) pe_release(img->base, img->size);
