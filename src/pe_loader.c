@@ -316,10 +316,10 @@ static WINAPI_CC void *ms_GetModuleHandleW(const uint16_t *n)
   } else if (getenv("PE_TRACE")) fprintf(stderr, "pe: GetModuleHandleW(NULL)\n");
   return (void *)0x2000;
 }
-static void *pe_bind(const char *name);
+static void *pe_bind(const char *dll, const char *name);
 static WINAPI_CC void *ms_GetProcAddress(void *m, const char *n)
 {
-  void *r = n ? pe_bind(n) : NULL;
+  void *r = n ? pe_bind(NULL, n) : NULL;
   if (getenv("PE_TRACE"))
     fprintf(stderr, "pe: GetProcAddress(%p, \"%s\") -> %s\n",
             m, n ? n : "(ordinal)", r ? "ok" : "NULL");
@@ -353,6 +353,18 @@ static WINAPI_CC void  ms_RtlVirtualUnwind(uint32_t a, uint64_t b, uint64_t c, v
 { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; }
 
 #endif  /* !_WIN32 */
+
+#ifdef _WIN32
+/* The spin count is a tuning hint and the flags only affect debug info, so
+   the call every kernel32 since Windows 95 has is enough. */
+static CDECL_CC int ms_vcrt_InitializeCriticalSectionEx(CRITICAL_SECTION *c,
+                                                        DWORD spin, DWORD flags)
+{
+  (void)spin; (void)flags;
+  InitializeCriticalSection(c);
+  return 1;
+}
+#endif
 
 /* Zeroed: Windows hands back a fresh page where glibc recycles a dirty one. */
 static CDECL_CC void *ms_malloc(size_t n) { return calloc(1, n ? n : 1); }
@@ -471,7 +483,6 @@ static const struct binding BINDINGS[] = {
   {"EnterCriticalSection", ms_EnterCriticalSection},
   {"LeaveCriticalSection", ms_LeaveCriticalSection},
   {"InitializeCriticalSectionAndSpinCount", ms_InitializeCriticalSectionAndSpinCount},
-  {"__vcrt_InitializeCriticalSectionEx", ms_vcrt_InitializeCriticalSectionEx},
   {"GetCurrentProcess", ms_GetCurrentProcess},
   {"GetCurrentProcessId", ms_GetCurrentProcessId},
   {"GetCurrentThreadId", ms_GetCurrentThreadId},
@@ -492,6 +503,7 @@ static const struct binding BINDINGS[] = {
   {"TerminateProcess", ms_TerminateProcess},
   {"WaitForSingleObjectEx", ms_WaitForSingleObjectEx},
 #endif
+  {"__vcrt_InitializeCriticalSectionEx", ms_vcrt_InitializeCriticalSectionEx},
   {"_CxxThrowException", ms_CxxThrowException},
   {"__C_specific_handler", ms_C_specific_handler},
   {"__CxxFrameHandler3", ms_CxxFrameHandler3},
@@ -543,7 +555,7 @@ static const struct binding BINDINGS[] = {
   {NULL, NULL}
 };
 
-static void *pe_bind(const char *name)
+static void *pe_bind(const char *dll, const char *name)
 {
   int i;
 #ifdef _WIN32
@@ -559,6 +571,18 @@ static void *pe_bind(const char *name)
 #endif
   for (i = 0; BINDINGS[i].name; ++i)
     if (!strcmp(BINDINGS[i].name, name)) return BINDINGS[i].fn;
+#ifdef _WIN32
+  /* Last, the DLL the core names, where the system has it: XP with the
+     VC++ redistributable has VCRUNTIME140 and the Universal CRT, so a core
+     built against them needs no binding for each of its imports. Windows 98
+     has neither and relies on the table alone. */
+  if (dll) {
+    HMODULE m = LoadLibraryA(dll);
+    if (m) return (void *)GetProcAddress(m, name);
+  }
+#else
+  (void)dll;
+#endif
   return NULL;
 }
 
@@ -685,7 +709,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
         if (*oft & PE_ORD_FLAG)
           FAIL("%s imports by ordinal", (char *)(base + im->name));
         const char *nm = (const char *)(base + (*oft & 0xffffffff) + 2);
-        void *fn = pe_bind(nm);
+        void *fn = pe_bind((const char *)(base + im->name), nm);
         if (!fn) FAIL("no binding for %s (%s)", nm, (char *)(base + im->name));
         *ft = (thunk_t)(uintptr_t)fn;
       }
