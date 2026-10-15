@@ -327,7 +327,8 @@ static WINAPI_CC void *ms_GetProcAddress(void *m, const char *n)
 }
 static WINAPI_CC int   ms_IsDebuggerPresent(void) { return 0; }
 static WINAPI_CC int   ms_IsProcessorFeaturePresent(uint32_t f) { (void)f; return 1; }
-static WINAPI_CC void  ms_InitializeSListHead(void *p) { if (p) memset(p, 0, 16); }
+/* SLIST_HEADER is two pointers wide: 8 bytes on x86, 16 on x86-64. */
+static WINAPI_CC void  ms_InitializeSListHead(void *p) { if (p) memset(p, 0, 2 * sizeof(void *)); }
 static WINAPI_CC void *ms_SetUnhandledExceptionFilter(void *f) { (void)f; return NULL; }
 static WINAPI_CC long  ms_UnhandledExceptionFilter(void *p) { (void)p; return 1; }
 static WINAPI_CC void  ms_TerminateProcess(void *h, uint32_t c)
@@ -473,6 +474,17 @@ static CDECL_CC void  ms_operator_delete(void *p) { free(p); }
    nothing, which is what a no-argument stdcall does. */
 static WINAPI_CC void ms_type_info_dtor(void) {}
 static CDECL_CC void *ms_encoded_null(void) { return NULL; }
+/* Reached from the core's float-to-integer helpers when a conversion is
+   invalid. They load a default x87 control word before the call and leave
+   restoring the caller's, passed in cw, to this; the result is discarded. */
+static CDECL_CC double ms_except1(uint32_t fpe, int op, double arg, double res,
+                                  uint64_t cw, void *unused)
+{
+  uint16_t c = (uint16_t)cw;
+  (void)fpe; (void)op; (void)arg; (void)unused;
+  __asm__ volatile ("fldcw %0" : : "m"(c));
+  return res;
+}
 #endif
 
 struct binding { const char *name; void *fn; };
@@ -551,6 +563,7 @@ static const struct binding BINDINGS[] = {
   {"?terminate@@YAXXZ", ms_std_terminate},
   {"?_type_info_dtor_internal_method@type_info@@QAEXXZ", ms_type_info_dtor},
   {"_encoded_null", ms_encoded_null},
+  {"_except1", ms_except1},
 #endif
   {NULL, NULL}
 };
