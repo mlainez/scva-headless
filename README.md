@@ -451,9 +451,14 @@ ARM build of this and no Windows one.
 
 Needs the CLAP headers: `make clap CLAP_DIR=/path/to/clap/include`.
 
-Same shape as the LV2: MIDI in, stereo out, tone map as a parameter, and the
-core found through `$SCVA_DLL_DIR`. On Windows it loads the core with
-`LoadLibrary`; on Linux through the PE loader.
+Same shape as the LV2: MIDI in, stereo out, tone map as a parameter. The core
+and patch name files are found in `$SCVA_DLL_DIR`, or beside the `.clap`.
+
+| build | how the core is loaded |
+|---|---|
+| Linux | PE loader |
+| 64-bit Windows | `LoadLibrary` |
+| 32-bit Windows | PE loader, as `scva-render32.exe`: no `MSVCR100.dll` needed |
 
 Patches use `clap.preset-discovery` (a `LOCATION_PLUGIN` provider),
 `clap.preset-load`, and `clap.note-name` for the loaded kit's keys.

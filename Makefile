@@ -101,8 +101,14 @@ $(BUILD)/scva-tones: src/scva_tones.c src/scva_names.h | $(BUILD)
 $(BUILD)/scva-win64.clap: src/scva_clap.c src/scva_map.h src/scva_names.h | $(BUILD)
 	$(MINGW) $(WINFLAGS) -I$(CLAP_DIR) -shared -o $@ src/scva_clap.c
 
-$(BUILD)/scva-win32.clap: src/scva_clap.c src/scva_map.h src/scva_names.h | $(BUILD)
-	$(MINGW32) $(WINFLAGS) -I$(CLAP_DIR) -shared -o $@ src/scva_clap.c
+# Built like scva-render32.exe, and for the same reason: the plugin maps the
+# core with src/pe_loader.c, so it runs on Windows 98 and needs no MSVCR100.
+$(BUILD)/scva-win32.clap: src/scva_clap.c src/pe_loader.c src/pe_loader.h \
+                          src/scva_map.h src/scva_names.h src/win9x.h \
+                          src/sse3_shim.h src/sse2_shim.h src/sse2_sites.h \
+                          src/sse2_cvt.h | $(BUILD)
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -I$(CLAP_DIR) -shared -o $@ \
+	   src/scva_clap.c src/pe_loader.c
 
 # ---- the LV2 plugin ------------------------------------------------------
 # A bundle is a directory: the shared object plus its Turtle. The plugin's
