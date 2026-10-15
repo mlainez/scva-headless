@@ -39,6 +39,7 @@ struct pe_image {
   size_t size;
   uint64_t entry;           /* DllMain, image-relative */
   int tls_index;            /* slot this image was given, -1 if none */
+  void *tls;                /* 32-bit Windows: its thread-local storage */
 };
 
 /* Map, relocate, bind imports, run the entry point. NULL on failure. */

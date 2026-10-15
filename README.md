@@ -43,10 +43,12 @@ Cores that have been tested:
 |---|---|---|
 | 1.1.6, 64-bit | cf9dce5a0cabee06792e884673b8beef806f1aed | dbd9a30c168efef577d40a28d9adf37d |
 | 1.1.2, 64-bit | ba0d868fd55b3114ce2cfb7dec0a5f6314113791 | 80f1e673d249d1cda67a2936326f866b |
+| 1.0.6, 64-bit | e87d9ae914a07b29a7bde4a0b7e2b9f1bea77b67 | 6abfbf61869fc436d76c93d1bc7e2735 |
+| 1.0.6, 32-bit | c2eb2369fe0884affd14c72cbdbc2c5aab515ce4 | 6588e6aa17a57ba874e8b675114214f0 |
 | 1.0.3, 32-bit | 41911c21d7e1d6da5574cb42c35c7ba96ea110e0 | d44d1b8c9a6f956ca2324f2f5d348c44 |
 
-1.1.2 and 1.1.6 render identically, byte for byte. 1.1.2 wants one function
-more, `__vcrt_InitializeCriticalSectionEx`.
+1.0.6, both widths, and 1.1.2 render identically, byte for byte. 1.1.6 and
+1.0.3 differ from them by at most one step in 16-bit output.
 
 ## Build
 

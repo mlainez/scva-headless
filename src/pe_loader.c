@@ -316,10 +316,10 @@ static WINAPI_CC void *ms_GetModuleHandleW(const uint16_t *n)
   } else if (getenv("PE_TRACE")) fprintf(stderr, "pe: GetModuleHandleW(NULL)\n");
   return (void *)0x2000;
 }
-static void *pe_bind(const char *name);
+static void *pe_bind(const char *dll, const char *name);
 static WINAPI_CC void *ms_GetProcAddress(void *m, const char *n)
 {
-  void *r = n ? pe_bind(n) : NULL;
+  void *r = n ? pe_bind(NULL, n) : NULL;
   if (getenv("PE_TRACE"))
     fprintf(stderr, "pe: GetProcAddress(%p, \"%s\") -> %s\n",
             m, n ? n : "(ordinal)", r ? "ok" : "NULL");
@@ -327,7 +327,8 @@ static WINAPI_CC void *ms_GetProcAddress(void *m, const char *n)
 }
 static WINAPI_CC int   ms_IsDebuggerPresent(void) { return 0; }
 static WINAPI_CC int   ms_IsProcessorFeaturePresent(uint32_t f) { (void)f; return 1; }
-static WINAPI_CC void  ms_InitializeSListHead(void *p) { if (p) memset(p, 0, 16); }
+/* SLIST_HEADER is two pointers wide: 8 bytes on x86, 16 on x86-64. */
+static WINAPI_CC void  ms_InitializeSListHead(void *p) { if (p) memset(p, 0, 2 * sizeof(void *)); }
 static WINAPI_CC void *ms_SetUnhandledExceptionFilter(void *f) { (void)f; return NULL; }
 static WINAPI_CC long  ms_UnhandledExceptionFilter(void *p) { (void)p; return 1; }
 static WINAPI_CC void  ms_TerminateProcess(void *h, uint32_t c)
@@ -353,6 +354,18 @@ static WINAPI_CC void  ms_RtlVirtualUnwind(uint32_t a, uint64_t b, uint64_t c, v
 { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; }
 
 #endif  /* !_WIN32 */
+
+#ifdef _WIN32
+/* The spin count is a tuning hint and the flags only affect debug info, so
+   the call every kernel32 since Windows 95 has is enough. */
+static CDECL_CC int ms_vcrt_InitializeCriticalSectionEx(CRITICAL_SECTION *c,
+                                                        DWORD spin, DWORD flags)
+{
+  (void)spin; (void)flags;
+  InitializeCriticalSection(c);
+  return 1;
+}
+#endif
 
 /* Zeroed: Windows hands back a fresh page where glibc recycles a dirty one. */
 static CDECL_CC void *ms_malloc(size_t n) { return calloc(1, n ? n : 1); }
@@ -461,6 +474,17 @@ static CDECL_CC void  ms_operator_delete(void *p) { free(p); }
    nothing, which is what a no-argument stdcall does. */
 static WINAPI_CC void ms_type_info_dtor(void) {}
 static CDECL_CC void *ms_encoded_null(void) { return NULL; }
+/* Reached from the core's float-to-integer helpers when a conversion is
+   invalid. They load a default x87 control word before the call and leave
+   restoring the caller's, passed in cw, to this; the result is discarded. */
+static CDECL_CC double ms_except1(uint32_t fpe, int op, double arg, double res,
+                                  uint64_t cw, void *unused)
+{
+  uint16_t c = (uint16_t)cw;
+  (void)fpe; (void)op; (void)arg; (void)unused;
+  __asm__ volatile ("fldcw %0" : : "m"(c));
+  return res;
+}
 #endif
 
 struct binding { const char *name; void *fn; };
@@ -471,7 +495,6 @@ static const struct binding BINDINGS[] = {
   {"EnterCriticalSection", ms_EnterCriticalSection},
   {"LeaveCriticalSection", ms_LeaveCriticalSection},
   {"InitializeCriticalSectionAndSpinCount", ms_InitializeCriticalSectionAndSpinCount},
-  {"__vcrt_InitializeCriticalSectionEx", ms_vcrt_InitializeCriticalSectionEx},
   {"GetCurrentProcess", ms_GetCurrentProcess},
   {"GetCurrentProcessId", ms_GetCurrentProcessId},
   {"GetCurrentThreadId", ms_GetCurrentThreadId},
@@ -492,6 +515,7 @@ static const struct binding BINDINGS[] = {
   {"TerminateProcess", ms_TerminateProcess},
   {"WaitForSingleObjectEx", ms_WaitForSingleObjectEx},
 #endif
+  {"__vcrt_InitializeCriticalSectionEx", ms_vcrt_InitializeCriticalSectionEx},
   {"_CxxThrowException", ms_CxxThrowException},
   {"__C_specific_handler", ms_C_specific_handler},
   {"__CxxFrameHandler3", ms_CxxFrameHandler3},
@@ -539,11 +563,12 @@ static const struct binding BINDINGS[] = {
   {"?terminate@@YAXXZ", ms_std_terminate},
   {"?_type_info_dtor_internal_method@type_info@@QAEXXZ", ms_type_info_dtor},
   {"_encoded_null", ms_encoded_null},
+  {"_except1", ms_except1},
 #endif
   {NULL, NULL}
 };
 
-static void *pe_bind(const char *name)
+static void *pe_bind(const char *dll, const char *name)
 {
   int i;
 #ifdef _WIN32
@@ -559,10 +584,67 @@ static void *pe_bind(const char *name)
 #endif
   for (i = 0; BINDINGS[i].name; ++i)
     if (!strcmp(BINDINGS[i].name, name)) return BINDINGS[i].fn;
+#ifdef _WIN32
+  /* Last, the DLL the core names, where the system has it: XP with the
+     VC++ redistributable has VCRUNTIME140 and the Universal CRT, so a core
+     built against them needs no binding for each of its imports. Windows 98
+     has neither and relies on the table alone. */
+  if (dll) {
+    HMODULE m = LoadLibraryA(dll);
+    if (m) return (void *)GetProcAddress(m, name);
+  }
+#else
+  (void)dll;
+#endif
   return NULL;
 }
 
 /* ---------- the loader -------------------------------------------------- */
+#if defined(_WIN32) && defined(__i386__)
+/* Implicit TLS on 32-bit Windows. The image finds its block through the
+   array at fs:[0x2c], which only the system loader can extend: on NT it is
+   ntdll's per-module array, on 9x the TlsAlloc slot array. So each
+   `mov eax, fs:[0x2c]` in the image becomes a call to a stub returning an
+   array of our own, whose entry 0 is this thread's copy of the block.
+
+   Every image shares one TlsAlloc slot holding a per-thread list keyed by an
+   id that is never reused, so an image loaded after another was unloaded
+   cannot pick up the old one's block. Nothing tells a mapped image that a
+   thread has ended, so a thread's copies are never freed. */
+struct pe_tls {
+  uint32_t id;
+  unsigned char *tmpl;      /* raw bytes; the rest of the block is zero */
+  size_t raw, total;
+  unsigned char *stub;
+};
+struct pe_tls_node {
+  struct pe_tls_node *next;
+  uint32_t id;
+  void *arr[1];             /* the image indexes this with _tls_index = 0 */
+};
+static DWORD g_tls_slot = TLS_OUT_OF_INDEXES;
+static uint32_t g_tls_ids;
+
+static void **__cdecl pe_tls_array(const struct pe_tls *t)
+{
+  DWORD e = GetLastError();
+  struct pe_tls_node *head = TlsGetValue(g_tls_slot), *n;
+  for (n = head; n; n = n->next)
+    if (n->id == t->id) break;
+  if (!n) {
+    n = calloc(1, sizeof *n + t->total);
+    if (!n) abort();
+    n->next = head;
+    n->id = t->id;
+    n->arr[0] = n + 1;
+    memcpy(n->arr[0], t->tmpl, t->raw);
+    TlsSetValue(g_tls_slot, n);
+  }
+  SetLastError(e);
+  return n->arr;
+}
+#endif
+
 /* The TLS pointer array at gs:[0x58] belongs to the thread, not to an image,
    so it is allocated once and every image gets its own index - which is what
    TlsAlloc does on Windows. Without it a second image overwrites the first
@@ -685,7 +767,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
         if (*oft & PE_ORD_FLAG)
           FAIL("%s imports by ordinal", (char *)(base + im->name));
         const char *nm = (const char *)(base + (*oft & 0xffffffff) + 2);
-        void *fn = pe_bind(nm);
+        void *fn = pe_bind((const char *)(base + im->name), nm);
         if (!fn) FAIL("no binding for %s (%s)", nm, (char *)(base + im->name));
         *ft = (thunk_t)(uintptr_t)fn;
       }
@@ -732,6 +814,56 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     }
   }
 
+#if defined(_WIN32) && defined(__i386__)
+  if (oh->dirs[9].size) {
+    static const unsigned char site[6] = { 0x64, 0xa1, 0x2c, 0, 0, 0 };
+    struct {
+      uint32_t start, end, index_addr, callbacks, zerofill, chars;
+    } *td = (void *)(base + oh->dirs[9].rva);
+    struct pe_tls *t = calloc(1, sizeof *t);
+    unsigned char *s;
+    int sites = 0;
+    if (!t) FAIL("out of memory for TLS");
+    if (g_tls_slot == TLS_OUT_OF_INDEXES) g_tls_slot = TlsAlloc();
+    t->id = ++g_tls_ids;
+    t->raw = td->end - td->start;
+    t->total = t->raw + td->zerofill;
+    t->tmpl = malloc(t->raw ? t->raw : 1);
+    t->stub = pe_reserve(NULL, 0x1000);
+    if (g_tls_slot == TLS_OUT_OF_INDEXES || !t->tmpl || !t->stub)
+      FAIL("cannot set up thread-local storage");
+    memcpy(t->tmpl, (void *)(uintptr_t)td->start, t->raw);
+    /* pushfd; push ecx; push edx; push t; call pe_tls_array; add esp, 4;
+       pop edx; pop ecx; popfd; ret - eax is the only register it changes */
+    s = t->stub;
+    *s++ = 0x9c; *s++ = 0x51; *s++ = 0x52;
+    *s++ = 0x68; memcpy(s, &t, 4); s += 4;
+    *s++ = 0xe8;
+    { int32_t rel = (int32_t)((uintptr_t)pe_tls_array - (uintptr_t)(s + 4));
+      memcpy(s, &rel, 4); s += 4; }
+    *s++ = 0x83; *s++ = 0xc4; *s++ = 0x04;
+    *s++ = 0x5a; *s++ = 0x59; *s++ = 0x9d; *s++ = 0xc3;
+    pe_setprot(t->stub, 0x1000, 1, 0);
+    for (int i = 0; i < fh->nsec; ++i) {
+      unsigned char *c = base + sec[i].vaddr;
+      if (!(sec[i].chars & 0x20000000) || sec[i].vsize < sizeof site) continue;
+      for (size_t k = 0; k + sizeof site <= sec[i].vsize; ++k) {
+        int32_t rel;
+        if (memcmp(c + k, site, sizeof site)) continue;
+        rel = (int32_t)((uintptr_t)t->stub - (uintptr_t)(c + k + 5));
+        c[k] = 0xe8; memcpy(c + k + 1, &rel, 4); c[k + 5] = 0x90;
+        k += sizeof site - 1;
+        ++sites;
+      }
+    }
+    if (td->index_addr) *(uint32_t *)(uintptr_t)td->index_addr = 0;
+    img->tls = t;
+    if (getenv("PE_TRACE"))
+      fprintf(stderr, "pe: TLS through a stub, %d sites, block %u bytes\n",
+              sites, (unsigned)t->total);
+  }
+#endif
+
   /* SCVA_DUMP_TEXT writes the patched code out so a disassembler can confirm
      that nothing outside SSE1 survived either pass. */
   {
@@ -761,15 +893,25 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
   /* Thread-local storage. The image reads gs:[0x58] for its TLS pointer array
      and indexes it: without this the very first thread-local access is
      `mov (%rax,%rcx,8),%rbx` with rax = 0, which is where the first native
-     TG_Process died. Windows keeps that array itself, and the 32-bit core
-     carries no TLS directory at all, so this is a Linux concern. */
-#ifdef _WIN32
+     TG_Process died. 32-bit Windows is handled above, before the code
+     was made read-only. */
+#if defined(_WIN32) && !defined(__i386__)
   if (oh->dirs[9].size)
     FAIL("this core wants thread-local storage, which is not handled here");
+#elif defined(_WIN32)
+  if (oh->dirs[9].size) {
+    uint32_t *cb = (uint32_t *)(uintptr_t)
+      ((uint32_t *)(base + oh->dirs[9].rva))[3];
+    while (cb && *cb) {
+      WINAPI_CC void (*f)(void *, uint32_t, void *) = (void *)(uintptr_t)*cb;
+      f(base, 1, NULL);
+      ++cb;
+    }
+  }
 #else
   if (oh->dirs[9].size) {
     struct {
-      uint64_t start, end, index_addr, callbacks;
+      thunk_t start, end, index_addr, callbacks;
       uint32_t zerofill, chars;
     } *tls = (void *)(base + oh->dirs[9].rva);
     size_t raw = (size_t)(tls->end - tls->start);
@@ -793,7 +935,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
       fprintf(stderr, "pe: TLS slot %u, block %zu bytes (%zu raw + %u zero)\n",
               idx, total, raw, tls->zerofill);
     if (tls->callbacks) {
-      uint64_t *cb = (uint64_t *)(uintptr_t)tls->callbacks;
+      thunk_t *cb = (thunk_t *)(uintptr_t)tls->callbacks;
       while (*cb) {
         /* PIMAGE_TLS_CALLBACK is WINAPI: stdcall on i386. */
         WINAPI_CC void (*f)(void *, uint32_t, void *) = (void *)(uintptr_t)*cb;
@@ -827,6 +969,14 @@ void pe_unload(struct pe_image *img)
     free(g_tls_slots[img->tls_index]);
     g_tls_slots[img->tls_index] = NULL;
     if (g_tls_nfree < PE_TLS_SLOTS) g_tls_free[g_tls_nfree++] = img->tls_index;
+  }
+#endif
+#if defined(_WIN32) && defined(__i386__)
+  if (img->tls) {
+    struct pe_tls *t = img->tls;
+    pe_release(t->stub, 0x1000);
+    free(t->tmpl);
+    free(t);
   }
 #endif
   if (img->base) pe_release(img->base, img->size);
