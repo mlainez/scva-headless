@@ -23,6 +23,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include "scva_xui.h"
 #endif
 
 #define SCVA_ID "com.github.mlainez.scva-headless"
@@ -60,6 +62,9 @@ struct scva {
    int gui_lw, gui_lh;          /* the size last laid out */
    int gui_dpi;                 /* 0 until first asked */
    int gui_list_map;            /* whose patches the editor lists */
+#else
+   struct scva_xui *xui;
+   clap_id xui_timer;
 #endif
 };
 
@@ -534,9 +539,24 @@ static bool nn_get(const clap_plugin_t *p, uint32_t index,
 
 static const clap_plugin_note_name_t s_note_name = { nn_count, nn_get };
 
-#ifdef _WIN32
 /* ---- the editor -------------------------------------------------------- */
 
+/* A pick in the editor is the plugin's own parameter change: latched like
+   the host's, then reported to the host from flush() or process(). Main
+   thread. */
+static void editor_set(struct scva *s, int id, int v)
+{
+   const clap_host_params_t *hp = NULL;
+   if (id == SCVA_PARAM_MAP) s->map_want = v;
+   else if (id == SCVA_PARAM_INST) s->inst_want = v;
+   else s->drum_want = v;
+   s->gui_dirty |= 1u << id;
+   if (s->host->get_extension)
+      hp = s->host->get_extension(s->host, CLAP_EXT_PARAMS);
+   if (hp && hp->request_flush) hp->request_flush(s->host);
+}
+
+#ifdef _WIN32
 /* Plain Win32 controls, so it runs wherever the plugin does, Windows 98
    included: a host's generic slider cannot step through thousands of
    patches, a list can. The window polls the parameters, so a change from the
@@ -616,18 +636,11 @@ static void gui_sync(struct scva *s)
 
 static void gui_changed(struct scva *s, int id)
 {
-   const clap_host_params_t *hp = NULL;
    UINT msg = id == SCVA_PARAM_INST ? LB_GETCURSEL : CB_GETCURSEL;
    LRESULT v = SendMessageA(s->gui_ctl[id], msg, 0, 0);
    if (v < 0) return;
-   if (id == SCVA_PARAM_MAP) s->map_want = (int)v;
-   else if (id == SCVA_PARAM_INST) s->inst_want = (int)v;
-   else s->drum_want = (int)v;
    s->gui_shown[id] = (int)v;
-   s->gui_dirty |= 1u << id;
-   if (s->host->get_extension)
-      hp = s->host->get_extension(s->host, CLAP_EXT_PARAMS);
-   if (hp && hp->request_flush) hp->request_flush(s->host);
+   editor_set(s, id, (int)v);
 }
 
 static void gui_layout(struct scva *s);
@@ -847,6 +860,153 @@ static const clap_plugin_gui_t s_gui = {
    gui_can_resize, gui_hints, gui_adjust, gui_set_size, gui_set_parent,
    gui_transient, gui_title, gui_show, gui_hide
 };
+#else
+/* scva_xui.c's window, shared with the LV2 UI. The host's timer drives it:
+   each tick hands it the parameters and lets it handle its events. */
+#define SCVA_XUI_PERIOD_MS 30
+
+static void xui_map(void *ctx, int v)  { editor_set(ctx, SCVA_PARAM_MAP, v); }
+static void xui_tone(void *ctx, int v) { editor_set(ctx, SCVA_PARAM_INST, v); }
+static void xui_kit(void *ctx, int v)  { editor_set(ctx, SCVA_PARAM_DRUM, v); }
+
+static const clap_host_timer_support_t *host_timer(const struct scva *s)
+{
+   return s->host->get_extension ?
+      s->host->get_extension(s->host, CLAP_EXT_TIMER_SUPPORT) : NULL;
+}
+
+static void xui_tick(struct scva *s)
+{
+   if (!s->xui) return;
+   scva_xui_show(s->xui, s->list_map, s->inst_want, s->drum_want);
+   scva_xui_idle(s->xui);
+}
+
+static void on_timer(const clap_plugin_t *p, clap_id id)
+{
+   struct scva *s = p->plugin_data;
+   if (id == s->xui_timer) xui_tick(s);
+}
+static const clap_plugin_timer_support_t s_timer = { on_timer };
+
+static bool gui_api(const clap_plugin_t *p, const char *api, bool floating)
+{
+   (void)p;
+   return !floating && !strcmp(api, CLAP_WINDOW_API_X11);
+}
+
+static bool gui_preferred(const clap_plugin_t *p, const char **api,
+                          bool *floating)
+{
+   (void)p;
+   *api = CLAP_WINDOW_API_X11;
+   *floating = false;
+   return true;
+}
+
+static bool gui_create(const clap_plugin_t *p, const char *api, bool floating)
+{
+   return gui_api(p, api, floating);
+}
+
+static void gui_destroy(const clap_plugin_t *p)
+{
+   struct scva *s = p->plugin_data;
+   const clap_host_timer_support_t *t = host_timer(s);
+   if (s->xui_timer != CLAP_INVALID_ID && t && t->unregister_timer)
+      t->unregister_timer(s->host, s->xui_timer);
+   s->xui_timer = CLAP_INVALID_ID;
+   scva_xui_close(s->xui);
+   s->xui = NULL;
+}
+
+static bool gui_scale(const clap_plugin_t *p, double scale)
+{ (void)p; (void)scale; return false; }
+
+/* Before the window exists its size is not known; this is close to it. */
+static bool gui_get_size(const clap_plugin_t *p, uint32_t *w, uint32_t *h)
+{
+   struct scva *s = p->plugin_data;
+   int iw = 690, ih = 510;
+   if (s->xui) scva_xui_size(s->xui, &iw, &ih);
+   *w = (uint32_t)iw;
+   *h = (uint32_t)ih;
+   return true;
+}
+
+static bool gui_can_resize(const clap_plugin_t *p) { (void)p; return true; }
+
+static bool gui_hints(const clap_plugin_t *p, clap_gui_resize_hints_t *h)
+{
+   (void)p;
+   memset(h, 0, sizeof *h);
+   h->can_resize_horizontally = true;
+   h->can_resize_vertically = true;
+   return true;
+}
+
+static bool gui_adjust(const clap_plugin_t *p, uint32_t *w, uint32_t *h)
+{
+   (void)p;
+   if (*w < 320) *w = 320;
+   if (*h < 240) *h = 240;
+   return true;
+}
+
+static bool gui_set_size(const clap_plugin_t *p, uint32_t w, uint32_t h)
+{
+   struct scva *s = p->plugin_data;
+   gui_adjust(p, &w, &h);
+   if (s->xui) scva_xui_resize(s->xui, (int)w, (int)h);
+   return s->xui != NULL;
+}
+
+static bool gui_set_parent(const clap_plugin_t *p, const clap_window_t *win)
+{
+   struct scva *s = p->plugin_data;
+   const clap_host_timer_support_t *t = host_timer(s);
+   struct scva_xui_host h;
+   if (s->xui || !t || !t->register_timer) return false;
+   h.ctx = s;
+   h.set_map = xui_map;
+   h.set_tone = xui_tone;
+   h.set_kit = xui_kit;
+   s->xui = scva_xui_open((unsigned long)win->x11, &s->names, &s->lists, &h);
+   if (!s->xui) return false;
+   if (!t->register_timer(s->host, SCVA_XUI_PERIOD_MS, &s->xui_timer)) {
+      scva_xui_close(s->xui);
+      s->xui = NULL;
+      return false;
+   }
+   xui_tick(s);
+   return true;
+}
+
+static bool gui_transient(const clap_plugin_t *p, const clap_window_t *w)
+{ (void)p; (void)w; return false; }
+
+static void gui_title(const clap_plugin_t *p, const char *t)
+{ (void)p; (void)t; }
+
+static bool gui_show(const clap_plugin_t *p)
+{
+   struct scva *s = p->plugin_data;
+   if (s->xui) scva_xui_visible(s->xui, 1);
+   return s->xui != NULL;
+}
+
+static bool gui_hide(const clap_plugin_t *p)
+{
+   struct scva *s = p->plugin_data;
+   if (s->xui) scva_xui_visible(s->xui, 0);
+   return s->xui != NULL;
+}
+
+static const clap_plugin_gui_t s_gui = {
+   gui_api, gui_preferred, gui_create, gui_destroy, gui_scale, gui_get_size,
+   gui_can_resize, gui_hints, gui_adjust, gui_set_size, gui_set_parent,
+   gui_transient, gui_title, gui_show, gui_hide
+};
 #endif
 
 static const void *plug_get_extension(const clap_plugin_t *p, const char *id)
@@ -856,8 +1016,9 @@ static const void *plug_get_extension(const clap_plugin_t *p, const char *id)
    if (!strcmp(id, CLAP_EXT_NOTE_PORTS))  return &s_note_ports;
    if (!strcmp(id, CLAP_EXT_PARAMS))      return &s_params;
    if (!strcmp(id, CLAP_EXT_NOTE_NAME))   return &s_note_name;
-#ifdef _WIN32
    if (!strcmp(id, CLAP_EXT_GUI))         return &s_gui;
+#ifndef _WIN32
+   if (!strcmp(id, CLAP_EXT_TIMER_SUPPORT)) return &s_timer;
 #endif
    if (!strcmp(id, CLAP_EXT_PRESET_LOAD) ||
        !strcmp(id, CLAP_EXT_PRESET_LOAD_COMPAT))
@@ -908,6 +1069,9 @@ static const clap_plugin_t *make_plugin(const clap_host_t *host)
    if (!s) return NULL;
    s->host = host;
    s->map_want = 0;
+#ifndef _WIN32
+   s->xui_timer = CLAP_INVALID_ID;
+#endif
    s->plugin.desc = &s_descriptor;
    s->plugin.plugin_data = s;
    s->plugin.init = plug_init;

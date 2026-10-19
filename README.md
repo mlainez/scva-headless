@@ -435,29 +435,31 @@ Copy `build/scva.lv2` into `~/.lv2/`. The plugin finds the core in
 needs the install's name files beside the core too (`SCVSC.tnf`,
 `SCVSC.drf`), and will not load without them.
 
-MIDI in, stereo out.
+MIDI in, stereo out, and an editor window (`scva_ui.so`, an X11 UI; Carla's
+GUI button on the plugin's strip):
 
-Tested in Carla 2.5.10 (flatpak), x86-64 bundle, core 1.1.2.
+| in the editor | what it does |
+|---|---|
+| Tone Map buttons | every part, at once: each part's last program is re-sent under the new map |
+| Instrument list | part 1: the map's tones, `001 Piano 1`, `001-008 Piano 1w` |
+| Drum Kit list | part 10: the map's kits, `001 STANDARD 1` |
 
-| drop-down | in Carla | what it does |
-|---|---|---|
-| Tone Map | Edit window, Parameters | every part, at once: each part's last program is re-sent under the new map |
-| Drum Kit | Edit window, Parameters | the drum part's kit; one the map lacks plays Standard |
-| program list | rack strip; Edit window, MIDI Program | the first part's instrument: the Tone Map's tones, `001 Piano 1`, `001-008 Piano 1w` |
+Default lists SC-8820's patches, which it renders. The lists scroll with the
+wheel or the scrollbar; a click picks. The editor needs only libX11 and
+draws with the X server's own fixed font.
 
-Default lists SC-8820's tones, which it renders. A Tone Map change reloads
-the program list in the host; the host keeps its selected position, and the
-tone at that position in the new list is what plays.
+Its controls are plugin ports that hosts are asked not to draw
+(`notOnGUI`): Tone Map, Drum Kit (a GS program number; one the map lacks
+plays Standard), Instrument (a position in the map's tones), and Tone, the
+position part 1 plays, out to the editor.
 
-A Drum Kit's named values have to be in the bundle's Turtle, which a host
-reads before the plugin runs, and none of Roland's names ship here. So the
-plugin writes them into `kits.ttl` in its bundle on first load, from the
-install's own `SCVSC.drf`: every kit number any map has, named after the
-newest map that has it. The host shows them from its next start.
+The instruments are also the plugin's program list - the drop-down on
+Carla's strip - through the KXStudio `programs` extension, read by Carla,
+Ardour and Qtractor. A Tone Map change reloads it in the host; the host keeps
+its selected position, and the tone at that position in the new list is what
+plays. A pick in the editor is not reflected in the host's drop-down.
 
-The program list uses the KXStudio `programs` extension, read by Carla,
-Ardour and Qtractor. Bank is the GS 14-bit bank - CC0 the MSB, CC32 the tone
-map.
+Tested in Carla 2.5.8 (native) and 2.5.10 (flatpak), x86-64 bundle, core 1.1.2.
 
 The plugin's architecture has to match the host's, and the Roland core's has to match
 the plugin's - a 64-bit host needs the 64-bit bundle and a 64-bit core. LV2 is
@@ -494,9 +496,10 @@ longest map's; past a shorter list a value means its last entry.
 | SC-88Pro | 774 | 25 |
 | SC-8820, Default | 1262 | 37 |
 
-The Windows builds have an editor: Tone Map and Drum Kit drop-downs and the
-Instrument list, refilled when the Tone Map changes. A host's generic slider
-cannot step through 1262 tones;
+The Linux build's editor is the LV2's (X11, the host's timer drives it).
+The Windows builds have one of their own: Tone Map and Drum Kit drop-downs
+and the Instrument list, refilled when the Tone Map changes. A host's generic
+slider cannot step through 1262 tones;
 SAVIHost shows the editor in place of its slider. The editor scales with the
 Windows DPI setting (Wine: `winecfg`, Graphics) and fills whatever window the
 host gives it.

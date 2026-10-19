@@ -68,7 +68,9 @@ enum {
   PORT_OUT_L   = 1,
   PORT_OUT_R   = 2,
   PORT_MAP     = 3,
-  PORT_KIT     = 4
+  PORT_KIT     = 4,
+  PORT_INST    = 5,    /* the editor's pick: a position in the map's tones */
+  PORT_TONE    = 6     /* out: the position part 1 plays, for the editor */
 };
 
 /* The descriptor hands out a const char *, so each name is owned alongside
@@ -83,7 +85,9 @@ struct scva {
 
   const LV2_Atom_Sequence *midi_in;
   float *out_l, *out_r;
-  const float *map_port, *kit_port;
+  const float *map_port, *kit_port, *inst_port;
+  float *tone_port;
+  int inst_seen;               /* the Instrument port's last value, -1 before */
 
   LV2_URID midi_event;
 
@@ -95,10 +99,11 @@ struct scva {
   struct scva_program *progs[SCVA_MAPS];
   uint32_t nprogs[SCVA_MAPS];
   volatile int prog_map;
-  /* The position the host last selected in that list, -1 before any. A host
-     keeps its selection by position across a reload, so a new map plays the
-     patch at that position in its own list: what the host shows. */
-  int prog_index;
+  /* Part 1's position in that list, picked from the host's program list or
+     the editor, -1 before any. A host keeps its selection by position across
+     a reload, so a new map plays the tone at that position in its own list:
+     what the host shows. */
+  int tone_pos;
   /* select_program arrives on the host's thread, so it is latched here and
      applied at the top of the next run(). */
   uint32_t sel_bank, sel_prog;
@@ -128,67 +133,6 @@ static void build_programs(struct scva *s)
     }
     s->nprogs[m] = n;
   }
-}
-
-/* kits.ttl in the bundle: the Drum Kit port's named values, from the user's
-   own name files - every kit number any map has, named after the newest map
-   that has it. A host reads it on its next plugin scan. Rewritten only when
-   it changes, through a temporary file so a scan never sees half of it. */
-static void write_kits_ttl(const struct scva *s, const char *bundle)
-{
-  static const int newest_first[SCVA_MAPS] = {
-    SCVA_MAP_8820, SCVA_MAP_88PRO, SCVA_MAP_88, SCVA_MAP_55, SCVA_MAP_DEFAULT
-  };
-  char path[1100], tmp[1100], label[SCVA_NAME_MAX + 16], *text, *old;
-  size_t cap = 64 * 1024, len = 0, oldlen = 0;
-  int prog, i;
-  FILE *f;
-
-  text = malloc(cap);
-  if (!text) return;
-  len += (size_t)snprintf(text + len, cap - len,
-    "# Written by the plugin from this install's SCVSC.drf.\n"
-    "@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .\n"
-    "@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n"
-    "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\n"
-    "<https://github.com/mlainez/scva-headless#kit>\n"
-    "\tlv2:portProperty lv2:enumeration");
-  for (prog = 0; prog < 128; ++prog)
-    for (i = 0; i < SCVA_MAPS; ++i) {
-      int m = newest_first[i], k;
-      const char *c;
-      k = scva_lists_find(&s->names, s->lists.kit[m], s->lists.nkit[m], 0, prog);
-      if (k < 0) continue;
-      scva_patch_label(&s->names.patch[s->lists.kit[m][k]], label, sizeof label);
-      len += (size_t)snprintf(text + len, cap - len,
-                              " ;\n\tlv2:scalePoint [ rdfs:label \"");
-      for (c = label; *c && len + 2 < cap; ++c) {
-        if (*c == '"' || *c == '\\') text[len++] = '\\';
-        text[len++] = *c;
-      }
-      len += (size_t)snprintf(text + len, cap - len,
-                              "\" ; rdf:value %d ]", prog);
-      break;
-    }
-  len += (size_t)snprintf(text + len, cap - len, " .\n");
-  if (len >= cap) { free(text); return; }
-
-  snprintf(path, sizeof path, "%s/kits.ttl", bundle);
-  snprintf(tmp, sizeof tmp, "%s/kits.ttl.tmp", bundle);
-  old = malloc(cap);
-  f = fopen(path, "rb");
-  if (f && old) { oldlen = fread(old, 1, cap, f); }
-  if (f) fclose(f);
-  if (!old || oldlen != len || memcmp(old, text, len)) {
-    f = fopen(tmp, "wb");
-    if (f && fwrite(text, 1, len, f) == len && !fclose(f)) rename(tmp, path);
-    else {
-      if (f) fclose(f);
-      fprintf(stderr, "scva.lv2: cannot write %s\n", path);
-    }
-  }
-  free(old);
-  free(text);
 }
 
 /* The Drum Kit port's kit in tone map m, or Standard where m has no kit of
@@ -221,7 +165,7 @@ static void select_program(LV2_Handle h, uint32_t bank, uint32_t program)
   uint32_t i;
   for (i = 0; i < s->nprogs[m]; ++i)
     if (s->progs[m][i].d.bank == bank && s->progs[m][i].d.program == program)
-      s->prog_index = (int)i;
+      s->tone_pos = (int)i;
   s->sel_bank = bank;
   s->sel_prog = program;
   s->sel_pending = 1;
@@ -251,19 +195,38 @@ static const LV2_Worker_Interface worker_iface = { work, work_response, NULL };
 /* A new tone map brings its own program list; the host's selected position
    in it is played, so what the host shows after reloading the list is what
    sounds. Called from run(). */
+/* Part 1 to position k of the current map's tones, past the end meaning
+   the last. Latched for the top of run(), like a host's selection. */
+static void play_tone(struct scva *s, int k)
+{
+  int m = s->prog_map, n = (int)s->nprogs[m];
+  if (k >= n) k = n - 1;
+  s->tone_pos = k;
+  s->sel_bank = s->progs[m][k].d.bank;
+  s->sel_prog = s->progs[m][k].d.program;
+  s->sel_pending = 1;
+}
+
 static void switch_programs(struct scva *s, int m)
 {
   char none = 0;
   if (m == s->prog_map) return;
   s->prog_map = m;
-  if (s->prog_index >= 0 && s->nprogs[m]) {
-    uint32_t k = (uint32_t)s->prog_index < s->nprogs[m] ?
-                 (uint32_t)s->prog_index : s->nprogs[m] - 1;
-    s->sel_bank = s->progs[m][k].d.bank;
-    s->sel_prog = s->progs[m][k].d.program;
-    s->sel_pending = 1;
-  }
+  if (s->tone_pos >= 0 && s->nprogs[m])
+    play_tone(s, s->tone_pos);
   if (s->worker) s->worker->schedule_work(s->worker->handle, sizeof none, &none);
+}
+
+/* The editor picked a position; a value the port already had is not news. */
+static void follow_inst_port(struct scva *s)
+{
+  int v;
+  if (!s->inst_port) return;
+  v = (int)(*s->inst_port + 0.5f);
+  if (v < 0) v = 0;
+  if (v == s->inst_seen) return;
+  s->inst_seen = v;
+  if (s->nprogs[s->prog_map]) play_tone(s, v);
 }
 
 static const LV2_Programs_Interface programs_iface = {
@@ -293,7 +256,8 @@ static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
   }
   if (!map) { free(s); return NULL; }    /* urid:map is required */
   s->midi_event = map->map(map->handle, LV2_MIDI__MidiEvent);
-  s->prog_index = -1;
+  s->tone_pos = -1;
+  s->inst_seen = -1;
   s->kit_sent = -1;
 
   /* the bundle path keeps its trailing slash */
@@ -320,7 +284,6 @@ static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
     return NULL;
   }
   build_programs(s);
-  write_kits_ttl(s, here);
   return s;
 }
 
@@ -333,6 +296,8 @@ static void connect_port(LV2_Handle h, uint32_t port, void *data)
   case PORT_OUT_R:   s->out_r    = (float *)data; break;
   case PORT_MAP:     s->map_port = (const float *)data; break;
   case PORT_KIT:     s->kit_port = (const float *)data; break;
+  case PORT_INST:    s->inst_port = (const float *)data; break;
+  case PORT_TONE:    s->tone_port = (float *)data; break;
   default: break;
   }
 }
@@ -365,7 +330,9 @@ static void run(LV2_Handle h, uint32_t n_samples)
     switch_programs(s, map);
     send_kit(s, map);
   }
+  follow_inst_port(s);
   if (s->sel_pending) apply_selection(s);
+  if (s->tone_port) *s->tone_port = (float)s->tone_pos;
 
   if (s->midi_in) {
     LV2_ATOM_SEQUENCE_FOREACH(s->midi_in, ev) {

@@ -56,8 +56,8 @@ WIN32_BINS   := $(BUILD)/scva-render32.exe $(BUILD)/scva-winmidi32.exe
 all: linux windows
 linux: $(LINUX_BINS)
 linux32: $(LINUX32_BINS)
-lv2: $(LV2_BUNDLE)/scva.so
-lv2-32: $(LV2_BUNDLE32)/scva.so
+lv2: $(LV2_BUNDLE)/scva.so $(LV2_BUNDLE)/scva_ui.so
+lv2-32: $(LV2_BUNDLE32)/scva.so $(LV2_BUNDLE32)/scva_ui.so
 clap: $(BUILD)/scva.clap $(BUILD)/scva-win64.clap
 clap-win32: $(BUILD)/scva-win32.clap
 tones: $(BUILD)/scva-tones
@@ -90,7 +90,8 @@ $(BUILD)/scva-render32: src/scva_native.c src/pe_loader.c src/pe_loader.h src/ss
 # patch lists - archived once per toolchain and linked statically into each
 # plugin. The 64-bit Windows one has no PE loader: LoadLibrary takes that core.
 
-ENGINE_DEPS := src/scva_engine.c src/scva_engine.h src/scva_map.h \
+ENGINE_DEPS := src/scva_engine.c src/scva_engine.h src/scva_lists.c \
+               src/scva_lists.h src/scva_map.h \
                src/scva_names.h src/pe_loader.c src/pe_loader.h src/win9x.h \
                src/sse3_shim.h src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h
 ENGINE       := $(BUILD)/engine/linux64/libscvaengine.a
@@ -102,34 +103,58 @@ MINGW32_AR ?= $(MINGW32:gcc=ar)
 
 $(ENGINE): $(ENGINE_DEPS)
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -fPIC -c -o $(@D)/scva_engine.o src/scva_engine.c
-	$(CC) $(CFLAGS) -fPIC -c -o $(@D)/pe_loader.o src/pe_loader.c
-	$(AR) rcs $@ $(@D)/scva_engine.o $(@D)/pe_loader.o
+	$(CC) $(CFLAGS) -fPIC -fvisibility=hidden -c -o $(@D)/scva_engine.o src/scva_engine.c
+	$(CC) $(CFLAGS) -fPIC -fvisibility=hidden -c -o $(@D)/pe_loader.o src/pe_loader.c
+	$(CC) $(CFLAGS) -fPIC -fvisibility=hidden -c -o $(@D)/scva_lists.o src/scva_lists.c
+	$(AR) rcs $@ $(@D)/scva_engine.o $(@D)/pe_loader.o $(@D)/scva_lists.o
 
 $(ENGINE32): $(ENGINE_DEPS)
 	@mkdir -p $(@D)
-	$(CC) -m32 $(CFLAGS) -fPIC -c -o $(@D)/scva_engine.o src/scva_engine.c
-	$(CC) -m32 $(CFLAGS) -fPIC -c -o $(@D)/pe_loader.o src/pe_loader.c
-	$(AR) rcs $@ $(@D)/scva_engine.o $(@D)/pe_loader.o
+	$(CC) -m32 $(CFLAGS) -fPIC -fvisibility=hidden -c -o $(@D)/scva_engine.o src/scva_engine.c
+	$(CC) -m32 $(CFLAGS) -fPIC -fvisibility=hidden -c -o $(@D)/pe_loader.o src/pe_loader.c
+	$(CC) -m32 $(CFLAGS) -fPIC -fvisibility=hidden -c -o $(@D)/scva_lists.o src/scva_lists.c
+	$(AR) rcs $@ $(@D)/scva_engine.o $(@D)/pe_loader.o $(@D)/scva_lists.o
 
 $(ENGINE_WIN64): $(ENGINE_DEPS)
 	@mkdir -p $(@D)
 	$(MINGW) $(WINFLAGS) -c -o $(@D)/scva_engine.o src/scva_engine.c
-	$(MINGW_AR) rcs $@ $(@D)/scva_engine.o
+	$(MINGW) $(WINFLAGS) -c -o $(@D)/scva_lists.o src/scva_lists.c
+	$(MINGW_AR) rcs $@ $(@D)/scva_engine.o $(@D)/scva_lists.o
 
 $(ENGINE_WIN32): $(ENGINE_DEPS)
 	@mkdir -p $(@D)
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -c -o $(@D)/scva_engine.o src/scva_engine.c
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -c -o $(@D)/pe_loader.o src/pe_loader.c
-	$(MINGW32_AR) rcs $@ $(@D)/scva_engine.o $(@D)/pe_loader.o
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -c -o $(@D)/scva_lists.o src/scva_lists.c
+	$(MINGW32_AR) rcs $@ $(@D)/scva_engine.o $(@D)/pe_loader.o $(@D)/scva_lists.o
+
+# The Linux editor, shared by the LV2 UI and the CLAP: libX11 and nothing
+# else. 32-bit hosts rarely have the libX11 development link, so the 32-bit
+# build names the library itself.
+XUI    := $(BUILD)/engine/linux64/libscvaxui.a
+XUI32  := $(BUILD)/engine/linux32/libscvaxui.a
+X11    ?= -lX11
+X11_32 ?= -l:libX11.so.6
+
+$(XUI): src/scva_xui.c src/scva_xui.h src/scva_lists.h src/scva_names.h \
+        src/scva_map.h
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -fPIC -fvisibility=hidden -c -o $(@D)/scva_xui.o src/scva_xui.c
+	$(AR) rcs $@ $(@D)/scva_xui.o
+
+$(XUI32): src/scva_xui.c src/scva_xui.h src/scva_lists.h src/scva_names.h \
+          src/scva_map.h
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -fPIC -fvisibility=hidden -c -o $(@D)/scva_xui.o src/scva_xui.c
+	$(AR) rcs $@ $(@D)/scva_xui.o
 
 # ---- the CLAP plugin -----------------------------------------------------
 # CLAP because its SDK is MIT and this project is CC0; VST3's is GPLv3 or
 # proprietary. Point CLAP_DIR at a checkout's include/ if it is not installed.
 
-$(BUILD)/scva.clap: src/scva_clap.c $(ENGINE) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(CLAP_DIR) -fPIC -shared -o $@ \
-	      src/scva_clap.c $(ENGINE) -lpthread -lm
+$(BUILD)/scva.clap: src/scva_clap.c $(ENGINE) $(XUI) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(CLAP_DIR) -fPIC -fvisibility=hidden -shared -o $@ \
+	      src/scva_clap.c $(XUI) $(ENGINE) $(X11) -lpthread -lm
 
 $(BUILD)/scva-tones: src/scva_tones.c src/scva_names.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ src/scva_tones.c
@@ -149,16 +174,25 @@ $(BUILD)/scva-win32.clap: src/scva_clap.c $(ENGINE_WIN32) | $(BUILD)
 # architecture has to match the host's, and the core's has to match the
 # plugin's, so there is a 32-bit bundle too.
 
-$(LV2_BUNDLE)/scva.so: src/scva_lv2.c $(ENGINE) lv2/manifest.ttl lv2/scva.ttl lv2/kits.ttl | $(BUILD)
+$(LV2_BUNDLE)/scva.so: src/scva_lv2.c $(ENGINE) lv2/manifest.ttl lv2/scva.ttl | $(BUILD)
 	@mkdir -p $(LV2_BUNDLE)
-	$(CC) $(CFLAGS) -fPIC -shared -o $@ src/scva_lv2.c $(ENGINE) -lpthread -lm
-	@cp lv2/manifest.ttl lv2/scva.ttl lv2/kits.ttl $(LV2_BUNDLE)/
+	$(CC) $(CFLAGS) -fPIC -fvisibility=hidden -shared -o $@ src/scva_lv2.c $(ENGINE) -lpthread -lm
+	@cp lv2/manifest.ttl lv2/scva.ttl $(LV2_BUNDLE)/
 
-$(LV2_BUNDLE32)/scva.so: src/scva_lv2.c $(ENGINE32) lv2/manifest.ttl lv2/scva.ttl lv2/kits.ttl | $(BUILD)
+$(LV2_BUNDLE)/scva_ui.so: src/scva_lv2_ui.c $(XUI) $(ENGINE) | $(BUILD)
+	@mkdir -p $(LV2_BUNDLE)
+	$(CC) $(CFLAGS) -fPIC -fvisibility=hidden -shared -o $@ src/scva_lv2_ui.c $(XUI) $(ENGINE) $(X11)
+
+$(LV2_BUNDLE32)/scva_ui.so: src/scva_lv2_ui.c $(XUI32) $(ENGINE32) | $(BUILD)
 	@mkdir -p $(LV2_BUNDLE32)
-	$(CC) -m32 $(CFLAGS) -fPIC -shared -o $@ src/scva_lv2.c $(ENGINE32) \
+	$(CC) -m32 $(CFLAGS) -fPIC -fvisibility=hidden -shared -o $@ src/scva_lv2_ui.c $(XUI32) \
+	      $(ENGINE32) $(X11_32)
+
+$(LV2_BUNDLE32)/scva.so: src/scva_lv2.c $(ENGINE32) lv2/manifest.ttl lv2/scva.ttl | $(BUILD)
+	@mkdir -p $(LV2_BUNDLE32)
+	$(CC) -m32 $(CFLAGS) -fPIC -fvisibility=hidden -shared -o $@ src/scva_lv2.c $(ENGINE32) \
 	      -lpthread -lm
-	@cp lv2/manifest.ttl lv2/scva.ttl lv2/kits.ttl $(LV2_BUNDLE32)/
+	@cp lv2/manifest.ttl lv2/scva.ttl $(LV2_BUNDLE32)/
 
 $(BUILD)/scva-daemon: src/scva_daemon.c src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
