@@ -183,6 +183,9 @@ the cells they share. Validated against the tone file on 17 cells - every cell
 the file says the two maps share renders byte-identical, every cell it says
 they disagree on renders differently, in both directions.
 
+At start-up, before any CC32, the parts play SC-55 tones, not the Default
+map's: selecting Default needs CC32 0 and a program change like any other map.
+
 A GS reset returns every part to the default map, so the map has to be sent
 again before each program change rather than once at the start.
 
@@ -257,6 +260,10 @@ time are the three condition-variable functions.
   around calls out to glibc. No thunks needed.
 - `GS` points at a TEB we build. The stack bounds in it must be the real ones
   from `pthread_getattr_np`: MSVC's stack probes compare against them.
+- The TEB is per thread. A plugin host calls the core from its own audio
+  thread, which must get one (`pe_thread_attach`) before the first call, or
+  the core faults on its first `gs:` access. The PEB and the TLS slots are
+  shared.
 - TLS pointer array at `gs:[0x58]`.
 - The image fetches the condition-variable trio through `GetProcAddress` and
   calls what it is handed, so they must resolve.
@@ -421,7 +428,7 @@ virtual cable; playing a file does not.
 The output buffer must not decide the timing. Windows stamps every message
 with its arrival time and `scva-winmidi.exe` releases each one into the block
 its stamp falls in, so the error is one block whatever the buffer depth is.
-Draining the queue into each block instead - which is what it did first - puts
+Draining the queue into each block instead puts
 every message that arrived during one buffer window on the same instant, so a
 buffer deep enough to stop the audio breaking up is also deep enough to
 destroy the rhythm, and there is no setting that gives both.
@@ -443,14 +450,14 @@ thread-local storage.
 | subsystem | 4.0 |
 | core loading | `pe_loader.c`, not the system loader |
 | imports | nothing newer than Windows 95, and `msvcrt.dll`, which ships with 98 |
+| stdio | msvcrt's own, through `__USE_MINGW_ANSI_STDIO=0`. mingw's pulls in `GetModuleHandleW` and the `MultiByteToWideChar` pair, which are stubs on Win9x |
+| API | `midiIn`, `waveOut`, `LoadLibrary` and critical sections, all Win95-era and all the A variants |
 
 Confirmed on the hardware it was written for: the renderer runs under Windows
 98 SE on an Athlon XP, which has SSE1 and nothing above it, reporting 947 and 6
 sites patched and producing audio. Everything before that point had been
 checked statically or under wine, and wine forgives both of the things Windows
 98 does not - it ships its own `msvcr100.dll` and ignores the subsystem field.
-| stdio | msvcrt's own, through `__USE_MINGW_ANSI_STDIO=0`. mingw's pulls in `GetModuleHandleW` and the `MultiByteToWideChar` pair, which are stubs on Win9x |
-| API | `midiIn`, `waveOut`, `LoadLibrary` and critical sections, all Win95-era and all the A variants |
 
 The floor is the processor rather than the OS, and with both shims applied it
 is SSE1: a Pentium III or an Athlon XP. 46,663 SSE1 instructions are the floor

@@ -21,9 +21,15 @@ You supply the required DLL and other optional files from your own installation.
 
 ## Requirements
 
-- a C compiler and `alsa-lib` to build for Linux, including the MIDI daemon
-- `mingw-w64` to build the Windows binaries
-- `wine` is only needed to run the Windows binaries on Linux, not required for Linux only
+| to build | needs |
+|---|---|
+| Linux binaries | a C compiler, `alsa-lib` |
+| 32-bit Linux binaries | `libc6-dev-i386`; `daemon32` also a 32-bit `alsa-lib` |
+| LV2 | `lv2-dev`, `libX11` (32-bit: `libX11.so.6` for i386) |
+| CLAP | the [CLAP headers](https://github.com/free-audio/clap); Linux: `libX11` |
+| Windows binaries | `mingw-w64`, x86-64 and i686 |
+
+`wine` only runs the Windows binaries on Linux.
 
 ## Supply the engine
 
@@ -52,17 +58,40 @@ Cores that have been tested:
 
 ## Build
 
-    make linux      # native, no wine
-    make linux32    # 32-bit native, for a 32-bit SCCore.dll
-    make windows    # 64-bit Windows PE binaries
-    make windows32  # 32-bit Windows PE binaries, for a 32-bit SCCore.dll
-    make            # linux and windows
+| target | builds | core |
+|---|---|---|
+| `make` | `linux` and `windows` | 64-bit |
+| `make linux` | `scva-render`, `scva-daemon` | 64-bit |
+| `make linux32` | `scva-render32` | 32-bit |
+| `make daemon32` | `scva-daemon32` | 32-bit |
+| `make windows` | `scva-render.exe`, `scva-winmidi.exe` | 64-bit |
+| `make windows32` | `scva-render32.exe`, `scva-winmidi32.exe` | 32-bit |
+| `make lv2`, `make lv2-32` | `scva.lv2`, `scva32.lv2` | 64-bit, 32-bit |
+| `make clap` | `scva.clap`, `scva-win64.clap` | 64-bit |
+| `make clap-32`, `make clap-win32` | `scva32.clap`, `scva-win32.clap` | 32-bit |
+| `make tones`, `make tones32` | `scva-tones`, `scva-tones32` | 64-bit, 32-bit |
 
-Always use a 64 bits `SCCore.dll` with the 64 bits versions of the svca-headless binaries. 
-`make linux32` builds `scva-render32`, the same renderer for a 32-bit core. It needs `libc6-dev-i386`.
+A binary's width must match the core's: a 64-bit `SCCore.dll` needs the
+64-bit binaries, a 32-bit one the 32-bit binaries.
 
 If you want to run on ARM, use the 32 bits binaries under box86 on 32-bit ARM; bear in mind that
 it may lead to poor performance. It is still untested.
+
+## Downloads
+
+Every push to main replaces the `latest` pre-release on GitHub:
+
+| asset | contents |
+|---|---|
+| `scva-linux-x86_64.tar.gz` | `scva-render`, `scva-daemon` |
+| `scva-linux-i386.tar.gz` | `scva-render32`, `scva-daemon32` |
+| `scva-lv2-x86_64.tar.gz`, `scva-lv2-i386.tar.gz` | `scva.lv2`, `scva32.lv2` |
+| `scva-clap-linux-x86_64.tar.gz`, `scva-clap-linux-i386.tar.gz` | `scva.clap`, `scva32.clap` |
+| `scva-windows-x86_64.zip` | `scva-render.exe`, `scva-winmidi.exe` |
+| `scva-windows98-x86.zip` | `scva-render32.exe`, `scva-winmidi32.exe` |
+| `scva-clap-windows-x86_64.zip`, `scva-clap-windows-x86.zip` | `scva-win64.clap`, `scva-win32.clap` |
+
+None of them contains Roland's files.
 
 ## Tone maps
 
@@ -180,7 +209,7 @@ switch it, because that is ordinary Bank Select LSB, which real files send
 constantly as routine GM/GS housekeeping (0 alongside almost every program
 change) with no intent to touch the SC map at all. Honouring it would let a
 file's own bank-select traffic silently undo whatever was chosen here within
-seconds - which is exactly what it looked like before this was fixed.
+seconds.
 
 Under systemd there is no terminal to type into, so the same commands go over a
 control socket, which the daemon opens in `$XDG_RUNTIME_DIR`, named after
@@ -298,9 +327,8 @@ the daemon, above:
     q              stop (Ctrl+C still works too)
 
 This reads a keystroke at a time rather than a whole line, so it never blocks
-the audio loop behind the Enter key - the same reason the loop already waits
-on the sound card rather than a timer. Before this, only `--map` at startup
-worked; there was no way to change it once the program was running.
+the audio loop behind the Enter key - the same reason the loop waits on the
+sound card rather than a timer.
 
 It also takes effect immediately rather than sitting unheard: the engine
 only re-resolves a part's tone on a program change, so along with CC32 this
@@ -432,8 +460,9 @@ delivers nothing - it forgives exactly what an old Windows does not.
 
 Copy `build/scva.lv2` into `~/.lv2/`. The plugin finds the core in
 `$SCVA_DLL_DIR`, or beside the bundle if you drop `SCCore.dll` in there. It
-needs the install's name files beside the core too (`SCVSC.tnf`,
-`SCVSC.drf`), and will not load without them.
+needs patch names beside the core too - the install's `SCVSC.tnf` and
+`SCVSC.drf`, or a `scva-tones.txt` (see [Patch names](#patch-names)) - and
+will not load with the built-in General MIDI set.
 
 MIDI in, stereo out, and an editor window (`scva_ui.so`, an X11 UI; Carla's
 GUI button on the plugin's strip):
@@ -467,7 +496,12 @@ ARM build of this and no Windows one.
 
 ## As a CLAP plugin
 
-Tested: `scva-win32.clap` in SAVIHost CLAP x86 1.44 under Wine, core 1.0.3.
+| tested | host | core |
+|---|---|---|
+| `scva-win32.clap` | SAVIHost CLAP x86 1.44, Wine | 1.0.3, 32-bit |
+| `scva-win64.clap` | SAVIHost CLAP x64 1.44, Wine | 1.1.2, 64-bit |
+
+SAVIHost needs the Visual C++ 2008 runtime of its own width.
 
     make clap        # Linux .clap and 64-bit Windows .clap
     make clap-win32  # 32-bit Windows .clap
@@ -533,7 +567,8 @@ of three sources, in order:
 | a SOUND Canvas VA install | `SCVSC.tnf`, `.drf`, `.drk` beside the core | 4257 |
 | General MIDI | built in, no files | 129 |
 
-Without any of them the plugin still plays; the host shows numbers.
+With only the built-in General MIDI set, the CLAP plays and lists those 129
+patches; the LV2 refuses to load.
 
 `make tones` writes a table from whatever this machine has the files available
 (`make tones32` builds the same tool for i386):
@@ -550,7 +585,7 @@ Roland 32-bit and 64-bit Windows versions. So:
 | | |
 |---|---|
 | Linux x86-64 | LV2, CLAP, renderer, `--play`, daemon |
-| Linux i386 | LV2, renderer without `--play`, daemon |
+| Linux i386 | LV2, CLAP, renderer without `--play`, daemon |
 | Windows x86-64 | CLAP, renderer, `--play`, MIDI device via a virtual cable |
 | Windows x86, 98 and up | CLAP, renderer, `--play`, MIDI device via a virtual cable |
 | ARM, any width | only by emulating x86 - box86 or box64 |
