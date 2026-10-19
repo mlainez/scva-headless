@@ -471,6 +471,7 @@ Tested: `scva-win32.clap` in SAVIHost CLAP x86 1.44 under Wine, core 1.0.3.
 
     make clap        # Linux .clap and 64-bit Windows .clap
     make clap-win32  # 32-bit Windows .clap
+    make clap-32     # 32-bit Linux .clap
 
 Needs the CLAP headers: `make clap CLAP_DIR=/path/to/clap/include`.
 

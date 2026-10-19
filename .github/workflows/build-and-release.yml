@@ -21,12 +21,14 @@ jobs:
 
       - name: Install cross toolchains and headers
         run: |
+          sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y \
             gcc-multilib g++-multilib libc6-dev-i386 \
-            libasound2-dev libx11-dev \
+            libasound2-dev \
             lv2-dev \
-            gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
+            gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
+            libx11-dev libx11-6:i386
 
       # Header-only, MIT (https://github.com/free-audio/clap), not vendored -
       # same source the Makefile's CLAP_DIR comment already points at.
@@ -53,6 +55,9 @@ jobs:
 
       - name: make clap-win32
         run: make clap-win32 CLAP_DIR=/tmp/clap/include
+
+      - name: make clap-32 (32-bit Linux .clap)
+        run: make clap-32 CLAP_DIR=/tmp/clap/include
 
       - name: Smoke-test the Linux binaries
         run: |
@@ -99,6 +104,7 @@ jobs:
               scva-render32.exe scva-winmidi32.exe )
           ( cd build && zip -j "../$rel/scva-clap-windows-x86_64.zip" scva-win64.clap )
           ( cd build && zip -j "../$rel/scva-clap-windows-x86.zip" scva-win32.clap )
+          tar czf "$rel/scva-clap-linux-i386.tar.gz" -C build scva32.clap
           ls -la "$rel"
 
       - uses: actions/upload-artifact@v4

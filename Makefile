@@ -7,6 +7,7 @@
 #   make lv2-32     the same, 32-bit, for a 32-bit SCCore.dll
 #   make clap       CLAP plugin for Windows (64-bit) and for Linux
 #   make clap-win32 CLAP plugin for 32-bit Windows
+#   make clap-32    CLAP plugin for 32-bit Linux
 #   make windows    64-bit Windows PE binaries via mingw-w64
 #   make windows32  32-bit Windows PE binaries, for the 32-bit SCCore.dll
 #   make daemon32   32-bit MIDI daemon; needs a 32-bit alsa-lib
@@ -155,6 +156,13 @@ $(XUI32): src/scva_xui.c src/scva_xui.h src/scva_lists.h src/scva_names.h \
 $(BUILD)/scva.clap: src/scva_clap.c $(ENGINE) $(XUI) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(CLAP_DIR) -fPIC -fvisibility=hidden -shared -o $@ \
 	      src/scva_clap.c $(XUI) $(ENGINE) $(X11) -lpthread -lm
+
+.PHONY: clap-32
+clap-32: $(BUILD)/scva32.clap
+
+$(BUILD)/scva32.clap: src/scva_clap.c $(ENGINE32) $(XUI32) | $(BUILD)
+	$(CC) -m32 $(CFLAGS) -I$(CLAP_DIR) -fPIC -fvisibility=hidden -shared -o $@ \
+	      src/scva_clap.c $(XUI32) $(ENGINE32) $(X11_32) -lpthread -lm
 
 $(BUILD)/scva-tones: src/scva_tones.c src/scva_names.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ src/scva_tones.c
