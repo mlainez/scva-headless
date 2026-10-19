@@ -140,9 +140,7 @@ int scva_engine_thread(void)
 }
 
 /* CC32 alone only latches the map for the next program change, so each
-   part's last program is re-sent to make the map audible now. That includes
-   the first send: at start-up the parts play SC-55 tones, not those of the
-   Default map. */
+   part's last program is re-sent to make the map audible now. */
 int scva_engine_set_map(struct scva_engine *e, int map)
 {
   int ch;
