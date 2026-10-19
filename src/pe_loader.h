@@ -44,6 +44,11 @@ struct pe_image {
 
 /* Map, relocate, bind imports, run the entry point. NULL on failure. */
 struct pe_image *pe_load(const char *path, char *err, size_t errlen);
+/* Gives the calling thread what the image expects of a Windows thread. Call
+   it on any thread before that thread enters the image: a plugin host's
+   audio thread is rarely the one that loaded it. Cheap once a thread has it;
+   0 if it could not be set up. */
+int pe_thread_attach(void);
 /* Look an export up by name. NULL if absent. */
 void *pe_symbol(struct pe_image *img, const char *name);
 /* Unmap an image and give its TLS slot back. Safe to call on an engine that

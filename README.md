@@ -431,28 +431,84 @@ delivers nothing - it forgives exactly what an old Windows does not.
     make lv2-32   # i386 bundle, for a 32-bit SCCore.dll
 
 Copy `build/scva.lv2` into `~/.lv2/`. The plugin finds the core in
-`$SCVA_DLL_DIR`, or beside the bundle if you drop `SCCore.dll` in there.
+`$SCVA_DLL_DIR`, or beside the bundle if you drop `SCCore.dll` in there. It
+needs the install's name files beside the core too (`SCVSC.tnf`,
+`SCVSC.drf`), and will not load without them.
 
-MIDI in, stereo out, and the tone map as an enumerated control.
+MIDI in, stereo out, and an editor window (`scva_ui.so`, an X11 UI; Carla's
+GUI button on the plugin's strip):
 
-Patch names use the KXStudio `programs` extension, read by Carla, Ardour and
-Qtractor. Bank is the GS 14-bit bank - CC0 the MSB, CC32 the tone map - with
-bit 14 marking a drum kit. Kits select on the drum part, tones on the first.
+| in the editor | what it does |
+|---|---|
+| Tone Map buttons | every part, at once: each part's last program is re-sent under the new map |
+| Instrument list | part 1: the map's tones, `001 Piano 1`, `001-008 Piano 1w` |
+| Drum Kit list | part 10: the map's kits, `001 STANDARD 1` |
+
+Default lists SC-8820's patches, which it renders. The lists scroll with the
+wheel or the scrollbar; a click picks. The editor needs only libX11 and
+draws with the X server's own fixed font.
+
+Its controls are three plugin ports that hosts are asked not to draw
+(`notOnGUI`), and the plugin plays what they hold: Tone Map, Drum Kit (a GS
+program number; one the map lacks plays Standard) and Instrument (a position
+in the map's tones). A Tone Map change in the editor keeps the instrument -
+the same bank and program in the new map's list, as the CLAP editor does.
+Automation and saved projects set the same ports.
+
+There is no program list: the editor is the one place to pick, as a host's
+drop-down could not follow the editor's picks.
+
+Tested in Carla 2.5.8 (native) and 2.5.10 (flatpak), x86-64 bundle, core 1.1.2.
 
 The plugin's architecture has to match the host's, and the Roland core's has to match
 the plugin's - a 64-bit host needs the 64-bit bundle and a 64-bit core. LV2 is
 a Linux format in practice, and the engine is x86 machine code, so there is no
 ARM build of this and no Windows one.
 
-## As a CLAP plugin (untested)
+## As a CLAP plugin
+
+Tested: `scva-win32.clap` in SAVIHost CLAP x86 1.44 under Wine, core 1.0.3.
 
     make clap        # Linux .clap and 64-bit Windows .clap
     make clap-win32  # 32-bit Windows .clap
+    make clap-32     # 32-bit Linux .clap
 
 Needs the CLAP headers: `make clap CLAP_DIR=/path/to/clap/include`.
 
-Same shape as the LV2: MIDI in, stereo out, tone map as a parameter. The core
-and patch name files are found in `$SCVA_DLL_DIR`, or beside the `.clap`.
+MIDI in, stereo out. The core and patch name files are found in
+`$SCVA_DLL_DIR`, or beside the `.clap`.
+
+| parameter | values | part |
+|---|---|---|
+| Tone Map | Default, SC-55, SC-88, SC-88Pro, SC-8820 | every part, at once |
+| Instrument | the Tone Map's tones, `001 Piano 1`, `001-008 Piano 1w` | first |
+| Drum Kit | the Tone Map's kits, `001 STANDARD` | drum |
+
+Default lists SC-8820's patches, which it renders. A Tone Map change re-sends
+each part's last program under the new map, and moves Instrument and Drum Kit
+to the same patch in that map's lists where it has one. Their ranges are the
+longest map's; past a shorter list a value means its last entry.
+
+| map | tones | kits |
+|---|---|---|
+| SC-55 | 418 | 10 |
+| SC-88 | 418 | 14 |
+| SC-88Pro | 774 | 25 |
+| SC-8820, Default | 1262 | 37 |
+
+The Linux build's editor is the LV2's (X11, the host's timer drives it).
+The Windows builds have one of their own: Tone Map and Drum Kit drop-downs
+and the Instrument list, refilled when the Tone Map changes. A host's generic
+slider cannot step through 1262 tones;
+SAVIHost shows the editor in place of its slider. The editor scales with the
+Windows DPI setting (Wine: `winecfg`, Graphics) and fills whatever window the
+host gives it.
+
+| in SAVIHost | does |
+|---|---|
+| size grip, bottom right | resizes, up to the editor's own size |
+| View > Check Max Size, unchecked | lifts that limit; the Instrument list grows |
+| View > Resize | fits the window to the editor, after a DPI change for instance |
 
 | build | how the core is loaded |
 |---|---|
@@ -460,8 +516,10 @@ and patch name files are found in `$SCVA_DLL_DIR`, or beside the `.clap`.
 | 64-bit Windows | `LoadLibrary` |
 | 32-bit Windows | PE loader, as `scva-render32.exe`: no `MSVCR100.dll` needed |
 
-Patches use `clap.preset-discovery` (a `LOCATION_PLUGIN` provider),
-`clap.preset-load`, and `clap.note-name` for the loaded kit's keys.
+For hosts with a preset browser, every map's patches are also presets,
+named like `SC-88 001 Piano 1`, through `clap.preset-discovery` (a
+`LOCATION_PLUGIN` provider) and `clap.preset-load`. `clap.note-name` names
+the loaded kit's keys.
 
 ## Patch names
 
@@ -494,7 +552,7 @@ Roland 32-bit and 64-bit Windows versions. So:
 | Linux x86-64 | LV2, CLAP, renderer, `--play`, daemon |
 | Linux i386 | LV2, renderer without `--play`, daemon |
 | Windows x86-64 | CLAP, renderer, `--play`, MIDI device via a virtual cable |
-| Windows x86, 98 and up | renderer, `--play`, MIDI device via a virtual cable |
+| Windows x86, 98 and up | CLAP, renderer, `--play`, MIDI device via a virtual cable |
 | ARM, any width | only by emulating x86 - box86 or box64 |
 | macOS | would need a Mach-O loader; not built here |
 

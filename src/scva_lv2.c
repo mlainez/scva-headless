@@ -4,19 +4,19 @@
  *
  * The engine is Roland's, loaded from your own SCCore.dll at instantiate
  * time. Nothing of Roland's is distributed with this plugin - the core is
- * looked for in $SCVA_DLL_DIR, then beside the bundle.
+ * looked for in $SCVA_DLL_DIR, then beside the bundle. Driving it is
+ * scva_engine.c's job, shared with the CLAP plugin.
  *
- * Two things about the engine shape this file:
+ * The tone map, the first part's tone and the drum part's kit are three
+ * control ports, set from the editor (scva_lv2_ui.c); the plugin plays what
+ * they hold. There is no program list: a host's would show one pick while
+ * the editor made another.
  *
- *   TG_Process allocates nothing once set up, so run() is realtime-safe:
- *   56 allocations happen during instantiate and none across an hour of
- *   audio.
- *
- *   TG_terminate calls exit(). Calling it from cleanup() would take the host
- *   down with it, so this plugin never calls it - it deactivates and unmaps.
+ * TG_Process allocates nothing once set up, so run() is realtime-safe: 56
+ * allocations happen during instantiate and none across an hour of audio.
  */
 #define _GNU_SOURCE
-#include "pe_loader.h"
+#include "scva_engine.h"
 #include "scva_map.h"
 #include "scva_names.h"
 #include <stdio.h>
@@ -31,165 +31,62 @@
 
 #define SCVA_URI "https://github.com/mlainez/scva-headless#scva"
 
-/* LV2 has no official program-list extension. This one is KXStudio's, which
-   Carla, Ardour and Qtractor read; it is an ABI rather than a library, so it
-   is declared here rather than depended on. */
-#define LV2_PROGRAMS__Interface \
-  "http://kxstudio.sf.net/ns/lv2ext/programs#Interface"
-
-typedef struct {
-  uint32_t bank;
-  uint32_t program;
-  const char *name;
-} LV2_Program_Descriptor;
-
-typedef struct {
-  const LV2_Program_Descriptor *(*get_program)(LV2_Handle, uint32_t index);
-  void (*select_program)(LV2_Handle, uint32_t bank, uint32_t program);
-} LV2_Programs_Interface;
-
-/* A patch needs four numbers, and the extension offers two. Bank carries the
-   GS 14-bit bank exactly as MIDI defines it - CC0 is the MSB, CC32 the tone
-   map - and bit 14, which lies outside that range, marks a drum kit. */
-#define SCVA_BANK_DRUM   (1u << 14)
-#define SCVA_BANK(cc0, map, drum) \
-  (((drum) ? SCVA_BANK_DRUM : 0u) | ((uint32_t)(cc0) << 7) | (uint32_t)(map))
-#define SCVA_BANK_CC0(b)  (((b) >> 7) & 0x7f)
-#define SCVA_BANK_MAP(b)  ((b) & 0x7f)
-#define SCVA_BANK_ISDRUM(b) (((b) & SCVA_BANK_DRUM) != 0)
-
-/* Kits land on the drum part, tones on the first part. */
-#define SCVA_TONE_CH 0
-#define SCVA_DRUM_CH 9
-
-/* Declared to the engine; run() is chunked to it. */
-#define SCVA_MAXBLOCK 4096
-
 enum {
   PORT_MIDI_IN = 0,
   PORT_OUT_L   = 1,
   PORT_OUT_R   = 2,
-  PORT_MAP     = 3
-};
-
-typedef MSABI int (*tg_initialize_fn)(int);
-typedef MSABI void (*tg_set_sample_rate_fn)(float);
-typedef MSABI void (*tg_set_max_block_fn)(int);
-typedef MSABI int (*tg_activate_fn)(float, int);
-typedef MSABI void (*tg_deactivate_fn)(void);
-typedef MSABI void (*tg_short_midi_fn)(unsigned int, int);
-typedef MSABI void (*tg_long_midi_fn)(const unsigned char *, int);
-typedef MSABI void (*tg_process_fn)(float *, float *, int);
-struct tg_system_config { int a, b; };
-typedef MSABI int (*tg_set_config_fn)(const struct tg_system_config *);
-
-/* The descriptor hands out a const char *, so each name is owned alongside
-   the descriptor that points at it. */
-struct scva_program {
-  LV2_Program_Descriptor d;
-  char name[SCVA_NAME_MAX + 8];
+  PORT_MAP     = 3,
+  PORT_KIT     = 4,    /* a GS program number */
+  PORT_INST    = 5     /* a position in the map's tones */
 };
 
 struct scva {
-  struct pe_image *img;
-  tg_set_sample_rate_fn set_rate;
-  tg_activate_fn activate;
-  tg_deactivate_fn deactivate;
-  tg_short_midi_fn short_midi;
-  tg_long_midi_fn long_midi;
-  tg_process_fn process;
+  struct scva_engine *eng;
 
   const LV2_Atom_Sequence *midi_in;
   float *out_l, *out_r;
-  const float *map_port;
+  const float *map_port, *kit_port, *inst_port;
 
   LV2_URID midi_event;
-  int map_now;                 /* tone map currently pushed to the engine */
 
   struct scva_names names;
-  struct scva_program *progs;
-  uint32_t nprogs;
-  /* select_program arrives on the host's thread, so it is latched here and
-     applied at the top of the next run(). */
-  uint32_t sel_bank, sel_prog;
-  int sel_pending;
+  struct scva_lists lists;
+  /* names.patch index last sent to each part, -1 before any */
+  int tone_sent, kit_sent;
 };
 
-/* $SCVA_DLL_DIR/SCCore.dll, then <bundle>/SCCore.dll. Reports the directory
-   it succeeded in, because the tone name files sit beside the core. */
-static struct pe_image *open_core(const char *bundle, char *err, size_t errlen,
-                                  char *found, size_t foundcap)
+static int port_int(const float *port, int lo, int hi)
 {
-  char path[2048];
-  const char *dir = getenv("SCVA_DLL_DIR");
-  struct pe_image *img;
-  if (dir && *dir) {
-    snprintf(path, sizeof path, "%s/SCCore.dll", dir);
-    img = pe_load(path, err, errlen);
-    if (img) { snprintf(found, foundcap, "%s", dir); return img; }
-  }
-  if (bundle && *bundle) {
-    size_t n;
-    snprintf(path, sizeof path, "%sSCCore.dll", bundle);
-    img = pe_load(path, err, errlen);
-    if (img) {
-      snprintf(found, foundcap, "%s", bundle);
-      n = strlen(found);                  /* the bundle path keeps its slash */
-      while (n > 1 && found[n - 1] == '/') found[--n] = '\0';
-      return img;
-    }
-  }
-  snprintf(err, errlen,
-           "no SCCore.dll: set SCVA_DLL_DIR or put it in the bundle");
-  return NULL;
+  int v = port ? (int)(*port + 0.5f) : lo;
+  return v < lo ? lo : v > hi ? hi : v;
 }
 
-/* One entry per named patch, kits after tones, in the order the files give
-   them. The map tag goes in front of the name so a flat host list stays
-   readable: "Piano 1" is the default map, "88 Piano 1w" the SC-88 one. */
-static void build_programs(struct scva *s)
+/* The Instrument port's position in tone map m, past the end meaning the
+   last, on the first part. Sent when it resolves to another patch. */
+static void send_tone(struct scva *s, int m)
 {
-  size_t i;
-  if (!s->names.npatch) return;
-  s->progs = calloc(s->names.npatch, sizeof *s->progs);
-  if (!s->progs) return;
-  for (i = 0; i < s->names.npatch; ++i) {
-    const struct scva_patch *p = &s->names.patch[i];
-    struct scva_program *e = &s->progs[s->nprogs];
-    const char *tag = scva_map_tag(p->map);
-    snprintf(e->name, sizeof e->name, "%s%s%s",
-             tag, *tag ? " " : "", p->name);
-    e->d.bank = SCVA_BANK(p->bank, p->map, p->drum);
-    e->d.program = p->prog;
-    e->d.name = e->name;
-    ++s->nprogs;
-  }
+  const struct scva_patch *p;
+  int n = (int)s->lists.ntone[m], k;
+  if (!n) return;
+  k = port_int(s->inst_port, 0, n - 1);
+  if ((int)s->lists.tone[m][k] == s->tone_sent) return;
+  p = &s->names.patch[s->lists.tone[m][k]];
+  scva_engine_patch(s->eng, SCVA_TONE_CH, p->map, p->bank, p->prog);
+  s->tone_sent = (int)s->lists.tone[m][k];
 }
 
-static const LV2_Program_Descriptor *get_program(LV2_Handle h, uint32_t index)
+/* The Drum Kit port's kit in tone map m, or Standard where m has no kit of
+   that number, on the drum part. Sent when it resolves to another patch. */
+static void send_kit(struct scva *s, int m)
 {
-  struct scva *s = h;
-  return index < s->nprogs ? &s->progs[index].d : NULL;
-}
-
-static void select_program(LV2_Handle h, uint32_t bank, uint32_t program)
-{
-  struct scva *s = h;
-  s->sel_bank = bank;
-  s->sel_prog = program;
-  s->sel_pending = 1;
-}
-
-static const LV2_Programs_Interface programs_iface = {
-  get_program, select_program
-};
-
-static void send_map(struct scva *s, int mapval)
-{
-  int ch;
-  for (ch = 0; ch < 16; ++ch)
-    s->short_midi(scva_map_cc(ch, mapval), 0);
-  s->map_now = mapval;
+  const struct scva_patch *p;
+  int want = port_int(s->kit_port, 0, 127), k;
+  k = scva_lists_find(&s->names, s->lists.kit[m], s->lists.nkit[m], 0, want);
+  if (k < 0) k = scva_lists_find(&s->names, s->lists.kit[m], s->lists.nkit[m], 0, 0);
+  if (k < 0 || (int)s->lists.kit[m][k] == s->kit_sent) return;
+  p = &s->names.patch[s->lists.kit[m][k]];
+  scva_engine_patch(s->eng, SCVA_DRUM_CH, p->map, p->bank, p->prog);
+  s->kit_sent = (int)s->lists.kit[m][k];
 }
 
 static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
@@ -198,7 +95,8 @@ static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
 {
   struct scva *s;
   LV2_URID_Map *map = NULL;
-  char err[256];
+  char err[256], here[1024], dir[1024];
+  size_t n;
   int i;
   (void)desc;
 
@@ -210,132 +108,66 @@ static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
   s = calloc(1, sizeof *s);
   if (!s) return NULL;
   s->midi_event = map->map(map->handle, LV2_MIDI__MidiEvent);
+  s->tone_sent = s->kit_sent = -1;
 
-  {
-    char dir[2048] = "";
-    s->img = open_core(bundle, err, sizeof err, dir, sizeof dir);
-    if (!s->img) {
-      fprintf(stderr, "scva.lv2: %s\n", err);
-      free(s);
-      return NULL;
-    }
-    /* Names are a convenience: without them the plugin still plays. */
-    if (scva_names_load(&s->names, dir)) build_programs(s);
-  }
+  /* the bundle path keeps its trailing slash */
+  snprintf(here, sizeof here, "%s", bundle ? bundle : "");
+  n = strlen(here);
+  while (n > 1 && here[n - 1] == '/') here[--n] = '\0';
+  scva_core_dir(here, dir, sizeof dir);
 
-#define GET(f, t, n) s->f = (t)pe_symbol(s->img, n); \
-  if (!s->f) { fprintf(stderr, "scva.lv2: missing %s\n", n); goto fail; }
-  {
-    tg_initialize_fn initialize;
-    tg_set_max_block_fn set_block;
-    tg_set_config_fn set_config;
-    GET(set_rate, tg_set_sample_rate_fn, "TG_setSampleRate")
-    GET(activate, tg_activate_fn, "TG_activate")
-    GET(deactivate, tg_deactivate_fn, "TG_deactivate")
-    GET(short_midi, tg_short_midi_fn, "TG_ShortMidiIn")
-    GET(long_midi, tg_long_midi_fn, "TG_LongMidiIn")
-    GET(process, tg_process_fn, "TG_Process")
-    initialize = (tg_initialize_fn)pe_symbol(s->img, "TG_initialize");
-    set_block = (tg_set_max_block_fn)pe_symbol(s->img, "TG_setMaxBlockSize");
-    set_config = (tg_set_config_fn)pe_symbol(s->img, "TG_XPsetSystemConfig");
-    if (!initialize || !set_block || !set_config) goto fail;
-
-    /* The order matters: the rate is set on both sides of the block size,
-       and the second call is the last thing before activate. Otherwise the
-       core emits Inf and NaN while reporting no error. */
-    initialize(0);
-    s->set_rate((float)rate);
-    set_block(SCVA_MAXBLOCK);
-    { struct tg_system_config c; c.a = 1; c.b = 1; set_config(&c); }
-    s->set_rate((float)rate);
-    s->activate((float)rate, SCVA_MAXBLOCK);
+  /* The instrument and kit lists are the install's own: nothing of Roland's
+     ships with this plugin, so without them there is nothing to offer. */
+  scva_names_load(&s->names, dir);
+  if (!s->names.npatch || !strcmp(s->names.module, "General MIDI") ||
+      !scva_lists_build(&s->lists, &s->names)) {
+    fprintf(stderr, "scva.lv2: no SOUND Canvas VA name files (SCVSC.tnf, "
+            "SCVSC.drf) beside SCCore.dll in %s\n", dir);
+    scva_names_free(&s->names);
+    free(s);
+    return NULL;
   }
-#undef GET
-  {
-    static const unsigned char gs_reset[] = {
-      0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
-    s->long_midi(gs_reset, 0);
+  s->eng = scva_engine_open(dir, rate, err, sizeof err);
+  if (!s->eng) {
+    fprintf(stderr, "scva.lv2: %s\n", err);
+    scva_lists_free(&s->lists);
+    scva_names_free(&s->names);
+    free(s);
+    return NULL;
   }
-  s->map_now = -1;
   return s;
-
-fail:
-  pe_unload(s->img);
-  free(s);
-  return NULL;
 }
 
 static void connect_port(LV2_Handle h, uint32_t port, void *data)
 {
   struct scva *s = h;
   switch (port) {
-  case PORT_MIDI_IN: s->midi_in  = (const LV2_Atom_Sequence *)data; break;
-  case PORT_OUT_L:   s->out_l    = (float *)data; break;
-  case PORT_OUT_R:   s->out_r    = (float *)data; break;
-  case PORT_MAP:     s->map_port = (const float *)data; break;
+  case PORT_MIDI_IN: s->midi_in   = (const LV2_Atom_Sequence *)data; break;
+  case PORT_OUT_L:   s->out_l     = (float *)data; break;
+  case PORT_OUT_R:   s->out_r     = (float *)data; break;
+  case PORT_MAP:     s->map_port  = (const float *)data; break;
+  case PORT_KIT:     s->kit_port  = (const float *)data; break;
+  case PORT_INST:    s->inst_port = (const float *)data; break;
   default: break;
   }
-}
-
-/* TG_Process writes exactly the frames asked for, so it can write straight
-   into the output ports at an offset. It is chunked to the declared maximum. */
-static void render(struct scva *s, uint32_t at, uint32_t frames)
-{
-  while (frames) {
-    uint32_t n = frames > SCVA_MAXBLOCK ? SCVA_MAXBLOCK : frames;
-    s->process(s->out_l + at, s->out_r + at, (int)n);
-    at += n;
-    frames -= n;
-  }
-}
-
-static void deliver(struct scva *s, const uint8_t *d, uint32_t size)
-{
-  if (!size) return;
-  if (d[0] == 0xf0) {
-    s->long_midi(d, 0);
-    return;
-  }
-  /* A program change latches the tone map, so CC32 goes first on that part. */
-  if (s->map_now > 0 && (d[0] & 0xf0) == 0xc0)
-    s->short_midi(scva_map_cc(d[0] & 0x0f, s->map_now), 0);
-  {
-    unsigned int msg = d[0];
-    if (size > 1) msg |= (unsigned int)d[1] << 8;
-    if (size > 2) msg |= (unsigned int)d[2] << 16;
-    s->short_midi(msg, 0);
-  }
-}
-
-/* CC32 then CC0 then the program change: the bank pair only takes effect on
-   the program change that follows it. */
-static void apply_selection(struct scva *s)
-{
-  int ch = SCVA_BANK_ISDRUM(s->sel_bank) ? SCVA_DRUM_CH : SCVA_TONE_CH;
-  int map = SCVA_BANK_MAP(s->sel_bank);
-  int cc0 = SCVA_BANK_CC0(s->sel_bank);
-
-  s->short_midi(scva_map_cc(ch, map), 0);
-  s->short_midi((unsigned int)(0xb0 | ch) | (0u << 8) |
-                ((unsigned int)cc0 << 16), 0);
-  s->short_midi((unsigned int)(0xc0 | ch) |
-                ((s->sel_prog & 0x7fu) << 8), 0);
-  s->sel_pending = 0;
 }
 
 static void run(LV2_Handle h, uint32_t n_samples)
 {
   struct scva *s = h;
   uint32_t at = 0;
+  int map;
 
-  if (s->sel_pending) apply_selection(s);
-
-  if (s->map_port) {
-    int want = (int)(*s->map_port + 0.5f);
-    if (want < 0) want = 0;
-    if (want > SCVA_MAP_8820) want = SCVA_MAP_8820;
-    if (want != s->map_now) send_map(s, want);
+  /* The host's audio thread, not the one that opened the engine. */
+  if (!scva_engine_thread()) {
+    memset(s->out_l, 0, n_samples * sizeof *s->out_l);
+    memset(s->out_r, 0, n_samples * sizeof *s->out_r);
+    return;
   }
+  map = port_int(s->map_port, SCVA_MAP_DEFAULT, SCVA_MAP_8820);
+  scva_engine_set_map(s->eng, map);
+  send_tone(s, map);
+  send_kit(s, map);
 
   if (s->midi_in) {
     LV2_ATOM_SEQUENCE_FOREACH(s->midi_in, ev) {
@@ -343,29 +175,31 @@ static void run(LV2_Handle h, uint32_t n_samples)
       if (ev->body.type != s->midi_event) continue;
       frame = (uint32_t)ev->time.frames;
       if (frame > n_samples) frame = n_samples;
-      if (frame > at) { render(s, at, frame - at); at = frame; }
-      deliver(s, (const uint8_t *)LV2_ATOM_BODY_CONST(&ev->body),
-              ev->body.size);
+      if (frame > at) {
+        scva_engine_render(s->eng, s->out_l + at, s->out_r + at, frame - at);
+        at = frame;
+      }
+      scva_engine_midi(s->eng, (const uint8_t *)LV2_ATOM_BODY_CONST(&ev->body),
+                       ev->body.size);
     }
   }
-  if (at < n_samples) render(s, at, n_samples - at);
+  if (at < n_samples)
+    scva_engine_render(s->eng, s->out_l + at, s->out_r + at, n_samples - at);
 }
 
 static void cleanup(LV2_Handle h)
 {
   struct scva *s = h;
   if (!s) return;
-  /* Deactivate, never terminate: TG_terminate calls exit(). */
-  if (s->deactivate) s->deactivate();
-  pe_unload(s->img);
+  scva_engine_close(s->eng);
+  scva_lists_free(&s->lists);
   scva_names_free(&s->names);
-  free(s->progs);
   free(s);
 }
 
 static const void *extension_data(const char *uri)
 {
-  if (!strcmp(uri, LV2_PROGRAMS__Interface)) return &programs_iface;
+  (void)uri;
   return NULL;
 }
 

@@ -81,8 +81,18 @@ static void pe_setprot(void *p, size_t n, int exec, int write)
    real thing here. */
 static int install_teb(void) { return 1; }
 #else
-static unsigned char *g_teb;
+/* Every thread that enters the image needs its own block: the stack bounds in
+   it must be that thread's, because MSVC's stack probes walk down to them.
+   The PEB and the TLS pointer array are shared, so all threads see one set of
+   thread-local state - the core is set up on one thread and, in a plugin
+   host, run on another. A thread's block outlives the thread; nothing tells
+   us it ended. */
+static __thread unsigned char *t_teb;
 static unsigned char *g_peb;
+static void **g_tls_slots;
+#if defined(__i386__)
+static int g_teb_entry = -1;    /* the GDT slot, the same on every thread */
+#endif
 
 static void *pe_reserve(void *want, size_t n)
 {
@@ -105,13 +115,24 @@ static void pe_setprot(void *p, size_t n, int exec, int write)
 static int install_teb(void)
 {
   size_t sz = 0x2000;
-  if (g_teb) return 1;
-  g_teb = mmap(NULL, sz, PROT_READ | PROT_WRITE,
+  unsigned char *teb;
+  if (t_teb) {
+    /* attached before the first image with TLS was loaded */
+    if (!*(void **)(t_teb + PE_TIB_TLS))
+      *(void **)(t_teb + PE_TIB_TLS) = g_tls_slots;
+    return 1;
+  }
+  if (!g_peb) {
+    g_peb = mmap(NULL, sz, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (g_peb == MAP_FAILED) { g_peb = NULL; return 0; }
+    memset(g_peb, 0, sz);
+  }
+  teb = mmap(NULL, sz, PROT_READ | PROT_WRITE,
                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  g_peb = mmap(NULL, sz, PROT_READ | PROT_WRITE,
-               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (g_teb == MAP_FAILED || g_peb == MAP_FAILED) return 0;
-  memset(g_teb, 0, sz); memset(g_peb, 0, sz);
+  if (teb == MAP_FAILED) return 0;
+  memset(teb, 0, sz);
+  *(void **)(teb + PE_TIB_TLS) = g_tls_slots;
   {
     /* NT_TIB: the few fields start-up code actually reads.
        The stack bounds must be the REAL ones - MSVC's stack probes compare
@@ -123,14 +144,14 @@ static int install_teb(void)
       pthread_attr_destroy(&at);
     }
     if (!stack_addr) { char dummy; stack_addr = (void *)((uintptr_t)&dummy - (8u<<20)); stack_sz = 8u<<20; }
-    *(void **)(g_teb + PE_TIB_EXCEPT) = (void *)~(uintptr_t)0; /* -1 */
-    *(void **)(g_teb + PE_TIB_STACKBASE) =
+    *(void **)(teb + PE_TIB_EXCEPT) = (void *)~(uintptr_t)0; /* -1 */
+    *(void **)(teb + PE_TIB_STACKBASE) =
       (void *)((uintptr_t)stack_addr + stack_sz);
-    *(void **)(g_teb + PE_TIB_STACKLIMIT) = stack_addr;
-    *(void **)(g_teb + PE_TIB_SELF) = g_teb;
-    *(void **)(g_teb + PE_TIB_PEB) = g_peb;
-    *(uint32_t *)(g_teb + PE_TIB_PID) = 1;
-    *(uint32_t *)(g_teb + PE_TIB_TID) = 1;
+    *(void **)(teb + PE_TIB_STACKLIMIT) = stack_addr;
+    *(void **)(teb + PE_TIB_SELF) = teb;
+    *(void **)(teb + PE_TIB_PEB) = g_peb;
+    *(uint32_t *)(teb + PE_TIB_PID) = 1;
+    *(uint32_t *)(teb + PE_TIB_TID) = 1;
     *(uint32_t *)(g_peb + 0x00) = 0;                  /* InheritedAddressSpace */
 #if defined(__x86_64__)
     *(uint32_t *)(g_peb + 0x118) = 10;                /* OSMajorVersion */
@@ -141,16 +162,17 @@ static int install_teb(void)
 #endif
   }
 #if defined(__x86_64__)
-  if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)g_teb) != 0) return 0;
+  if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)teb) != 0) return 0;
 #else
   {
     /* i386 has no arch_prctl for this: a descriptor is added to the thread's
-       LDT and FS loaded with its selector. entry_number -1 asks the kernel to
-       pick a free slot and write back which one it used. */
+       GDT and FS loaded with its selector. entry_number -1 asks the kernel to
+       pick a free slot and write back which one it used; later threads ask
+       for that same slot in their own GDT. */
     struct user_desc d;
     memset(&d, 0, sizeof d);
-    d.entry_number    = -1;
-    d.base_addr       = (unsigned long)g_teb;
+    d.entry_number    = (unsigned)g_teb_entry;
+    d.base_addr       = (unsigned long)teb;
     d.limit           = 0xfffff;
     d.seg_32bit       = 1;
     d.contents        = 0;
@@ -159,13 +181,17 @@ static int install_teb(void)
     d.seg_not_present = 0;
     d.useable         = 1;
     if (syscall(SYS_set_thread_area, &d) != 0) return 0;
+    g_teb_entry = (int)d.entry_number;
     __asm__ volatile("movw %w0, %%fs"
                      :: "q"((unsigned short)((d.entry_number << 3) | 3)));
   }
 #endif
+  t_teb = teb;
   return 1;
 }
 #endif
+
+int pe_thread_attach(void) { return install_teb(); }
 
 /* ---------- the little of the PE format that matters -------------------- */
 #pragma pack(push, 1)
@@ -650,7 +676,6 @@ static void **__cdecl pe_tls_array(const struct pe_tls *t)
    TlsAlloc does on Windows. Without it a second image overwrites the first
    image's block and the two share thread-local state. */
 #ifndef _WIN32
-static void **g_tls_slots;
 static uint32_t g_tls_next;
 #define PE_TLS_SLOTS 64
 /* Slots handed back by pe_unload, so a host that creates and destroys plugin
@@ -922,7 +947,7 @@ struct pe_image *pe_load(const char *path, char *err, size_t errlen)
     if (!g_tls_slots) {
       g_tls_slots = calloc(PE_TLS_SLOTS, sizeof *g_tls_slots);
       if (!g_tls_slots) FAIL("out of memory for TLS");
-      *(void **)(g_teb + PE_TIB_TLS) = g_tls_slots;
+      *(void **)(t_teb + PE_TIB_TLS) = g_tls_slots;
     }
     if (g_tls_nfree > 0) idx = (uint32_t)g_tls_free[--g_tls_nfree];
     else if (g_tls_next < PE_TLS_SLOTS) idx = g_tls_next++;
