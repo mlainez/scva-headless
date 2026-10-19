@@ -21,10 +21,11 @@ jobs:
 
       - name: Install cross toolchains and headers
         run: |
+          sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y \
             gcc-multilib g++-multilib libc6-dev-i386 \
-            libasound2-dev \
+            libasound2-dev libasound2-dev:i386 \
             lv2-dev \
             gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
 
@@ -38,6 +39,9 @@ jobs:
 
       - name: make linux32 (scva-render32, no ALSA by design)
         run: make linux32
+
+      - name: make daemon32 (32-bit ALSA)
+        run: make daemon32
 
       - name: make lv2
         run: make lv2
@@ -81,6 +85,7 @@ jobs:
           fi
 
           ./build/scva-daemon --list-pcm
+          ./build/scva-daemon32 --list-pcm
 
       - name: Package release assets
         run: |
@@ -90,7 +95,7 @@ jobs:
           tar czf "$rel/scva-linux-x86_64.tar.gz" \
             -C build scva-render scva-daemon -C .. README.md
           tar czf "$rel/scva-linux-i386.tar.gz" \
-            -C build scva-render32 -C .. README.md
+            -C build scva-render32 scva-daemon32 -C .. README.md
           tar czf "$rel/scva-lv2-x86_64.tar.gz" -C build scva.lv2
           tar czf "$rel/scva-clap-linux-x86_64.tar.gz" -C build scva.clap
           ( cd build && zip -j "../$rel/scva-windows-x86_64.zip" \
