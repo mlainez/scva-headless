@@ -23,6 +23,7 @@
 #include <lv2/atom/util.h>
 #include <lv2/urid/urid.h>
 #include <lv2/midi/midi.h>
+#include <lv2/worker/worker.h>
 
 #define SCVA_URI "https://github.com/mlainez/scva-headless#scva"
 
@@ -42,6 +43,15 @@ typedef struct {
   const LV2_Program_Descriptor *(*get_program)(LV2_Handle, uint32_t index);
   void (*select_program)(LV2_Handle, uint32_t bank, uint32_t program);
 } LV2_Programs_Interface;
+
+/* The host side: program_changed(handle, -1) reloads the whole list. Never to
+   be called from run(). */
+#define LV2_PROGRAMS__Host "http://kxstudio.sf.net/ns/lv2ext/programs#Host"
+
+typedef struct {
+  void *handle;
+  void (*program_changed)(void *handle, int32_t index);
+} LV2_Programs_Host;
 
 /* A patch needs four numbers, and the extension offers two. Bank carries the
    GS 14-bit bank exactly as MIDI defines it - CC0 is the MSB, CC32 the tone
@@ -77,33 +87,44 @@ struct scva {
   LV2_URID midi_event;
 
   struct scva_names names;
-  struct scva_program *progs;
-  uint32_t nprogs;
+  /* One program list per tone map; the host is offered prog_map's. */
+  struct scva_program *progs[SCVA_MAPS];
+  uint32_t nprogs[SCVA_MAPS];
+  volatile int prog_map;
+  /* The position the host last selected in that list, -1 before any. A host
+     keeps its selection by position across a reload, so a new map plays the
+     patch at that position in its own list: what the host shows. */
+  int prog_index;
   /* select_program arrives on the host's thread, so it is latched here and
      applied at the top of the next run(). */
   uint32_t sel_bank, sel_prog;
   int sel_pending;
+  /* The host is told of a new list from the worker: never from run(). */
+  const LV2_Worker_Schedule *worker;
+  const LV2_Programs_Host *programs_host;
 };
 
-/* One entry per patch the shared lists offer, tones then kits. */
+/* Per tone map, one entry per patch of the shared lists: tones, then kits. */
 static void build_programs(struct scva *s)
 {
   struct scva_lists L;
-  uint32_t i, n;
+  int m;
+  uint32_t i;
   if (!scva_lists_build(&L, &s->names)) return;
-  n = L.ntone + L.nkit;
-  s->progs = calloc(n ? n : 1, sizeof *s->progs);
-  if (s->progs) {
+  for (m = 0; m < SCVA_MAPS; ++m) {
+    uint32_t n = L.ntone[m] + L.nkit[m];
+    s->progs[m] = calloc(n ? n : 1, sizeof *s->progs[m]);
+    if (!s->progs[m]) continue;
     for (i = 0; i < n; ++i) {
-      const struct scva_patch *p =
-        &s->names.patch[i < L.ntone ? L.tone[i] : L.kit[i - L.ntone]];
-      struct scva_program *e = &s->progs[i];
+      const struct scva_patch *p = &s->names.patch[i < L.ntone[m] ?
+        L.tone[m][i] : L.kit[m][i - L.ntone[m]]];
+      struct scva_program *e = &s->progs[m][i];
       scva_patch_label(p, e->name, sizeof e->name);
       e->d.bank = SCVA_BANK(p->bank, p->map, p->drum);
       e->d.program = p->prog;
       e->d.name = e->name;
     }
-    s->nprogs = n;
+    s->nprogs[m] = n;
   }
   scva_lists_free(&L);
 }
@@ -111,15 +132,60 @@ static void build_programs(struct scva *s)
 static const LV2_Program_Descriptor *get_program(LV2_Handle h, uint32_t index)
 {
   struct scva *s = h;
-  return index < s->nprogs ? &s->progs[index].d : NULL;
+  int m = s->prog_map;
+  return index < s->nprogs[m] ? &s->progs[m][index].d : NULL;
 }
 
 static void select_program(LV2_Handle h, uint32_t bank, uint32_t program)
 {
   struct scva *s = h;
+  int m = s->prog_map;
+  uint32_t i;
+  for (i = 0; i < s->nprogs[m]; ++i)
+    if (s->progs[m][i].d.bank == bank && s->progs[m][i].d.program == program)
+      s->prog_index = (int)i;
   s->sel_bank = bank;
   s->sel_prog = program;
   s->sel_pending = 1;
+}
+
+/* The worker thread: tells the host to fetch the new map's list. */
+static LV2_Worker_Status work(LV2_Handle h, LV2_Worker_Respond_Function respond,
+                              LV2_Worker_Respond_Handle rh, uint32_t size,
+                              const void *data)
+{
+  struct scva *s = h;
+  (void)respond; (void)rh; (void)size; (void)data;
+  if (s->programs_host && s->programs_host->program_changed)
+    s->programs_host->program_changed(s->programs_host->handle, -1);
+  return LV2_WORKER_SUCCESS;
+}
+
+static LV2_Worker_Status work_response(LV2_Handle h, uint32_t size,
+                                       const void *body)
+{
+  (void)h; (void)size; (void)body;
+  return LV2_WORKER_SUCCESS;
+}
+
+static const LV2_Worker_Interface worker_iface = { work, work_response, NULL };
+
+/* A new tone map brings its own program list; the host's selected position
+   in it is played, so what the host shows after reloading the list is what
+   sounds. Called from run(). */
+static void switch_programs(struct scva *s, int m)
+{
+  char none = 0;
+  if (m == s->prog_map) return;
+  s->prog_map = m;
+  if (s->prog_index >= 0 && s->nprogs[m]) {
+    uint32_t k = (uint32_t)s->prog_index < s->nprogs[m] ?
+                 (uint32_t)s->prog_index : s->nprogs[m] - 1;
+    s->sel_bank = s->progs[m][k].d.bank;
+    s->sel_prog = s->progs[m][k].d.program;
+    s->sel_pending = 1;
+  }
+  if (s->worker) s->worker->schedule_work(s->worker->handle, sizeof none, &none);
 }
 
 static const LV2_Programs_Interface programs_iface = {
@@ -137,14 +203,19 @@ static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
   int i;
   (void)desc;
 
-  for (i = 0; features && features[i]; ++i)
-    if (!strcmp(features[i]->URI, LV2_URID__map))
-      map = (LV2_URID_Map *)features[i]->data;
-  if (!map) return NULL;                 /* urid:map is required */
-
   s = calloc(1, sizeof *s);
   if (!s) return NULL;
+  for (i = 0; features && features[i]; ++i) {
+    if (!strcmp(features[i]->URI, LV2_URID__map))
+      map = (LV2_URID_Map *)features[i]->data;
+    else if (!strcmp(features[i]->URI, LV2_WORKER__schedule))
+      s->worker = features[i]->data;
+    else if (!strcmp(features[i]->URI, LV2_PROGRAMS__Host))
+      s->programs_host = features[i]->data;
+  }
+  if (!map) { free(s); return NULL; }    /* urid:map is required */
   s->midi_event = map->map(map->handle, LV2_MIDI__MidiEvent);
+  s->prog_index = -1;
 
   /* the bundle path keeps its trailing slash */
   snprintf(here, sizeof here, "%s", bundle ? bundle : "");
@@ -195,14 +266,14 @@ static void run(LV2_Handle h, uint32_t n_samples)
     memset(s->out_r, 0, n_samples * sizeof *s->out_r);
     return;
   }
-  if (s->sel_pending) apply_selection(s);
-
   if (s->map_port) {
     int want = (int)(*s->map_port + 0.5f);
     if (want < 0) want = 0;
     if (want > SCVA_MAP_8820) want = SCVA_MAP_8820;
     scva_engine_set_map(s->eng, want);
+    switch_programs(s, want);
   }
+  if (s->sel_pending) apply_selection(s);
 
   if (s->midi_in) {
     LV2_ATOM_SEQUENCE_FOREACH(s->midi_in, ev) {
@@ -225,16 +296,18 @@ static void run(LV2_Handle h, uint32_t n_samples)
 static void cleanup(LV2_Handle h)
 {
   struct scva *s = h;
+  int m;
   if (!s) return;
   scva_engine_close(s->eng);
   scva_names_free(&s->names);
-  free(s->progs);
+  for (m = 0; m < SCVA_MAPS; ++m) free(s->progs[m]);
   free(s);
 }
 
 static const void *extension_data(const char *uri)
 {
   if (!strcmp(uri, LV2_PROGRAMS__Interface)) return &programs_iface;
+  if (!strcmp(uri, LV2_WORKER__interface)) return &worker_iface;
   return NULL;
 }
 

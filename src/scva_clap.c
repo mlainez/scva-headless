@@ -43,11 +43,13 @@ struct scva {
       preset names its own map, which need not be the one the Tone Map
       parameter holds for everything else. */
    int kit_now, kit_map;
-   /* The Instrument and Drum Kit parameters: positions in these lists. now is
-      -1 until sent to the engine. */
+   /* The Instrument and Drum Kit parameters are positions in list_map's
+      lists, which follow the Tone Map. sent is the names.patch index last
+      sent to the engine, -1 before any. */
    struct scva_lists lists;
-   int inst_want, inst_now, drum_want, drum_now;
-   volatile int kit_names_changed;
+   int list_map;
+   int inst_want, drum_want, inst_sent, drum_sent;
+   volatile int kit_names_changed, lists_changed;
    /* Parameters changed in the editor, one bit per id, still to be reported
       to the host. */
    volatile unsigned gui_dirty;
@@ -57,6 +59,7 @@ struct scva {
    uint32_t gui_w, gui_h;       /* 0 until the host sizes the editor */
    int gui_lw, gui_lh;          /* the size last laid out */
    int gui_dpi;                 /* 0 until first asked */
+   int gui_list_map;            /* whose patches the editor lists */
 #endif
 };
 
@@ -87,9 +90,11 @@ static int load_key_parse(const char *k, int *map, int *bank, int *prog,
 /* ---- parameters -------------------------------------------------------- */
 
 /* 0 Tone Map, for every part.
-   1 Instrument, any melodic tone of any map, on the first part.
-   2 Drum Kit, any kit of any map, on the drum part.
-   Hosts without a preset browser can reach every patch through 1 and 2. */
+   1 Instrument, a melodic tone of that map, on the first part.
+   2 Drum Kit, a kit of that map, on the drum part.
+   A parameter's range cannot change while the plugin is active, so 1 and 2
+   span the longest map's list and a position past a shorter one means its
+   last entry. */
 #define SCVA_PARAM_MAP  0
 #define SCVA_PARAM_INST 1
 #define SCVA_PARAM_DRUM 2
@@ -100,6 +105,22 @@ static int clamp_step(double v, int hi)
    return k < 0 ? 0 : k > hi ? hi : k;
 }
 
+/* The patch at position k of the current map's tones or kits, NULL if that
+   list is empty. */
+static const struct scva_patch *tone_at(const struct scva *s, int k)
+{
+   uint32_t n = s->lists.ntone[s->list_map];
+   if (!n) return NULL;
+   return &s->names.patch[s->lists.tone[s->list_map][clamp_step(k, (int)n - 1)]];
+}
+
+static const struct scva_patch *kit_at(const struct scva *s, int k)
+{
+   uint32_t n = s->lists.nkit[s->list_map];
+   if (!n) return NULL;
+   return &s->names.patch[s->lists.kit[s->list_map][clamp_step(k, (int)n - 1)]];
+}
+
 /* Changes are latched here and sent to the engine by process(). */
 static void param_event(struct scva *s, const clap_event_header_t *h)
 {
@@ -108,10 +129,10 @@ static void param_event(struct scva *s, const clap_event_header_t *h)
        h->type != CLAP_EVENT_PARAM_VALUE) return;
    if (e->param_id == SCVA_PARAM_MAP)
       s->map_want = clamp_step(e->value, SCVA_MAP_8820);
-   else if (e->param_id == SCVA_PARAM_INST && s->lists.ntone)
-      s->inst_want = clamp_step(e->value, (int)s->lists.ntone - 1);
-   else if (e->param_id == SCVA_PARAM_DRUM && s->lists.nkit)
-      s->drum_want = clamp_step(e->value, (int)s->lists.nkit - 1);
+   else if (e->param_id == SCVA_PARAM_INST && s->lists.ntone_max)
+      s->inst_want = clamp_step(e->value, (int)s->lists.ntone_max - 1);
+   else if (e->param_id == SCVA_PARAM_DRUM && s->lists.nkit_max)
+      s->drum_want = clamp_step(e->value, (int)s->lists.nkit_max - 1);
 }
 
 static void push_value(const clap_output_events_t *out, clap_id id, double v)
@@ -143,42 +164,39 @@ static void report_gui(struct scva *s, const clap_output_events_t *out)
    if (d & (1u << SCVA_PARAM_DRUM)) push_value(out, SCVA_PARAM_DRUM, s->drum_want);
 }
 
-/* A new map re-sends every part's program under it, so the Instrument and
-   Drum Kit become the same bank and program of that map, where it has one;
-   the host is told, so what it shows stays what plays. */
-static void follow_map(struct scva *s, const clap_output_events_t *out)
+/* A new Tone Map brings that map's tones and kits. The Instrument and Drum
+   Kit move to the same patch in it, and the host is told: of the new values,
+   and on the main thread that every value now reads differently. */
+static void switch_lists(struct scva *s, const clap_output_events_t *out)
 {
-   int map = s->map_want ? s->map_want : SCVA_MAP_8820;
-   int k;
-   if (s->lists.ntone) {
-      const struct scva_patch *p = &s->names.patch[s->lists.tone[s->inst_want]];
-      k = scva_lists_find(&s->names, s->lists.tone, s->lists.ntone, map, p->bank, p->prog);
-      if (k >= 0 && k != s->inst_want) {
-         s->inst_want = k;
-         push_value(out, SCVA_PARAM_INST, k);
-      }
-   }
-   if (s->lists.nkit) {
-      const struct scva_patch *p = &s->names.patch[s->lists.kit[s->drum_want]];
-      k = scva_lists_find(&s->names, s->lists.kit, s->lists.nkit, map, p->bank, p->prog);
-      if (k >= 0 && k != s->drum_want) {
-         s->drum_want = k;
-         push_value(out, SCVA_PARAM_DRUM, k);
-      }
-   }
+   int m = s->map_want;
+   const struct scva_patch *t, *k;
+   if (m == s->list_map) return;
+   t = tone_at(s, s->inst_want);
+   k = kit_at(s, s->drum_want);
+   if (t) s->inst_want = scva_lists_carry(&s->names, t, s->lists.tone[m],
+                                          s->lists.ntone[m]);
+   if (k) s->drum_want = scva_lists_carry(&s->names, k, s->lists.kit[m],
+                                          s->lists.nkit[m]);
+   s->list_map = m;
+   push_value(out, SCVA_PARAM_INST, s->inst_want);
+   push_value(out, SCVA_PARAM_DRUM, s->drum_want);
+   s->lists_changed = 1;
+   if (s->host && s->host->request_callback)
+      s->host->request_callback(s->host);
 }
 
 static void send_choices(struct scva *s)
 {
-   if (s->lists.ntone && s->inst_want != s->inst_now) {
-      const struct scva_patch *p = &s->names.patch[s->lists.tone[s->inst_want]];
+   const struct scva_patch *p = tone_at(s, s->inst_want);
+   if (p && p - s->names.patch != s->inst_sent) {
       scva_engine_patch(s->eng, SCVA_TONE_CH, p->map, p->bank, p->prog);
-      s->inst_now = s->inst_want;
+      s->inst_sent = (int)(p - s->names.patch);
    }
-   if (s->lists.nkit && s->drum_want != s->drum_now) {
-      const struct scva_patch *p = &s->names.patch[s->lists.kit[s->drum_want]];
+   p = kit_at(s, s->drum_want);
+   if (p && p - s->names.patch != s->drum_sent) {
       scva_engine_patch(s->eng, SCVA_DRUM_CH, p->map, p->bank, p->prog);
-      s->drum_now = s->drum_want;
+      s->drum_sent = (int)(p - s->names.patch);
       s->kit_now = p->prog;
       s->kit_map = p->map;
       s->kit_names_changed = 1;
@@ -189,25 +207,26 @@ static void send_choices(struct scva *s)
 
 /* ---- clap_plugin ------------------------------------------------------- */
 
-/* Names come from text files beside the core, not from the core, so they load
-   without it. Absent, the plugin still plays; it just offers no presets. */
-/* Position of the reset engine's patch in a list: program 0, bank 0, Default
-   map, which renders as SC-8820. */
+/* Position of the reset engine's patch, program 0 bank 0, in a list. */
 static int reset_patch(const struct scva *s, const uint32_t *list, uint32_t n)
 {
-   int k = scva_lists_find(&s->names, list, n, SCVA_MAP_8820, 0, 0);
-   if (k < 0) k = scva_lists_find(&s->names, list, n, SCVA_MAP_DEFAULT, 0, 0);
+   int k = scva_lists_find(&s->names, list, n, 0, 0);
    return k < 0 ? 0 : k;
 }
 
+/* Names come from text files beside the core, not from the core, so they load
+   without it. Absent, the plugin still plays; it just offers no presets. */
 static bool plug_init(const clap_plugin_t *p)
 {
    struct scva *s = p->plugin_data;
    scva_core_dir(g_plugin_dir, s->dir, sizeof s->dir);
    scva_names_load(&s->names, s->dir);
    scva_lists_build(&s->lists, &s->names);
-   s->inst_want = reset_patch(s, s->lists.tone, s->lists.ntone);
-   s->drum_want = reset_patch(s, s->lists.kit, s->lists.nkit);
+   s->list_map = SCVA_MAP_DEFAULT;
+   s->inst_want = reset_patch(s, s->lists.tone[s->list_map],
+                              s->lists.ntone[s->list_map]);
+   s->drum_want = reset_patch(s, s->lists.kit[s->list_map],
+                              s->lists.nkit[s->list_map]);
    return true;
 }
 
@@ -228,7 +247,7 @@ static bool plug_activate(const clap_plugin_t *p, double rate,
    (void)min; (void)max;
    s->eng = scva_engine_open(s->dir, rate, err, sizeof err);
    if (!s->eng) { fprintf(stderr, "scva: %s\n", err); return false; }
-   s->inst_now = s->drum_now = -1;
+   s->inst_sent = s->drum_sent = -1;
    return true;
 }
 
@@ -261,13 +280,14 @@ static clap_process_status plug_process(const clap_plugin_t *p,
       param_event(s, pr->in_events->get(pr->in_events, ei));
    ei = 0;
    report_gui(s, pr->out_events);
+   switch_lists(s, pr->out_events);
 
    if (!pr->audio_outputs_count || pr->audio_outputs[0].channel_count < 2)
       return CLAP_PROCESS_ERROR;
    l = pr->audio_outputs[0].data32[0];
    r = pr->audio_outputs[0].data32[1];
 
-   if (scva_engine_set_map(s->eng, s->map_want)) follow_map(s, pr->out_events);
+   scva_engine_set_map(s->eng, s->map_want);
    send_choices(s);
 
    for (; ei < nev; ++ei) {
@@ -341,11 +361,13 @@ static bool pr_info(const clap_plugin_t *p, uint32_t i,
       info->max_value = SCVA_MAP_8820;
       info->default_value = 0;
    } else if (i == SCVA_PARAM_INST) {
-      info->max_value = s->lists.ntone ? s->lists.ntone - 1 : 0;
-      info->default_value = s->inst_want;
+      info->max_value = s->lists.ntone_max ? s->lists.ntone_max - 1 : 0;
+      info->default_value = reset_patch(s, s->lists.tone[SCVA_MAP_DEFAULT],
+                                        s->lists.ntone[SCVA_MAP_DEFAULT]);
    } else {
-      info->max_value = s->lists.nkit ? s->lists.nkit - 1 : 0;
-      info->default_value = s->drum_want;
+      info->max_value = s->lists.nkit_max ? s->lists.nkit_max - 1 : 0;
+      info->default_value = reset_patch(s, s->lists.kit[SCVA_MAP_DEFAULT],
+                                        s->lists.nkit[SCVA_MAP_DEFAULT]);
    }
    snprintf(info->name, sizeof info->name, "%s", name[i]);
    return true;
@@ -369,17 +391,15 @@ static bool pr_text(const clap_plugin_t *p, clap_id id, double v,
                     char *out, uint32_t cap)
 {
    struct scva *s = p->plugin_data;
+   const struct scva_patch *pt;
    if (id == SCVA_PARAM_MAP) {
       snprintf(out, cap, "%s", s_map_names[clamp_step(v, SCVA_MAP_8820)]);
-   } else if (id == SCVA_PARAM_INST && s->lists.ntone) {
-      scva_patch_label(&s->names.patch[s->lists.tone[clamp_step(v, s->lists.ntone - 1)]],
-                  out, cap);
-   } else if (id == SCVA_PARAM_DRUM && s->lists.nkit) {
-      scva_patch_label(&s->names.patch[s->lists.kit[clamp_step(v, s->lists.nkit - 1)]],
-                  out, cap);
-   } else {
-      return false;
+      return true;
    }
+   pt = id == SCVA_PARAM_INST ? tone_at(s, clamp_step(v, INT32_MAX)) :
+        id == SCVA_PARAM_DRUM ? kit_at(s, clamp_step(v, INT32_MAX)) : NULL;
+   if (!pt) return false;
+   scva_patch_label(pt, out, cap);
    return true;
 }
 
@@ -387,8 +407,9 @@ static bool pr_from_text(const clap_plugin_t *p, clap_id id, const char *t,
                          double *out)
 {
    struct scva *s = p->plugin_data;
-   const uint32_t *list = id == SCVA_PARAM_INST ? s->lists.tone : s->lists.kit;
-   uint32_t i, n = id == SCVA_PARAM_INST ? s->lists.ntone : s->lists.nkit;
+   int m = s->list_map;
+   const uint32_t *list = id == SCVA_PARAM_INST ? s->lists.tone[m] : s->lists.kit[m];
+   uint32_t i, n = id == SCVA_PARAM_INST ? s->lists.ntone[m] : s->lists.nkit[m];
    char label[SCVA_NAME_MAX + 16];
 
    if (!t) return false;
@@ -413,6 +434,7 @@ static void pr_flush(const clap_plugin_t *p, const clap_input_events_t *in,
    uint32_t i, n = in ? in->size(in) : 0;
    for (i = 0; i < n; ++i) param_event(s, in->get(in, i));
    report_gui(s, out);
+   switch_lists(s, out);
 }
 static const clap_plugin_params_t s_params = {
    pr_count, pr_info, pr_value, pr_text, pr_from_text, pr_flush
@@ -420,12 +442,14 @@ static const clap_plugin_params_t s_params = {
 
 /* ---- presets ----------------------------------------------------------- */
 
-/* The preset also becomes the Instrument or Drum Kit value, so the two ways
-   of choosing a patch agree. */
+/* A preset of the current map also becomes the Instrument or Drum Kit
+   value, so the two ways of choosing a patch agree. */
 static void apply_selection(struct scva *s, const clap_output_events_t *out)
 {
    int ch = s->sel_drum ? SCVA_DRUM_CH : SCVA_TONE_CH;
-   int k;
+   int m = s->list_map, k;
+   const uint32_t *list = s->sel_drum ? s->lists.kit[m] : s->lists.tone[m];
+   uint32_t n = s->sel_drum ? s->lists.nkit[m] : s->lists.ntone[m];
 
    s->sel_pending = 0;
    if (!s->eng) return;                    /* not activated yet */
@@ -433,17 +457,17 @@ static void apply_selection(struct scva *s, const clap_output_events_t *out)
    if (s->sel_drum) {
       s->kit_now = s->sel_prog;
       s->kit_map = s->sel_map;
-      k = scva_lists_find(&s->names, s->lists.kit, s->lists.nkit, s->sel_map, s->sel_bank, s->sel_prog);
-      if (k >= 0) {
-         s->drum_want = s->drum_now = k;
-         push_value(out, SCVA_PARAM_DRUM, k);
-      }
+   }
+   k = scva_lists_find(&s->names, list, n, s->sel_bank, s->sel_prog);
+   if (k < 0 || s->names.patch[list[k]].map != s->sel_map) return;
+   if (s->sel_drum) {
+      s->drum_want = k;
+      s->drum_sent = (int)list[k];
+      push_value(out, SCVA_PARAM_DRUM, k);
    } else {
-      k = scva_lists_find(&s->names, s->lists.tone, s->lists.ntone, s->sel_map, s->sel_bank, s->sel_prog);
-      if (k >= 0) {
-         s->inst_want = s->inst_now = k;
-         push_value(out, SCVA_PARAM_INST, k);
-      }
+      s->inst_want = k;
+      s->inst_sent = (int)list[k];
+      push_value(out, SCVA_PARAM_INST, k);
    }
 }
 
@@ -556,11 +580,38 @@ static void gui_select(struct scva *s, int id, int v)
    s->gui_shown[id] = v;
 }
 
+/* The Drum Kit and Instrument lists hold the current map's patches. */
+static void gui_fill(struct scva *s)
+{
+   int m = s->list_map, i;
+   char label[SCVA_NAME_MAX + 16];
+   HWND kit = s->gui_ctl[SCVA_PARAM_DRUM], tone = s->gui_ctl[SCVA_PARAM_INST];
+
+   SendMessageA(tone, WM_SETREDRAW, FALSE, 0);
+   SendMessageA(kit, CB_RESETCONTENT, 0, 0);
+   SendMessageA(tone, LB_RESETCONTENT, 0, 0);
+   for (i = 0; i < (int)s->lists.nkit[m]; ++i) {
+      scva_patch_label(&s->names.patch[s->lists.kit[m][i]], label, sizeof label);
+      SendMessageA(kit, CB_ADDSTRING, 0, (LPARAM)label);
+   }
+   for (i = 0; i < (int)s->lists.ntone[m]; ++i) {
+      scva_patch_label(&s->names.patch[s->lists.tone[m][i]], label, sizeof label);
+      SendMessageA(tone, LB_ADDSTRING, 0, (LPARAM)label);
+   }
+   SendMessageA(tone, WM_SETREDRAW, TRUE, 0);
+   InvalidateRect(tone, NULL, TRUE);
+   s->gui_list_map = m;
+   for (i = 0; i < 3; ++i) s->gui_shown[i] = -1;
+}
+
 static void gui_sync(struct scva *s)
 {
+   int nt = (int)s->lists.ntone[s->list_map], nk = (int)s->lists.nkit[s->list_map];
+   if (s->gui_list_map != s->list_map) gui_fill(s);
    gui_select(s, SCVA_PARAM_MAP, s->map_want);
-   gui_select(s, SCVA_PARAM_INST, s->inst_want);
-   gui_select(s, SCVA_PARAM_DRUM, s->drum_want);
+   /* a position past a shorter list shows its last entry, which is what plays */
+   if (nt) gui_select(s, SCVA_PARAM_INST, clamp_step(s->inst_want, nt - 1));
+   if (nk) gui_select(s, SCVA_PARAM_DRUM, clamp_step(s->drum_want, nk - 1));
 }
 
 static void gui_changed(struct scva *s, int id)
@@ -748,8 +799,7 @@ static bool gui_set_parent(const clap_plugin_t *p, const clap_window_t *win)
    gui_child(s, "STATIC", 0, -1, 10, 43, 80, 16, "Drum Kit");
    s->gui_ctl[SCVA_PARAM_DRUM] = gui_child(s, "COMBOBOX", CBS_DROPDOWNLIST |
       WS_VSCROLL | WS_TABSTOP, SCVA_PARAM_DRUM, 90, 40, 290, 300, "");
-   gui_child(s, "STATIC", 0, -1, 10, 73, 370, 16,
-             "Instrument (first part; every map's tones)");
+   gui_child(s, "STATIC", 0, -1, 10, 73, 370, 16, "Instrument (first part)");
    s->gui_ctl[SCVA_PARAM_INST] = gui_child(s, "LISTBOX", LBS_NOTIFY |
       LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP, SCVA_PARAM_INST,
       10, 92, 370, 186, "");
@@ -757,20 +807,8 @@ static bool gui_set_parent(const clap_plugin_t *p, const clap_window_t *win)
    for (i = 0; i < SCVA_MAPS; ++i)
       SendMessageA(s->gui_ctl[SCVA_PARAM_MAP], CB_ADDSTRING, 0,
                    (LPARAM)s_map_names[i]);
-   for (i = 0; i < s->lists.nkit; ++i) {
-      char label[SCVA_NAME_MAX + 16];
-      scva_patch_label(&s->names.patch[s->lists.kit[i]], label, sizeof label);
-      SendMessageA(s->gui_ctl[SCVA_PARAM_DRUM], CB_ADDSTRING, 0,
-                   (LPARAM)label);
-   }
-   for (i = 0; i < s->lists.ntone; ++i) {
-      char label[SCVA_NAME_MAX + 16];
-      scva_patch_label(&s->names.patch[s->lists.tone[i]], label, sizeof label);
-      SendMessageA(s->gui_ctl[SCVA_PARAM_INST], LB_ADDSTRING, 0,
-                   (LPARAM)label);
-   }
+   gui_fill(s);
    gui_layout(s);
-   for (i = 0; i < 3; ++i) s->gui_shown[i] = -1;
    gui_sync(s);
    /* A host may restore a window size saved before the editor's size
       changed - at another DPI, say - and leave the editor clipped. */
@@ -827,14 +865,22 @@ static const void *plug_get_extension(const clap_plugin_t *p, const char *id)
    return NULL;
 }
 
-/* The Drum Kit parameter changes the kit on the audio thread; the host hears
-   of the new key names from here. */
+/* The audio thread switches lists and kits; the host hears of the new
+   parameter texts and key names from here. */
 static void plug_on_main_thread(const clap_plugin_t *p)
 {
    struct scva *s = p->plugin_data;
-   if (!s->kit_names_changed) return;
-   s->kit_names_changed = 0;
-   kit_names_changed(s);
+   if (s->lists_changed) {
+      const clap_host_params_t *hp = s->host->get_extension ?
+         s->host->get_extension(s->host, CLAP_EXT_PARAMS) : NULL;
+      s->lists_changed = 0;
+      if (hp && hp->rescan)
+         hp->rescan(s->host, CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
+   }
+   if (s->kit_names_changed) {
+      s->kit_names_changed = 0;
+      kit_names_changed(s);
+   }
 }
 
 static const char *const s_features[] = {
@@ -932,7 +978,8 @@ static bool prov_get_metadata(const clap_preset_discovery_provider_t *provider,
    struct scva_names names;
    struct scva_lists lists;
    char dir[1024];
-   uint32_t i, n;
+   uint32_t i;
+   int drum, m;
    (void)provider;
 
    if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location) return false;
@@ -944,20 +991,26 @@ static bool prov_get_metadata(const clap_preset_discovery_provider_t *provider,
    pid.abi = "clap";
    pid.id = SCVA_ID;
 
-   /* tones, then kits */
+   /* A preset browser shows one list: every map's tones, then every map's
+      kits, the map named in each. Default only repeats SC-8820. */
    scva_lists_build(&lists, &names);
-   n = lists.ntone + lists.nkit;
-   for (i = 0; i < n; ++i) {
-      const struct scva_patch *p = &names.patch[i < lists.ntone ?
-         lists.tone[i] : lists.kit[i - lists.ntone]];
-      char name[SCVA_NAME_MAX + 16], key[32];
-      scva_patch_label(p, name, sizeof name);
-      load_key_make(key, sizeof key, p);
-      if (!rx->begin_preset(rx, name, key)) break;
-      rx->add_plugin_id(rx, &pid);
-      if (rx->add_feature)
-         rx->add_feature(rx, p->drum ? "drum" : CLAP_PLUGIN_FEATURE_INSTRUMENT);
-   }
+   for (drum = 0; drum < 2; ++drum)
+      for (m = lists.has_maps ? SCVA_MAP_55 : SCVA_MAP_DEFAULT;
+           m <= (lists.has_maps ? SCVA_MAP_8820 : SCVA_MAP_DEFAULT); ++m) {
+         const uint32_t *list = drum ? lists.kit[m] : lists.tone[m];
+         uint32_t n = drum ? lists.nkit[m] : lists.ntone[m];
+         for (i = 0; i < n; ++i) {
+            const struct scva_patch *p = &names.patch[list[i]];
+            char name[SCVA_NAME_MAX + 32], key[32];
+            scva_patch_label_map(p, name, sizeof name);
+            load_key_make(key, sizeof key, p);
+            if (!rx->begin_preset(rx, name, key)) goto done;
+            rx->add_plugin_id(rx, &pid);
+            if (rx->add_feature)
+               rx->add_feature(rx, drum ? "drum" : CLAP_PLUGIN_FEATURE_INSTRUMENT);
+         }
+      }
+done:
    scva_lists_free(&lists);
    scva_names_free(&names);
    return true;

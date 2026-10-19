@@ -440,7 +440,11 @@ Tested in Carla 2.5.10 (flatpak), x86-64 bundle, core 1.1.2.
 | control | what it does |
 |---|---|
 | Tone Map | every part, at once: each part's last program is re-sent under the new map |
-| MIDI program list | every tone, then every kit, SC-55 to SC-8820, named like `SC-88Pro Piano 1` |
+| MIDI program list | the Tone Map's tones, then its kits, named like `001 Piano 1`, `001-008 Piano 1w` |
+
+Default lists SC-8820's patches, which it renders. A Tone Map change reloads
+the list in the host; the host keeps its selected position, and the patch at
+that position in the new list is what plays.
 
 The program list uses the KXStudio `programs` extension, read by Carla,
 Ardour and Qtractor. Bank is the GS 14-bit bank - CC0 the MSB, CC32 the tone
@@ -467,14 +471,24 @@ MIDI in, stereo out. The core and patch name files are found in
 | parameter | values | part |
 |---|---|---|
 | Tone Map | Default, SC-55, SC-88, SC-88Pro, SC-8820 | every part, at once |
-| Instrument | every tone, SC-55 to SC-8820 | first |
-| Drum Kit | every kit, SC-55 to SC-8820 | drum |
+| Instrument | the Tone Map's tones, `001 Piano 1`, `001-008 Piano 1w` | first |
+| Drum Kit | the Tone Map's kits, `001 STANDARD` | drum |
 
-A Tone Map change re-sends each part's last program under the new map, and
-moves Instrument and Drum Kit to the same patch in that map where it has one.
+Default lists SC-8820's patches, which it renders. A Tone Map change re-sends
+each part's last program under the new map, and moves Instrument and Drum Kit
+to the same patch in that map's lists where it has one. Their ranges are the
+longest map's; past a shorter list a value means its last entry.
+
+| map | tones | kits |
+|---|---|---|
+| SC-55 | 418 | 10 |
+| SC-88 | 418 | 14 |
+| SC-88Pro | 774 | 25 |
+| SC-8820, Default | 1262 | 37 |
 
 The Windows builds have an editor: Tone Map and Drum Kit drop-downs and the
-Instrument list. A host's generic slider cannot step through 2872 tones;
+Instrument list, refilled when the Tone Map changes. A host's generic slider
+cannot step through 1262 tones;
 SAVIHost shows the editor in place of its slider. The editor scales with the
 Windows DPI setting (Wine: `winecfg`, Graphics) and fills whatever window the
 host gives it.
@@ -491,8 +505,10 @@ host gives it.
 | 64-bit Windows | `LoadLibrary` |
 | 32-bit Windows | PE loader, as `scva-render32.exe`: no `MSVCR100.dll` needed |
 
-Patches use `clap.preset-discovery` (a `LOCATION_PLUGIN` provider),
-`clap.preset-load`, and `clap.note-name` for the loaded kit's keys.
+For hosts with a preset browser, every map's patches are also presets,
+named like `SC-88 001 Piano 1`, through `clap.preset-discovery` (a
+`LOCATION_PLUGIN` provider) and `clap.preset-load`. `clap.note-name` names
+the loaded kit's keys.
 
 ## Patch names
 
