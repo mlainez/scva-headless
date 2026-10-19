@@ -46,6 +46,9 @@ jobs:
       - name: make lv2
         run: make lv2
 
+      - name: make lv2-32
+        run: make lv2-32
+
       - name: make windows (64-bit)
         run: make windows
 
@@ -97,11 +100,12 @@ jobs:
           tar czf "$rel/scva-linux-i386.tar.gz" \
             -C build scva-render32 scva-daemon32 -C .. README.md
           tar czf "$rel/scva-lv2-x86_64.tar.gz" -C build scva.lv2
+          tar czf "$rel/scva-lv2-i386.tar.gz" -C build scva32.lv2
           tar czf "$rel/scva-clap-linux-x86_64.tar.gz" -C build scva.clap
           ( cd build && zip -j "../$rel/scva-windows-x86_64.zip" \
               scva-render.exe scva-vst.dll scva-winmidi.exe )
           ( cd build && zip -j "../$rel/scva-windows98-x86.zip" \
-              scva-render32.exe scva-winmidi32.exe )
+              scva-render32.exe scva-winmidi32.exe scva-vst32.dll )
           ( cd build && zip -j "../$rel/scva-clap-windows-x86_64.zip" scva-win64.clap )
           ( cd build && zip -j "../$rel/scva-clap-windows-x86.zip" scva-win32.clap )
           ls -la "$rel"

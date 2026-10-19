@@ -10,6 +10,7 @@
 #   make windows    64-bit Windows PE binaries via mingw-w64
 #   make windows32  32-bit Windows PE binaries, for the 32-bit SCCore.dll
 #   make daemon32   32-bit MIDI daemon; needs a 32-bit alsa-lib
+#   make tones32    32-bit scva-tones
 #   make            linux and windows
 #
 # A 64-bit process cannot host a 32-bit DLL, so the 32-bit targets are separate
@@ -51,7 +52,8 @@ LV2_BUNDLE   := $(BUILD)/scva.lv2
 LV2_BUNDLE32 := $(BUILD)/scva32.lv2
 WINDOWS_BINS := $(BUILD)/scva-render.exe $(BUILD)/scva-vst.dll \
                 $(BUILD)/scva-winmidi.exe
-WIN32_BINS   := $(BUILD)/scva-render32.exe $(BUILD)/scva-winmidi32.exe
+WIN32_BINS   := $(BUILD)/scva-render32.exe $(BUILD)/scva-winmidi32.exe \
+                $(BUILD)/scva-vst32.dll
 
 all: linux windows
 linux: $(LINUX_BINS)
@@ -61,6 +63,7 @@ lv2-32: $(LV2_BUNDLE32)/scva.so
 clap: $(BUILD)/scva.clap $(BUILD)/scva-win64.clap
 clap-win32: $(BUILD)/scva-win32.clap
 tones: $(BUILD)/scva-tones
+tones32: $(BUILD)/scva-tones32
 # separate from linux32: it needs a 32-bit alsa-lib, which a multilib
 # workstation usually lacks and a buildroot target has
 daemon32: $(BUILD)/scva-daemon32
@@ -97,6 +100,9 @@ $(BUILD)/scva.clap: src/scva_clap.c src/pe_loader.c src/pe_loader.h src/sse3_shi
 
 $(BUILD)/scva-tones: src/scva_tones.c src/scva_names.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ src/scva_tones.c
+
+$(BUILD)/scva-tones32: src/scva_tones.c src/scva_names.h | $(BUILD)
+	$(CC) -m32 $(CFLAGS) -Isrc -o $@ src/scva_tones.c
 
 $(BUILD)/scva-win64.clap: src/scva_clap.c src/scva_map.h src/scva_names.h | $(BUILD)
 	$(MINGW) $(WINFLAGS) -I$(CLAP_DIR) -shared -o $@ src/scva_clap.c
@@ -160,6 +166,11 @@ $(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/pe_loader.c src/pe_loader.h 
 $(BUILD)/scva-vst.dll: src/scva_vst_shim.c | $(BUILD)
 	$(MINGW) -O2 -shared -o $@ $< -Wl,--export-all-symbols
 
+# For the 32-bit SOUND Canvas VA's wrapper, which needs a Windows it supports:
+# no Windows 98 flags here.
+$(BUILD)/scva-vst32.dll: src/scva_vst_shim.c | $(BUILD)
+	$(MINGW32) -O2 -shared -o $@ $< -Wl,--export-all-symbols
+
 # ---- the 32-bit Windows path --------------------------------------------
 # Same sources: the exported functions are cdecl on x86-32 and the signatures
 # carry over unchanged, so only the toolchain differs.
@@ -177,4 +188,4 @@ $(BUILD)/scva-render32.exe: src/scva_render.c src/pe_loader.c src/pe_loader.h \
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones windows windows32 clean
+.PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones tones32 windows windows32 clean

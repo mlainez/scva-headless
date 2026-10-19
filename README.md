@@ -231,6 +231,13 @@ Start it, and check:
 
 ## Windows
 
+### SOUND Canvas VA's own VST2 plugin: does not play
+
+`scva-vst.dll` (64-bit) and `scva-vst32.dll` (32-bit) export the entry points
+a VST2 host looks for and forward to the install's `Wrapper.dll` beside
+them, of the same width. The plug-in then stops in `effOpen` on its
+authorisation check; see `docs/ENGINE-NOTES.md`. Use the CLAP plugin.
+
 ### Render to a file
 
     build\scva-render.exe --midi song.mid --out song.wav --map 88
@@ -477,7 +484,8 @@ of three sources, in order:
 
 Without any of them the plugin still plays; the host shows numbers.
 
-`make tones` writes a table from whatever this machine has the files available:
+`make tones` writes a table from whatever this machine has the files available
+(`make tones32` builds the same tool for i386):
 
     ./build/scva-tones --core /path/to/scva > scva-tones.txt
 
