@@ -448,16 +448,15 @@ Default lists SC-8820's patches, which it renders. The lists scroll with the
 wheel or the scrollbar; a click picks. The editor needs only libX11 and
 draws with the X server's own fixed font.
 
-Its controls are plugin ports that hosts are asked not to draw
-(`notOnGUI`): Tone Map, Drum Kit (a GS program number; one the map lacks
-plays Standard), Instrument (a position in the map's tones), and Tone, the
-position part 1 plays, out to the editor.
+Its controls are three plugin ports that hosts are asked not to draw
+(`notOnGUI`), and the plugin plays what they hold: Tone Map, Drum Kit (a GS
+program number; one the map lacks plays Standard) and Instrument (a position
+in the map's tones). A Tone Map change in the editor keeps the instrument -
+the same bank and program in the new map's list, as the CLAP editor does.
+Automation and saved projects set the same ports.
 
-The instruments are also the plugin's program list - the drop-down on
-Carla's strip - through the KXStudio `programs` extension, read by Carla,
-Ardour and Qtractor. A Tone Map change reloads it in the host; the host keeps
-its selected position, and the tone at that position in the new list is what
-plays. A pick in the editor is not reflected in the host's drop-down.
+There is no program list: the editor is the one place to pick, as a host's
+drop-down could not follow the editor's picks.
 
 Tested in Carla 2.5.8 (native) and 2.5.10 (flatpak), x86-64 bundle, core 1.1.2.
 

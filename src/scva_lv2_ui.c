@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: CC0-1.0
  *
  * The LV2 plugin's editor: scva_xui.c's window, talking to the plugin
- * through its control ports - Tone Map, Drum Kit (a GS program number),
- * Instrument (a position in the map's tones) in, and the position part 1
- * plays out. It reads the names itself, from where the plugin does, so it
- * can run in a process of its own, as Carla runs it.
+ * through its control ports - Tone Map, Drum Kit (a GS program number) and
+ * Instrument (a position in the map's tones), which it writes and is told of.
+ * It reads the names itself, from where the plugin does, so it can run in a
+ * process of its own, as Carla runs it.
  */
 #define _GNU_SOURCE
 #include "scva_lists.h"
@@ -23,7 +23,6 @@
 #define PORT_MAP  3
 #define PORT_KIT  4
 #define PORT_INST 5
-#define PORT_TONE 6
 
 struct ui {
   LV2UI_Write_Function write;
@@ -57,12 +56,22 @@ static void show(struct ui *u)
   scva_xui_show(u->x, u->map, u->tone, kit_pos(u));
 }
 
-/* A pick shows at once: hosts need not echo a UI's own writes back. */
+/* A pick shows at once: hosts need not echo a UI's own writes back. A new
+   map keeps the instrument - its bank and program in the new map's list,
+   as the CLAP editor does - and both go to the plugin. */
 static void on_map(void *ctx, int map)
 {
   struct ui *u = ctx;
+  int n = (int)u->lists.ntone[u->map];
+  if (n) {
+    const struct scva_patch *p = &u->names.patch[
+      u->lists.tone[u->map][u->tone < n ? u->tone : n - 1]];
+    u->tone = scva_lists_carry(&u->names, p, u->lists.tone[map],
+                               u->lists.ntone[map]);
+  }
   u->map = map;
   put(u, PORT_MAP, map);
+  put(u, PORT_INST, u->tone);
   show(u);
 }
 
@@ -150,7 +159,7 @@ static void port_event(LV2UI_Handle h, uint32_t port, uint32_t size,
   v = (int)(*(const float *)buffer + 0.5f);
   if (port == PORT_MAP && v >= 0 && v < SCVA_MAPS) u->map = v;
   else if (port == PORT_KIT) u->kit_prog = v;
-  else if (port == PORT_TONE) u->tone = v;
+  else if (port == PORT_INST && v >= 0) u->tone = v;
   else return;
   show(u);
 }

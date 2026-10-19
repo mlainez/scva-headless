@@ -5,8 +5,6 @@
 @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix urid:  <http://lv2plug.in/ns/ext/urid#> .
-@prefix work:  <http://lv2plug.in/ns/ext/worker#> .
-@prefix progs: <http://kxstudio.sf.net/ns/lv2ext/programs#> .
 @prefix pprops: <http://lv2plug.in/ns/ext/port-props#> .
 @prefix ui:    <http://lv2plug.in/ns/extensions/ui#> .
 
@@ -16,8 +14,7 @@
 	doap:license <https://creativecommons.org/publicdomain/zero/1.0/> ;
 	rdfs:comment "Roland SOUND Canvas VA's engine, loaded from your own SCCore.dll. Set SCVA_DLL_DIR or put SCCore.dll in this bundle." ;
 	lv2:requiredFeature urid:map ;
-	lv2:optionalFeature lv2:hardRTCapable , work:schedule , progs:Host ;
-	lv2:extensionData progs:Interface , work:interface ;
+	lv2:optionalFeature lv2:hardRTCapable ;
 	ui:ui <https://github.com/mlainez/scva-headless#ui> ;
 
 	lv2:port [
@@ -74,17 +71,6 @@
 		lv2:minimum 0 ;
 		lv2:maximum 4095 ;
 		lv2:portProperty lv2:integer , pprops:notOnGUI
-	] , [
-		# The position the first part plays, picked here or from the program
-		# list, for the editor to show.
-		a lv2:OutputPort , lv2:ControlPort ;
-		lv2:index 6 ;
-		lv2:symbol "tone" ;
-		lv2:name "Tone" ;
-		lv2:default 0 ;
-		lv2:minimum -1 ;
-		lv2:maximum 4095 ;
-		lv2:portProperty lv2:integer , pprops:notOnGUI
 	] .
 
 <https://github.com/mlainez/scva-headless#ui>
@@ -92,8 +78,7 @@
 	lv2:requiredFeature ui:idleInterface ;
 	lv2:optionalFeature ui:parent , ui:resize ;
 	lv2:extensionData ui:idleInterface ;
-	# what the editor shows, whoever changed it: automation, a saved
-	# project, the host's program list
+	# what the editor shows, whoever changed it: automation, a saved project
 	ui:portNotification [
 		ui:plugin <https://github.com/mlainez/scva-headless#scva> ;
 		lv2:symbol "map" ;
@@ -104,6 +89,6 @@
 		ui:protocol ui:floatProtocol
 	] , [
 		ui:plugin <https://github.com/mlainez/scva-headless#scva> ;
-		lv2:symbol "tone" ;
+		lv2:symbol "instrument" ;
 		ui:protocol ui:floatProtocol
 	] .
