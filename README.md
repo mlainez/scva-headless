@@ -435,9 +435,17 @@ Copy `build/scva.lv2` into `~/.lv2/`. The plugin finds the core in
 
 MIDI in, stereo out, and the tone map as an enumerated control.
 
-Patch names use the KXStudio `programs` extension, read by Carla, Ardour and
-Qtractor. Bank is the GS 14-bit bank - CC0 the MSB, CC32 the tone map - with
-bit 14 marking a drum kit. Kits select on the drum part, tones on the first.
+Tested in Carla 2.5.10 (flatpak), x86-64 bundle, core 1.1.2.
+
+| control | what it does |
+|---|---|
+| Tone Map | every part, at once: each part's last program is re-sent under the new map |
+| MIDI program list | every tone, then every kit, SC-55 to SC-8820, named like `SC-88Pro Piano 1` |
+
+The program list uses the KXStudio `programs` extension, read by Carla,
+Ardour and Qtractor. Bank is the GS 14-bit bank - CC0 the MSB, CC32 the tone
+map - with bit 14 marking a drum kit. Kits select on the drum part, tones on
+the first.
 
 The plugin's architecture has to match the host's, and the Roland core's has to match
 the plugin's - a 64-bit host needs the 64-bit bundle and a 64-bit core. LV2 is
@@ -446,28 +454,28 @@ ARM build of this and no Windows one.
 
 ## As a CLAP plugin
 
-Tested: `scva-win32.clap` in SAVIHost CLAP x86 1.44, under Wine and on
-Windows 98 SE.
+Tested: `scva-win32.clap` in SAVIHost CLAP x86 1.44 under Wine, core 1.0.3.
 
     make clap        # Linux .clap and 64-bit Windows .clap
     make clap-win32  # 32-bit Windows .clap
 
 Needs the CLAP headers: `make clap CLAP_DIR=/path/to/clap/include`.
 
-Same shape as the LV2: MIDI in, stereo out, tone map as a parameter. The core
-and patch name files are found in `$SCVA_DLL_DIR`, or beside the `.clap`.
+MIDI in, stereo out. The core and patch name files are found in
+`$SCVA_DLL_DIR`, or beside the `.clap`.
 
-The Tone Map parameter takes effect at once, on every part: each part's last
-program change is re-sent with the new map. In SAVIHost it is the slider
-beside the parameter list:
+| parameter | values | part |
+|---|---|---|
+| Tone Map | Default, SC-55, SC-88, SC-88Pro, SC-8820 | every part, at once |
+| Instrument | every tone, SC-55 to SC-8820 | first |
+| Drum Kit | every kit, SC-55 to SC-8820 | drum |
 
-| slider | map |
-|---|---|
-| bottom (0.00) | Default (renders as SC-8820) |
-| 0.25 | SC-55 |
-| 0.50 | SC-88 |
-| 0.75 | SC-88Pro |
-| top (1.00) | SC-8820 |
+A Tone Map change re-sends each part's last program under the new map, and
+moves Instrument and Drum Kit to the same patch in that map where it has one.
+
+The Windows builds have an editor: Tone Map and Drum Kit drop-downs and the
+Instrument list. A host's generic slider cannot step through 2872 tones;
+SAVIHost shows the editor in place of its slider.
 
 | build | how the core is loaded |
 |---|---|
