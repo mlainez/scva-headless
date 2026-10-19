@@ -477,7 +477,8 @@ of three sources, in order:
 
 Without any of them the plugin still plays; the host shows numbers.
 
-`make tones` writes a table from whatever this machine has the files available:
+`make tones` writes a table from whatever this machine has the files available
+(`make tones32` builds the same tool for i386):
 
     ./build/scva-tones --core /path/to/scva > scva-tones.txt
 
@@ -491,7 +492,7 @@ Roland 32-bit and 64-bit Windows versions. So:
 | | |
 |---|---|
 | Linux x86-64 | LV2, CLAP, renderer, `--play`, daemon |
-| Linux i386 | LV2, renderer (32-bit core), no `--play` |
+| Linux i386 | LV2, renderer without `--play`, daemon |
 | Windows x86-64 | CLAP, renderer, `--play`, MIDI device via a virtual cable |
 | Windows x86, 98 and up | renderer, `--play`, MIDI device via a virtual cable |
 | ARM, any width | only by emulating x86 - box86 or box64 |
