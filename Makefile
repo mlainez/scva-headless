@@ -99,9 +99,6 @@ $(BUILD)/scva.clap: src/scva_clap.c src/pe_loader.c src/pe_loader.h src/sse3_shi
 $(BUILD)/scva-tones: src/scva_tones.c src/scva_names.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ src/scva_tones.c
 
-$(BUILD)/scva-tones32: src/scva_tones.c src/scva_names.h | $(BUILD)
-	$(CC) -m32 $(CFLAGS) -Isrc -o $@ src/scva_tones.c
-
 $(BUILD)/scva-win64.clap: src/scva_clap.c src/scva_map.h src/scva_names.h | $(BUILD)
 	$(MINGW) $(WINFLAGS) -I$(CLAP_DIR) -shared -o $@ src/scva_clap.c
 
@@ -146,6 +143,9 @@ $(BUILD)/scva-daemon32: src/scva_daemon.c src/pe_loader.c src/pe_loader.h src/ss
                         src/core_path.h src/scva_map.h src/scva_pcm.h | $(BUILD)
 	$(CC) -m32 $(CFLAGS) -o $@ src/scva_daemon.c src/pe_loader.c \
 	      $(ALSA32) -lpthread -lm
+
+$(BUILD)/scva-tones32: src/scva_tones.c src/scva_names.h | $(BUILD)
+	$(CC) -m32 $(CFLAGS) -Isrc -o $@ src/scva_tones.c
 
 $(BUILD)/scva-render.exe: src/scva_render.c src/midi_song.h src/core_path.h | $(BUILD)
 	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ $< -lwinmm
