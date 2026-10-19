@@ -1,0 +1,3 @@
+# Written by the plugin from the user's own SCVSC.drf when it is first
+# instantiated: the Drum Kit port's named values. Empty until then.
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .

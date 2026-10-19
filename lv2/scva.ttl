@@ -48,4 +48,17 @@
 		lv2:scalePoint [ rdfs:label "SC-88"   ; rdf:value 2 ] ;
 		lv2:scalePoint [ rdfs:label "SC-88Pro"; rdf:value 3 ] ;
 		lv2:scalePoint [ rdfs:label "SC-8820" ; rdf:value 4 ]
-	] .
+	] , <https://github.com/mlainez/scva-headless#kit> .
+
+# The drum part's kit, as a program number. Its named values are the kits of
+# the user's own SOUND Canvas VA install, which the plugin writes into
+# kits.ttl beside this file; a host reads them on its next plugin scan.
+<https://github.com/mlainez/scva-headless#kit>
+	a lv2:InputPort , lv2:ControlPort ;
+	lv2:index 4 ;
+	lv2:symbol "kit" ;
+	lv2:name "Drum Kit" ;
+	lv2:default 0 ;
+	lv2:minimum 0 ;
+	lv2:maximum 127 ;
+	lv2:portProperty lv2:integer .

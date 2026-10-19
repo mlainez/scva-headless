@@ -431,25 +431,33 @@ delivers nothing - it forgives exactly what an old Windows does not.
     make lv2-32   # i386 bundle, for a 32-bit SCCore.dll
 
 Copy `build/scva.lv2` into `~/.lv2/`. The plugin finds the core in
-`$SCVA_DLL_DIR`, or beside the bundle if you drop `SCCore.dll` in there.
+`$SCVA_DLL_DIR`, or beside the bundle if you drop `SCCore.dll` in there. It
+needs the install's name files beside the core too (`SCVSC.tnf`,
+`SCVSC.drf`), and will not load without them.
 
-MIDI in, stereo out, and the tone map as an enumerated control.
+MIDI in, stereo out.
 
 Tested in Carla 2.5.10 (flatpak), x86-64 bundle, core 1.1.2.
 
-| control | what it does |
-|---|---|
-| Tone Map | every part, at once: each part's last program is re-sent under the new map |
-| MIDI program list | the Tone Map's tones, then its kits, named like `001 Piano 1`, `001-008 Piano 1w` |
+| drop-down | in Carla | what it does |
+|---|---|---|
+| Tone Map | Edit window, Parameters | every part, at once: each part's last program is re-sent under the new map |
+| Drum Kit | Edit window, Parameters | the drum part's kit; one the map lacks plays Standard |
+| program list | rack strip; Edit window, MIDI Program | the first part's instrument: the Tone Map's tones, `001 Piano 1`, `001-008 Piano 1w` |
 
-Default lists SC-8820's patches, which it renders. A Tone Map change reloads
-the list in the host; the host keeps its selected position, and the patch at
-that position in the new list is what plays.
+Default lists SC-8820's tones, which it renders. A Tone Map change reloads
+the program list in the host; the host keeps its selected position, and the
+tone at that position in the new list is what plays.
+
+A Drum Kit's named values have to be in the bundle's Turtle, which a host
+reads before the plugin runs, and none of Roland's names ship here. So the
+plugin writes them into `kits.ttl` in its bundle on first load, from the
+install's own `SCVSC.drf`: every kit number any map has, named after the
+newest map that has it. The host shows them from its next start.
 
 The program list uses the KXStudio `programs` extension, read by Carla,
 Ardour and Qtractor. Bank is the GS 14-bit bank - CC0 the MSB, CC32 the tone
-map - with bit 14 marking a drum kit. Kits select on the drum part, tones on
-the first.
+map.
 
 The plugin's architecture has to match the host's, and the Roland core's has to match
 the plugin's - a 64-bit host needs the 64-bit bundle and a 64-bit core. LV2 is

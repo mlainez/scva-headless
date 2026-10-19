@@ -149,16 +149,16 @@ $(BUILD)/scva-win32.clap: src/scva_clap.c $(ENGINE_WIN32) | $(BUILD)
 # architecture has to match the host's, and the core's has to match the
 # plugin's, so there is a 32-bit bundle too.
 
-$(LV2_BUNDLE)/scva.so: src/scva_lv2.c $(ENGINE) lv2/manifest.ttl lv2/scva.ttl | $(BUILD)
+$(LV2_BUNDLE)/scva.so: src/scva_lv2.c $(ENGINE) lv2/manifest.ttl lv2/scva.ttl lv2/kits.ttl | $(BUILD)
 	@mkdir -p $(LV2_BUNDLE)
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ src/scva_lv2.c $(ENGINE) -lpthread -lm
-	@cp lv2/manifest.ttl lv2/scva.ttl $(LV2_BUNDLE)/
+	@cp lv2/manifest.ttl lv2/scva.ttl lv2/kits.ttl $(LV2_BUNDLE)/
 
-$(LV2_BUNDLE32)/scva.so: src/scva_lv2.c $(ENGINE32) lv2/manifest.ttl lv2/scva.ttl | $(BUILD)
+$(LV2_BUNDLE32)/scva.so: src/scva_lv2.c $(ENGINE32) lv2/manifest.ttl lv2/scva.ttl lv2/kits.ttl | $(BUILD)
 	@mkdir -p $(LV2_BUNDLE32)
 	$(CC) -m32 $(CFLAGS) -fPIC -shared -o $@ src/scva_lv2.c $(ENGINE32) \
 	      -lpthread -lm
-	@cp lv2/manifest.ttl lv2/scva.ttl $(LV2_BUNDLE32)/
+	@cp lv2/manifest.ttl lv2/scva.ttl lv2/kits.ttl $(LV2_BUNDLE32)/
 
 $(BUILD)/scva-daemon: src/scva_daemon.c src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \

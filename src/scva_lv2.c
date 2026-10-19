@@ -67,7 +67,8 @@ enum {
   PORT_MIDI_IN = 0,
   PORT_OUT_L   = 1,
   PORT_OUT_R   = 2,
-  PORT_MAP     = 3
+  PORT_MAP     = 3,
+  PORT_KIT     = 4
 };
 
 /* The descriptor hands out a const char *, so each name is owned alongside
@@ -82,12 +83,15 @@ struct scva {
 
   const LV2_Atom_Sequence *midi_in;
   float *out_l, *out_r;
-  const float *map_port;
+  const float *map_port, *kit_port;
 
   LV2_URID midi_event;
 
   struct scva_names names;
-  /* One program list per tone map; the host is offered prog_map's. */
+  struct scva_lists lists;
+  int kit_sent;                /* names.patch index on the drum part, or -1 */
+  /* One program list of tones per tone map; the host is offered
+     prog_map's. Kits are the Drum Kit port. */
   struct scva_program *progs[SCVA_MAPS];
   uint32_t nprogs[SCVA_MAPS];
   volatile int prog_map;
@@ -104,20 +108,18 @@ struct scva {
   const LV2_Programs_Host *programs_host;
 };
 
-/* Per tone map, one entry per patch of the shared lists: tones, then kits. */
+/* Per tone map, one program per tone of the shared lists. */
 static void build_programs(struct scva *s)
 {
-  struct scva_lists L;
   int m;
   uint32_t i;
-  if (!scva_lists_build(&L, &s->names)) return;
+  if (!scva_lists_build(&s->lists, &s->names)) return;
   for (m = 0; m < SCVA_MAPS; ++m) {
-    uint32_t n = L.ntone[m] + L.nkit[m];
+    uint32_t n = s->lists.ntone[m];
     s->progs[m] = calloc(n ? n : 1, sizeof *s->progs[m]);
     if (!s->progs[m]) continue;
     for (i = 0; i < n; ++i) {
-      const struct scva_patch *p = &s->names.patch[i < L.ntone[m] ?
-        L.tone[m][i] : L.kit[m][i - L.ntone[m]]];
+      const struct scva_patch *p = &s->names.patch[s->lists.tone[m][i]];
       struct scva_program *e = &s->progs[m][i];
       scva_patch_label(p, e->name, sizeof e->name);
       e->d.bank = SCVA_BANK(p->bank, p->map, p->drum);
@@ -126,7 +128,83 @@ static void build_programs(struct scva *s)
     }
     s->nprogs[m] = n;
   }
-  scva_lists_free(&L);
+}
+
+/* kits.ttl in the bundle: the Drum Kit port's named values, from the user's
+   own name files - every kit number any map has, named after the newest map
+   that has it. A host reads it on its next plugin scan. Rewritten only when
+   it changes, through a temporary file so a scan never sees half of it. */
+static void write_kits_ttl(const struct scva *s, const char *bundle)
+{
+  static const int newest_first[SCVA_MAPS] = {
+    SCVA_MAP_8820, SCVA_MAP_88PRO, SCVA_MAP_88, SCVA_MAP_55, SCVA_MAP_DEFAULT
+  };
+  char path[1100], tmp[1100], label[SCVA_NAME_MAX + 16], *text, *old;
+  size_t cap = 64 * 1024, len = 0, oldlen = 0;
+  int prog, i;
+  FILE *f;
+
+  text = malloc(cap);
+  if (!text) return;
+  len += (size_t)snprintf(text + len, cap - len,
+    "# Written by the plugin from this install's SCVSC.drf.\n"
+    "@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .\n"
+    "@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n"
+    "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\n"
+    "<https://github.com/mlainez/scva-headless#kit>\n"
+    "\tlv2:portProperty lv2:enumeration");
+  for (prog = 0; prog < 128; ++prog)
+    for (i = 0; i < SCVA_MAPS; ++i) {
+      int m = newest_first[i], k;
+      const char *c;
+      k = scva_lists_find(&s->names, s->lists.kit[m], s->lists.nkit[m], 0, prog);
+      if (k < 0) continue;
+      scva_patch_label(&s->names.patch[s->lists.kit[m][k]], label, sizeof label);
+      len += (size_t)snprintf(text + len, cap - len,
+                              " ;\n\tlv2:scalePoint [ rdfs:label \"");
+      for (c = label; *c && len + 2 < cap; ++c) {
+        if (*c == '"' || *c == '\\') text[len++] = '\\';
+        text[len++] = *c;
+      }
+      len += (size_t)snprintf(text + len, cap - len,
+                              "\" ; rdf:value %d ]", prog);
+      break;
+    }
+  len += (size_t)snprintf(text + len, cap - len, " .\n");
+  if (len >= cap) { free(text); return; }
+
+  snprintf(path, sizeof path, "%s/kits.ttl", bundle);
+  snprintf(tmp, sizeof tmp, "%s/kits.ttl.tmp", bundle);
+  old = malloc(cap);
+  f = fopen(path, "rb");
+  if (f && old) { oldlen = fread(old, 1, cap, f); }
+  if (f) fclose(f);
+  if (!old || oldlen != len || memcmp(old, text, len)) {
+    f = fopen(tmp, "wb");
+    if (f && fwrite(text, 1, len, f) == len && !fclose(f)) rename(tmp, path);
+    else {
+      if (f) fclose(f);
+      fprintf(stderr, "scva.lv2: cannot write %s\n", path);
+    }
+  }
+  free(old);
+  free(text);
+}
+
+/* The Drum Kit port's kit in tone map m, or Standard where m has no kit of
+   that number, on the drum part. Sent when either changes. */
+static void send_kit(struct scva *s, int m)
+{
+  const struct scva_patch *p;
+  int want = s->kit_port ? (int)(*s->kit_port + 0.5f) : 0, k;
+  if (want < 0) want = 0;
+  if (want > 127) want = 127;
+  k = scva_lists_find(&s->names, s->lists.kit[m], s->lists.nkit[m], 0, want);
+  if (k < 0) k = scva_lists_find(&s->names, s->lists.kit[m], s->lists.nkit[m], 0, 0);
+  if (k < 0 || (int)s->lists.kit[m][k] == s->kit_sent) return;
+  p = &s->names.patch[s->lists.kit[m][k]];
+  scva_engine_patch(s->eng, SCVA_DRUM_CH, p->map, p->bank, p->prog);
+  s->kit_sent = (int)s->lists.kit[m][k];
 }
 
 static const LV2_Program_Descriptor *get_program(LV2_Handle h, uint32_t index)
@@ -216,6 +294,7 @@ static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
   if (!map) { free(s); return NULL; }    /* urid:map is required */
   s->midi_event = map->map(map->handle, LV2_MIDI__MidiEvent);
   s->prog_index = -1;
+  s->kit_sent = -1;
 
   /* the bundle path keeps its trailing slash */
   snprintf(here, sizeof here, "%s", bundle ? bundle : "");
@@ -223,14 +302,25 @@ static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
   while (n > 1 && here[n - 1] == '/') here[--n] = '\0';
   scva_core_dir(here, dir, sizeof dir);
 
-  s->eng = scva_engine_open(dir, rate, err, sizeof err);
-  if (!s->eng) {
-    fprintf(stderr, "scva.lv2: %s\n", err);
+  /* The instrument and kit lists are the install's own: nothing of Roland's
+     ships with this plugin, so without them there is nothing to offer. */
+  scva_names_load(&s->names, dir);
+  if (!s->names.npatch || !strcmp(s->names.module, "General MIDI")) {
+    fprintf(stderr, "scva.lv2: no SOUND Canvas VA name files (SCVSC.tnf, "
+            "SCVSC.drf) beside SCCore.dll in %s\n", dir);
+    scva_names_free(&s->names);
     free(s);
     return NULL;
   }
-  /* Names are a convenience: without them the plugin still plays. */
-  if (scva_names_load(&s->names, dir)) build_programs(s);
+  s->eng = scva_engine_open(dir, rate, err, sizeof err);
+  if (!s->eng) {
+    fprintf(stderr, "scva.lv2: %s\n", err);
+    scva_names_free(&s->names);
+    free(s);
+    return NULL;
+  }
+  build_programs(s);
+  write_kits_ttl(s, here);
   return s;
 }
 
@@ -242,6 +332,7 @@ static void connect_port(LV2_Handle h, uint32_t port, void *data)
   case PORT_OUT_L:   s->out_l    = (float *)data; break;
   case PORT_OUT_R:   s->out_r    = (float *)data; break;
   case PORT_MAP:     s->map_port = (const float *)data; break;
+  case PORT_KIT:     s->kit_port = (const float *)data; break;
   default: break;
   }
 }
@@ -266,12 +357,13 @@ static void run(LV2_Handle h, uint32_t n_samples)
     memset(s->out_r, 0, n_samples * sizeof *s->out_r);
     return;
   }
-  if (s->map_port) {
-    int want = (int)(*s->map_port + 0.5f);
-    if (want < 0) want = 0;
-    if (want > SCVA_MAP_8820) want = SCVA_MAP_8820;
-    scva_engine_set_map(s->eng, want);
-    switch_programs(s, want);
+  {
+    int map = s->map_port ? (int)(*s->map_port + 0.5f) : 0;
+    if (map < 0) map = 0;
+    if (map > SCVA_MAP_8820) map = SCVA_MAP_8820;
+    scva_engine_set_map(s->eng, map);
+    switch_programs(s, map);
+    send_kit(s, map);
   }
   if (s->sel_pending) apply_selection(s);
 
@@ -301,6 +393,7 @@ static void cleanup(LV2_Handle h)
   scva_engine_close(s->eng);
   scva_names_free(&s->names);
   for (m = 0; m < SCVA_MAPS; ++m) free(s->progs[m]);
+  scva_lists_free(&s->lists);
   free(s);
 }
 
