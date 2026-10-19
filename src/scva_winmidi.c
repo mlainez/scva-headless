@@ -122,6 +122,16 @@ static int queue_get_due(struct qmsg *out, uint64_t until, double rate,
   return got;
 }
 
+/* Sysex arrives in buffers the driver fills and hands back one at a time.
+   Each must be given back before it can carry another message, but
+   midiInAddBuffer is not on the list of calls a MIDI callback may make, so
+   the callback only flags the buffer and the audio loop re-adds it. */
+#define NSYSBUF  4
+#define SYSBUFSZ 1024
+static MIDIHDR sys_hdr[NSYSBUF];
+static unsigned char sys_buf[NSYSBUF][SYSBUFSZ];
+static volatile LONG sys_returned[NSYSBUF];
+
 static void CALLBACK midi_cb(HMIDIIN h, UINT msg, DWORD_PTR inst,
                              DWORD_PTR p1, DWORD_PTR p2)
 {
@@ -137,9 +147,12 @@ static void CALLBACK midi_cb(HMIDIIN h, UINT msg, DWORD_PTR inst,
     queue_put(b, 3, (unsigned int)p2);
   } else if (msg == MIM_LONGDATA) {
     MIDIHDR *hdr = (MIDIHDR *)p1;
-    if (hdr && hdr->dwBytesRecorded > 0)
+    if (!hdr) return;
+    if (hdr->dwBytesRecorded > 0)
       queue_put((const unsigned char *)hdr->lpData,
                 (int)hdr->dwBytesRecorded, (unsigned int)p2);
+    if (hdr->dwUser < NSYSBUF)
+      InterlockedExchange(&sys_returned[hdr->dwUser], 1);
   }
 }
 
@@ -280,8 +293,6 @@ int main(int argc, char **argv)
   HWAVEOUT hout = NULL;
   HANDLE ev;
   WAVEFORMATEX wf;
-  MIDIHDR syshdr;
-  static unsigned char sysbuf[1024];
   WAVEHDR *hdr;
   short **pcm;
   float *left, *right;
@@ -396,11 +407,13 @@ int main(int argc, char **argv)
     fprintf(stderr, "scva-winmidi: cannot open MIDI input %d\n", dev);
     return 1;
   }
-  memset(&syshdr, 0, sizeof syshdr);
-  syshdr.lpData = (LPSTR)sysbuf;
-  syshdr.dwBufferLength = sizeof sysbuf;
-  midiInPrepareHeader(hin, &syshdr, sizeof syshdr);
-  midiInAddBuffer(hin, &syshdr, sizeof syshdr);
+  for (b = 0; b < NSYSBUF; ++b) {
+    sys_hdr[b].lpData = (LPSTR)sys_buf[b];
+    sys_hdr[b].dwBufferLength = SYSBUFSZ;
+    sys_hdr[b].dwUser = (DWORD_PTR)b;
+    midiInPrepareHeader(hin, &sys_hdr[b], sizeof sys_hdr[b]);
+    midiInAddBuffer(hin, &sys_hdr[b], sizeof sys_hdr[b]);
+  }
   midiInStart(hin);
   {
     MIDIINCAPSA c;
@@ -444,6 +457,9 @@ int main(int argc, char **argv)
   for (;;) {
     int did = 0;
     if (poll_console(map_of, last_pc)) break;
+    for (b = 0; b < NSYSBUF; ++b)
+      if (InterlockedExchange(&sys_returned[b], 0))
+        midiInAddBuffer(hin, &sys_hdr[b], sizeof sys_hdr[b]);
     for (b = 0; b < nbuf; ++b) {
       struct qmsg m;
       int k;
