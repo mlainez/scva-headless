@@ -444,7 +444,10 @@ the plugin's - a 64-bit host needs the 64-bit bundle and a 64-bit core. LV2 is
 a Linux format in practice, and the engine is x86 machine code, so there is no
 ARM build of this and no Windows one.
 
-## As a CLAP plugin (untested)
+## As a CLAP plugin
+
+Tested: `scva-win32.clap` in SAVIHost CLAP x86 1.44, under Wine and on
+Windows 98 SE.
 
     make clap        # Linux .clap and 64-bit Windows .clap
     make clap-win32  # 32-bit Windows .clap
@@ -453,6 +456,18 @@ Needs the CLAP headers: `make clap CLAP_DIR=/path/to/clap/include`.
 
 Same shape as the LV2: MIDI in, stereo out, tone map as a parameter. The core
 and patch name files are found in `$SCVA_DLL_DIR`, or beside the `.clap`.
+
+The Tone Map parameter takes effect at once, on every part: each part's last
+program change is re-sent with the new map. In SAVIHost it is the slider
+beside the parameter list:
+
+| slider | map |
+|---|---|
+| bottom (0.00) | Default (renders as SC-8820) |
+| 0.25 | SC-55 |
+| 0.50 | SC-88 |
+| 0.75 | SC-88Pro |
+| top (1.00) | SC-8820 |
 
 | build | how the core is loaded |
 |---|---|
@@ -493,7 +508,7 @@ Roland 32-bit and 64-bit Windows versions. So:
 | Linux x86-64 | LV2, CLAP, renderer, `--play`, daemon |
 | Linux i386 | LV2, renderer (32-bit core), no `--play` |
 | Windows x86-64 | CLAP, renderer, `--play`, MIDI device via a virtual cable |
-| Windows x86, 98 and up | renderer, `--play`, MIDI device via a virtual cable |
+| Windows x86, 98 and up | CLAP, renderer, `--play`, MIDI device via a virtual cable |
 | ARM, any width | only by emulating x86 - box86 or box64 |
 | macOS | would need a Mach-O loader; not built here |
 

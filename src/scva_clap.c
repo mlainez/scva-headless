@@ -69,6 +69,8 @@ struct scva {
 
    double rate;
    int map_want, map_now;
+   /* Each part's last program change, re-sent after a map change. */
+   unsigned char last_pc[16];
 
    struct scva_names names;
    /* A preset arrives on the main thread; it is latched and applied at the
@@ -193,13 +195,20 @@ static int engine_start(struct scva *s, double rate)
    s->tg_activate((float)rate, SCVA_MAXBLOCK);
    s->long_midi(gs_reset, 0);
    s->map_now = -1;
+   memset(s->last_pc, 0, sizeof s->last_pc);
    return 1;
 }
 
+/* CC32 alone only latches the map for the next program change, so after a
+   change each part's last program is re-sent to make it audible now. Not on
+   the first send after activation: the engine is fresh and nothing plays. */
 static void send_map(struct scva *s, int v)
 {
-   int ch;
-   for (ch = 0; ch < 16; ++ch) s->short_midi(scva_map_cc(ch, v), 0);
+   int ch, resend = s->map_now >= 0;
+   for (ch = 0; ch < 16; ++ch) {
+      s->short_midi(scva_map_cc(ch, v), 0);
+      if (resend) s->short_midi(scva_map_pc(ch, s->last_pc[ch]), 0);
+   }
    s->map_now = v;
 }
 
@@ -207,6 +216,8 @@ static void deliver(struct scva *s, const uint8_t *d, uint32_t size)
 {
    if (!size) return;
    if (d[0] == 0xf0) { s->long_midi(d, 0); return; }
+   if ((d[0] & 0xf0) == 0xc0 && size > 1)
+      s->last_pc[d[0] & 0x0f] = d[1] & 0x7f;
    if (s->map_now > 0 && (d[0] & 0xf0) == 0xc0)
       s->short_midi(scva_map_cc(d[0] & 0x0f, s->map_now), 0);
    {
@@ -215,6 +226,17 @@ static void deliver(struct scva *s, const uint8_t *d, uint32_t size)
       if (size > 2) msg |= (unsigned int)d[2] << 16;
       s->short_midi(msg, 0);
    }
+}
+
+/* Parameter 0 is the tone map; it is sent to the engine by process(). */
+static void param_event(struct scva *s, const clap_event_header_t *h)
+{
+   const clap_event_param_value_t *e = (const clap_event_param_value_t *)h;
+   if (h->space_id != CLAP_CORE_EVENT_SPACE_ID ||
+       h->type != CLAP_EVENT_PARAM_VALUE || e->param_id != 0) return;
+   s->map_want = (int)(e->value + 0.5);
+   if (s->map_want < 0) s->map_want = 0;
+   if (s->map_want > SCVA_MAP_8820) s->map_want = SCVA_MAP_8820;
 }
 
 /* TG_Process writes exactly the frames asked for, so it can write straight
@@ -279,6 +301,12 @@ static clap_process_status plug_process(const clap_plugin_t *p,
    float *l, *r;
 
    if (s->sel_pending) apply_selection(s);
+
+   /* While processing, the host sends parameter changes here, not to
+      flush(). The map is applied for the whole block, ahead of its notes. */
+   for (; ei < nev; ++ei)
+      param_event(s, pr->in_events->get(pr->in_events, ei));
+   ei = 0;
 
    if (!pr->audio_outputs_count || pr->audio_outputs[0].channel_count < 2)
       return CLAP_PROCESS_ERROR;
@@ -399,14 +427,7 @@ static void pr_flush(const clap_plugin_t *p, const clap_input_events_t *in,
    struct scva *s = p->plugin_data;
    uint32_t i, n = in ? in->size(in) : 0;
    (void)out;
-   for (i = 0; i < n; ++i) {
-      const clap_event_header_t *h = in->get(in, i);
-      if (h->type == CLAP_EVENT_PARAM_VALUE) {
-         const clap_event_param_value_t *e =
-            (const clap_event_param_value_t *)h;
-         if (e->param_id == 0) s->map_want = (int)(e->value + 0.5);
-      }
-   }
+   for (i = 0; i < n; ++i) param_event(s, in->get(in, i));
 }
 static const clap_plugin_params_t s_params = {
    pr_count, pr_info, pr_value, pr_text, pr_from_text, pr_flush
@@ -427,6 +448,7 @@ static void apply_selection(struct scva *s)
                  ((unsigned int)s->sel_bank << 16), 0);
    s->short_midi((unsigned int)(0xc0 | ch) |
                  ((unsigned int)s->sel_prog << 8), 0);
+   s->last_pc[ch] = (unsigned char)s->sel_prog;
    if (s->sel_drum) {
       s->kit_now = s->sel_prog;
       s->kit_map = s->sel_map;
