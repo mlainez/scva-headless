@@ -183,9 +183,6 @@ the cells they share. Validated against the tone file on 17 cells - every cell
 the file says the two maps share renders byte-identical, every cell it says
 they disagree on renders differently, in both directions.
 
-At start-up, before any CC32, the parts play SC-55 tones, not the Default
-map's: selecting Default needs CC32 0 and a program change like any other map.
-
 A GS reset returns every part to the default map, so the map has to be sent
 again before each program change rather than once at the start.
 
