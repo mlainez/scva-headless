@@ -231,13 +231,6 @@ Start it, and check:
 
 ## Windows
 
-### SOUND Canvas VA's own VST2 plugin: does not play
-
-`scva-vst.dll` (64-bit) and `scva-vst32.dll` (32-bit) export the entry points
-a VST2 host looks for and forward to the install's `Wrapper.dll` beside
-them, of the same width. The plug-in then stops in `effOpen` on its
-authorisation check; see `docs/ENGINE-NOTES.md`. Use the CLAP plugin.
-
 ### Render to a file
 
     build\scva-render.exe --midi song.mid --out song.wav --map 88

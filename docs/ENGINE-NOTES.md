@@ -459,8 +459,8 @@ underneath that, and no rewriting reaches a Pentium II or a K6.
 ## The VST route is shut
 
 `Wrapper.dll` exports its VST entry as `R2RPluginMain`, so no host opens it
-unaided. `src/scva_vst_shim.c` publishes the expected name and forwards; the
-plug-in then opens and crashes inside `effOpen` on an authorisation check
+unaided. Published under the expected name, the plug-in opens and then
+crashes inside `effOpen` on an authorisation check
 (`auth_strings_*.bin`, `Authorize.nib`). The core API gives the same audio.
 
 ## Standing
