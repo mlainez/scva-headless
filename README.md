@@ -475,7 +475,15 @@ moves Instrument and Drum Kit to the same patch in that map where it has one.
 
 The Windows builds have an editor: Tone Map and Drum Kit drop-downs and the
 Instrument list. A host's generic slider cannot step through 2872 tones;
-SAVIHost shows the editor in place of its slider.
+SAVIHost shows the editor in place of its slider. The editor scales with the
+Windows DPI setting (Wine: `winecfg`, Graphics) and fills whatever window the
+host gives it.
+
+| in SAVIHost | does |
+|---|---|
+| size grip, bottom right | resizes, up to the editor's own size |
+| View > Check Max Size, unchecked | lifts that limit; the Instrument list grows |
+| View > Resize | fits the window to the editor, after a DPI change for instance |
 
 | build | how the core is loaded |
 |---|---|

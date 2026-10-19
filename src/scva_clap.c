@@ -54,6 +54,9 @@ struct scva {
 #ifdef _WIN32
    HWND gui, gui_ctl[3];
    int gui_shown[3];
+   uint32_t gui_w, gui_h;       /* 0 until the host sizes the editor */
+   int gui_lw, gui_lh;          /* the size last laid out */
+   int gui_dpi;                 /* 0 until first asked */
 #endif
 };
 
@@ -513,7 +516,12 @@ static const clap_plugin_note_name_t s_note_name = { nn_count, nn_get };
 /* Plain Win32 controls, so it runs wherever the plugin does, Windows 98
    included: a host's generic slider cannot step through thousands of
    patches, a list can. The window polls the parameters, so a change from the
-   host or from automation shows here too. */
+   host or from automation shows here too. It resizes, the Instrument list
+   taking whatever room there is; this is also its smallest size.
+
+   Every coordinate is at 96 DPI and scaled to the screen's: the font is the
+   system's and grows with the DPI, so a layout in plain pixels clips its own
+   labels. */
 #define SCVA_GUI_W 390
 #define SCVA_GUI_H 286
 #define SCVA_GUI_CLASS "scva-headless editor"
@@ -526,6 +534,18 @@ static HINSTANCE gui_module(void)
    MEMORY_BASIC_INFORMATION m;
    if (!VirtualQuery((LPCVOID)gui_module, &m, sizeof m)) return NULL;
    return (HINSTANCE)m.AllocationBase;
+}
+
+/* v, a length at 96 DPI, at the screen's DPI. */
+static int px(struct scva *s, int v)
+{
+   if (!s->gui_dpi) {
+      HDC dc = GetDC(NULL);
+      s->gui_dpi = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
+      if (dc) ReleaseDC(NULL, dc);
+      if (s->gui_dpi <= 0) s->gui_dpi = 96;
+   }
+   return MulDiv(v, s->gui_dpi, 96);
 }
 
 static void gui_select(struct scva *s, int id, int v)
@@ -559,6 +579,8 @@ static void gui_changed(struct scva *s, int id)
    if (hp && hp->request_flush) hp->request_flush(s->host);
 }
 
+static void gui_layout(struct scva *s);
+
 static LRESULT CALLBACK gui_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
 {
    struct scva *s = (struct scva *)GetWindowLongPtrA(w, GWLP_USERDATA);
@@ -575,7 +597,7 @@ static LRESULT CALLBACK gui_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
          gui_changed(s, id);
       return 0;
    }
-   if (msg == WM_TIMER) { gui_sync(s); return 0; }
+   if (msg == WM_TIMER) { gui_layout(s); gui_sync(s); return 0; }
    if (msg == WM_CTLCOLORSTATIC)
       return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
    return DefWindowProcA(w, msg, wp, lp);
@@ -585,7 +607,8 @@ static HWND gui_child(struct scva *s, const char *cls, DWORD style, int id,
                       int x, int y, int w, int h, const char *text)
 {
    HWND c = CreateWindowExA(cls[0] == 'S' ? 0 : WS_EX_CLIENTEDGE, cls, text,
-                            WS_CHILD | WS_VISIBLE | style, x, y, w, h, s->gui,
+                            WS_CHILD | WS_VISIBLE | style, px(s, x), px(s, y),
+                            px(s, w), px(s, h), s->gui,
                             (HMENU)(INT_PTR)id, gui_module(), NULL);
    if (c) SendMessageA(c, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT),
                        TRUE);
@@ -620,25 +643,81 @@ static void gui_destroy(const clap_plugin_t *p)
       DestroyWindow(s->gui);
    }
    s->gui = NULL;
+   s->gui_lw = s->gui_lh = 0;
    memset(s->gui_ctl, 0, sizeof s->gui_ctl);
 }
 
 static bool gui_scale(const clap_plugin_t *p, double scale)
 { (void)p; (void)scale; return false; }
 
-static bool gui_get_size(const clap_plugin_t *p, uint32_t *w, uint32_t *h)
-{ (void)p; *w = SCVA_GUI_W; *h = SCVA_GUI_H; return true; }
+/* The drop-downs stretch with the width, the list with both. */
+/* The editor fills the window the host puts it in, whatever size the host
+   made that - SAVIHost restores its own last window size, which need not be
+   the editor's - down to a floor where every control is still usable.
+   gui_w x gui_h stays the size asked for. Checked on every timer tick. */
+#define SCVA_GUI_FLOOR_W 240
+#define SCVA_GUI_FLOOR_H 150
 
-static bool gui_can_resize(const clap_plugin_t *p) { (void)p; return false; }
+static void gui_layout(struct scva *s)
+{
+   RECT r;
+   int w = (int)s->gui_w, h = (int)s->gui_h;
+   if (!s->gui) return;
+   if (GetClientRect(GetParent(s->gui), &r) && r.right > 0 && r.bottom > 0) {
+      w = r.right;
+      h = r.bottom;
+   }
+   if (w < px(s, SCVA_GUI_FLOOR_W)) w = px(s, SCVA_GUI_FLOOR_W);
+   if (h < px(s, SCVA_GUI_FLOOR_H)) h = px(s, SCVA_GUI_FLOOR_H);
+   if (w == s->gui_lw && h == s->gui_lh) return;
+   s->gui_lw = w;
+   s->gui_lh = h;
+   SetWindowPos(s->gui, NULL, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
+   SetWindowPos(s->gui_ctl[SCVA_PARAM_MAP], NULL, px(s, 90), px(s, 10),
+                w - px(s, 100), px(s, 200), SWP_NOZORDER);
+   SetWindowPos(s->gui_ctl[SCVA_PARAM_DRUM], NULL, px(s, 90), px(s, 40),
+                w - px(s, 100), px(s, 300), SWP_NOZORDER);
+   SetWindowPos(s->gui_ctl[SCVA_PARAM_INST], NULL, px(s, 10), px(s, 92),
+                w - px(s, 20), h - px(s, 100), SWP_NOZORDER);
+}
+
+static bool gui_get_size(const clap_plugin_t *p, uint32_t *w, uint32_t *h)
+{
+   struct scva *s = p->plugin_data;
+   *w = s->gui_w ? s->gui_w : (uint32_t)px(s, SCVA_GUI_W);
+   *h = s->gui_h ? s->gui_h : (uint32_t)px(s, SCVA_GUI_H);
+   return true;
+}
+
+static bool gui_can_resize(const clap_plugin_t *p) { (void)p; return true; }
 
 static bool gui_hints(const clap_plugin_t *p, clap_gui_resize_hints_t *h)
-{ (void)p; (void)h; return false; }
+{
+   (void)p;
+   memset(h, 0, sizeof *h);
+   h->can_resize_horizontally = true;
+   h->can_resize_vertically = true;
+   return true;
+}
 
 static bool gui_adjust(const clap_plugin_t *p, uint32_t *w, uint32_t *h)
-{ return gui_get_size(p, w, h); }
+{
+   struct scva *s = p->plugin_data;
+   uint32_t mw = (uint32_t)px(s, SCVA_GUI_W), mh = (uint32_t)px(s, SCVA_GUI_H);
+   if (*w < mw) *w = mw;
+   if (*h < mh) *h = mh;
+   return true;
+}
 
 static bool gui_set_size(const clap_plugin_t *p, uint32_t w, uint32_t h)
-{ (void)p; return w == SCVA_GUI_W && h == SCVA_GUI_H; }
+{
+   struct scva *s = p->plugin_data;
+   gui_adjust(p, &w, &h);
+   s->gui_w = w;
+   s->gui_h = h;
+   gui_layout(s);
+   return true;
+}
 
 static bool gui_set_parent(const clap_plugin_t *p, const clap_window_t *win)
 {
@@ -657,9 +736,10 @@ static bool gui_set_parent(const clap_plugin_t *p, const clap_window_t *win)
       wc.lpszClassName = SCVA_GUI_CLASS;
       if (!RegisterClassA(&wc)) return false;
    }
+   gui_get_size(p, &s->gui_w, &s->gui_h);
    s->gui = CreateWindowExA(0, SCVA_GUI_CLASS, "", WS_CHILD | WS_VISIBLE |
-                            WS_CLIPCHILDREN, 0, 0, SCVA_GUI_W, SCVA_GUI_H,
-                            (HWND)win->win32, NULL, inst, s);
+                            WS_CLIPCHILDREN, 0, 0, (int)s->gui_w,
+                            (int)s->gui_h, (HWND)win->win32, NULL, inst, s);
    if (!s->gui) return false;
 
    gui_child(s, "STATIC", 0, -1, 10, 13, 80, 16, "Tone Map");
@@ -689,8 +769,17 @@ static bool gui_set_parent(const clap_plugin_t *p, const clap_window_t *win)
       SendMessageA(s->gui_ctl[SCVA_PARAM_INST], LB_ADDSTRING, 0,
                    (LPARAM)label);
    }
+   gui_layout(s);
    for (i = 0; i < 3; ++i) s->gui_shown[i] = -1;
    gui_sync(s);
+   /* A host may restore a window size saved before the editor's size
+      changed - at another DPI, say - and leave the editor clipped. */
+   {
+      const clap_host_gui_t *hg = s->host->get_extension ?
+         s->host->get_extension(s->host, CLAP_EXT_GUI) : NULL;
+      if (hg && hg->request_resize)
+         hg->request_resize(s->host, s->gui_w, s->gui_h);
+   }
    SetTimer(s->gui, SCVA_GUI_TIMER, 100, NULL);
    return true;
 }
