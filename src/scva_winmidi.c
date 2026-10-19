@@ -99,18 +99,23 @@ static void queue_put(const unsigned char *b, int len, unsigned int when)
    the stream being rendered. Draining the whole queue into each block instead
    is what makes a large buffer ruin the rhythm: every event that arrived
    during the buffer window lands on the same instant, so the timing error is
-   the buffer size. Honouring the arrival time keeps it at one block. */
-static int queue_get_due(struct qmsg *out, uint64_t until, double rate,
-                         unsigned int latency_ms, uint64_t horizon)
+   the buffer size. Honouring the arrival time keeps it at one block.
+
+   `origin` is the stream frame that was playing at MIDI time 0, re-measured
+   from the device's position every time round the loop, so an underrun or
+   two drifting clocks move it rather than delay every later message. */
+static int queue_get_due(struct qmsg *out, uint64_t until, double origin,
+                         double rate, unsigned int latency_ms,
+                         uint64_t horizon)
 {
   int got = 0;
   EnterCriticalSection(&q_lock);
   if (q_tail != q_head) {
-    uint64_t due = (uint64_t)(((double)q[q_tail].when + latency_ms)
-                              * rate / 1000.0);
-    /* The card's clock and the system timer are not the same clock. If they
-       drift apart far enough that a message would be held back further than
-       the buffer is deep, play it rather than let the queue grow for ever. */
+    double at = origin + ((double)q[q_tail].when + latency_ms)
+                         * rate / 1000.0;
+    uint64_t due = at > 0.0 ? (uint64_t)at : 0;
+    /* Never hold a message longer than the buffer is deep, so a bad
+       position reading cannot stall the queue. */
     if (due > until + horizon) due = until;
     if (due <= until) {
       *out = q[q_tail];
@@ -154,6 +159,30 @@ static void CALLBACK midi_cb(HMIDIIN h, UINT msg, DWORD_PTR inst,
     if (hdr->dwUser < NSYSBUF)
       InterlockedExchange(&sys_returned[hdr->dwUser], 1);
   }
+}
+
+/* Frames the device has played. Some drivers only report bytes, and either
+   count is a DWORD that wraps, so it is extended to 64 bits here. Returns 0
+   when the device reports neither. */
+static int played_frames(HWAVEOUT h, uint64_t *frames)
+{
+  static DWORD last;
+  static uint64_t total;
+  static int have;
+  MMTIME t;
+  DWORD now;
+
+  t.wType = TIME_SAMPLES;
+  if (waveOutGetPosition(h, &t, sizeof t) != MMSYSERR_NOERROR) return 0;
+  if (t.wType == TIME_SAMPLES) now = t.u.sample;
+  else if (t.wType == TIME_BYTES) now = t.u.cb / 4;  /* 16-bit stereo */
+  else return 0;
+  if (have) total += (DWORD)(now - last);
+  else total = now;
+  last = now;
+  have = 1;
+  *frames = total;
+  return 1;
 }
 
 static void list_inputs(void)
@@ -298,6 +327,9 @@ int main(int argc, char **argv)
   float *left, *right;
   int nbuf, b, dev;
   uint64_t rendered = 0;            /* frames handed to the device so far */
+  DWORD midi_t0;                    /* timeGetTime() at midiInStart */
+  double origin = 0.0;              /* stream frame at MIDI time 0 */
+  int have_origin = 0;
 
   for (i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--core") && i + 1 < argc) core = argv[++i];
@@ -414,6 +446,10 @@ int main(int argc, char **argv)
     midiInPrepareHeader(hin, &sys_hdr[b], sizeof sys_hdr[b]);
     midiInAddBuffer(hin, &sys_hdr[b], sizeof sys_hdr[b]);
   }
+  /* 1 ms rather than the default 10-16, for timeGetTime() here and the
+     timestamps the driver puts on each message. */
+  timeBeginPeriod(1);
+  midi_t0 = timeGetTime();
   midiInStart(hin);
   {
     MIDIINCAPSA c;
@@ -461,10 +497,25 @@ int main(int argc, char **argv)
          "to show it, q or Ctrl+C to stop.\n", name);
   for (;;) {
     int did = 0;
+    uint64_t played;
+    double measured;
     if (poll_console(map_of, last_pc)) break;
     for (b = 0; b < NSYSBUF; ++b)
       if (InterlockedExchange(&sys_returned[b], 0))
         midiInAddBuffer(hin, &sys_hdr[b], sizeof sys_hdr[b]);
+    /* Where MIDI time 0 falls in the stream: the frame playing now, less
+       the MIDI time that has passed. Without a position from the device,
+       assume it is a whole buffer behind what was handed to it. */
+    if (!played_frames(hout, &played))
+      played = rendered > (uint64_t)nbuf * block
+               ? rendered - (uint64_t)nbuf * block : 0;
+    measured = (double)played
+               - (double)(DWORD)(timeGetTime() - midi_t0) * rate / 1000.0;
+    /* Drivers report the position in steps of several milliseconds, so one
+       reading is smoothed over the last 16 rather than used as it is. A
+       step from an underrun settles within about 16 blocks. */
+    if (have_origin) origin += (measured - origin) / 16.0;
+    else { origin = measured; have_origin = 1; }
     for (b = 0; b < nbuf; ++b) {
       struct qmsg m;
       int k;
@@ -474,8 +525,8 @@ int main(int argc, char **argv)
          block rather than the whole output buffer. Anything already late goes
          in here too: it cannot be put back. */
       rendered += block;
-      while (queue_get_due(&m, rendered, (double)rate, (unsigned)latency_ms,
-                           (uint64_t)nbuf * block)) {
+      while (queue_get_due(&m, rendered, origin, (double)rate,
+                           (unsigned)latency_ms, (uint64_t)nbuf * block)) {
         if (m.b[0] == 0xf0) {
           long_midi(m.b, 0);
         } else {
@@ -513,6 +564,7 @@ int main(int argc, char **argv)
     if (!did) WaitForSingleObject(ev, 100);
   }
   printf("scva-winmidi[%s]: stopping\n", name);
+  timeEndPeriod(1);
   tg_deactivate();
   return 0;
 }
