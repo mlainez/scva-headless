@@ -352,6 +352,9 @@ The defaults suit a modern PC; an older one needs its own settings.
 Timing does not suffer from a large `--latency`: each message plays where its
 arrival time says, to within one `--block`.
 
+It runs at High priority, so a busy program next to it, such as a DOS game
+under NTVDM with VDMSound or VOPL3, does not starve its audio.
+
 Athlon XP 2 GHz, Windows 98, Sound Blaster Live!: `--block 1024 --latency 200`.
 
 Windows has no way for a program to put itself in the MIDI device list. That
