@@ -17,7 +17,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 
-static int scva_vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap)
+static inline int scva_vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap)
 {
   int n;
   if (!cap) return 0;
@@ -26,7 +26,7 @@ static int scva_vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap)
   return n < 0 ? (int)cap - 1 : n;
 }
 
-static int scva_snprintf(char *buf, size_t cap, const char *fmt, ...)
+static inline int scva_snprintf(char *buf, size_t cap, const char *fmt, ...)
 {
   va_list ap;
   int n;

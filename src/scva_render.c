@@ -26,6 +26,7 @@
    and it applies the SSE shims on the way. */
 #define SCVA_OWN_LOADER 1
 #include "pe_loader.h"
+#include "scva_runtime.h"
 #else
 #define SCVA_SHIM_HOST_APPLY 1     /* the system loader path applies them */
 #include "sse3_shim.h"
@@ -192,7 +193,7 @@ int main(int argc, char **argv)
 #ifdef SCVA_OWN_LOADER
   /* pe_load maps the image, binds the runtime the core wants and applies the
      SSE shims, so nothing here depends on what the system loader will accept. */
-  lib = pe_load(core, peerr, sizeof peerr);
+  lib = scva_core_map(core, peerr, sizeof peerr);
   if (!lib) { fprintf(stderr, "pe_load(%s): %s\n", core, peerr); return 1; }
 #else
   lib = LoadLibraryA(core);
@@ -218,7 +219,7 @@ int main(int argc, char **argv)
   nports = song_ports(&s);
   if (nports > 1) {
 #ifdef SCVA_OWN_LOADER
-    lib_b = pe_load(core, peerr, sizeof peerr);       /* a second mapping */
+    lib_b = scva_core_map(core, peerr, sizeof peerr);       /* a second mapping */
 #else
     lib_b = load_second_core(core, coreb, sizeof coreb);
 #endif

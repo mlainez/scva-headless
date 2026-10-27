@@ -47,6 +47,7 @@
    and supplies that runtime itself, applying the SSE shims on the way. */
 #define SCVA_OWN_LOADER 1
 #include "pe_loader.h"
+#include "scva_runtime.h"
 #else
 #define SCVA_SHIM_HOST_APPLY 1     /* the system loader path applies them */
 #include "sse3_shim.h"
@@ -311,7 +312,7 @@ int main(int argc, char **argv)
   {
     const char *path = scva_core_path(core);
 #ifdef SCVA_OWN_LOADER
-    lib = pe_load(path, peerr, sizeof peerr);
+    lib = scva_core_map(path, peerr, sizeof peerr);
     if (!lib) {
       fprintf(stderr, "scva-winmidi: cannot load %s: %s\n"
                       "  pass --core or set SCVA_DLL_DIR\n", path, peerr);

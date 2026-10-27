@@ -1,12 +1,8 @@
 /* SPDX-License-Identifier: CC0-1.0
  *
- * Load a Windows x86-64 DLL into a Linux process, without wine.
- *
- * This is possible for SOUND Canvas VA's core because that DLL is unusually
- * self-contained: 50 imports across five libraries, no file I/O, no registry,
- * no threads it creates itself, no GUI and no COM. Its data is inside the
- * image. So the loader only has to map it, relocate it, hand it fifty small
- * functions, and run its static initialisers.
+ * Load a Windows x86 image into this process, without wine: map it,
+ * relocate it, bind its imports to functions the caller supplies, set up its
+ * thread-local storage, and run its entry point if asked to.
  *
  * The calling convention is handled by the compiler: everything that crosses
  * into or out of the image is declared __attribute__((ms_abi)), so GCC emits
@@ -42,8 +38,25 @@ struct pe_image {
   void *tls;                /* 32-bit Windows: its thread-local storage */
 };
 
-/* Map, relocate, bind imports, run the entry point. NULL on failure. */
-struct pe_image *pe_load(const char *path, char *err, size_t errlen);
+/* What an import binds to: dll is the library the image names, name the
+   function. NULL when there is nothing to bind it to. */
+typedef void *(*pe_resolve_fn)(void *ctx, const char *dll, const char *name);
+
+struct pe_options {
+  pe_resolve_fn resolve;
+  void *ctx;                /* passed to resolve */
+  int no_entry;             /* leave the entry point alone */
+};
+
+/* A resolver over a table: ctx is an array of these ending in {NULL, NULL},
+   searched by name whatever the library. */
+struct pe_binding { const char *name; void *fn; };
+void *pe_resolve_table(void *ctx, const char *dll, const char *name);
+
+/* Map, relocate, bind the imports through opt, and run the entry point
+   unless opt says not to. NULL, with the reason in err, on failure. */
+struct pe_image *pe_load(const char *path, const struct pe_options *opt,
+                         char *err, size_t errlen);
 /* Gives the calling thread what the image expects of a Windows thread. Call
    it on any thread before that thread enters the image: a plugin host's
    audio thread is rarely the one that loaded it. Cheap once a thread has it;

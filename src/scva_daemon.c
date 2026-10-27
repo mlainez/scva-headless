@@ -26,6 +26,7 @@
 #include <sys/un.h>
 #include <poll.h>
 #include "pe_loader.h"
+#include "scva_runtime.h"
 #include "core_path.h"
 #include "scva_map.h"
 #include "map_policy.h"
@@ -222,7 +223,7 @@ int main(int argc, char **argv)
 
   /* --- the engine, in this process -------------------------------------- */
   snprintf(corebuf, sizeof corebuf, "%s", scva_core_path(core));
-  img = pe_load(corebuf, err, sizeof err);
+  img = scva_core_map(corebuf, err, sizeof err);
   if (!img) {
     fprintf(stderr, "scva-daemon: %s\n"
                     "  looked for '%s'; pass --core or set $SCVA_DLL_DIR\n",

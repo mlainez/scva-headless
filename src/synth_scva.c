@@ -21,6 +21,7 @@
 #include <windows.h>
 #else
 #include "pe_loader.h"
+#include "scva_runtime.h"
 #endif
 #include "scva_core.h"
 
@@ -71,7 +72,7 @@ static struct synth *open_scva(const struct synth_options *opt, char *err,
   }
   missing = scva_core_bind(&e->api, scva_core_lookup_module, (void *)e->lib, SCVA_CORE_LIVE);
 #else
-  e->img = pe_load(opt->core, err, errlen);
+  e->img = scva_core_map(opt->core, err, errlen);
   if (!e->img) { free(e); return NULL; }
   missing = scva_core_bind(&e->api, scva_core_lookup_pe, e->img, SCVA_CORE_LIVE);
 #endif

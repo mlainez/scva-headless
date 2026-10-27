@@ -121,8 +121,8 @@ $(OBJ)/win64/scva_clap.o $(OBJ)/win32/scva_clap.o: XDEFS := -I$(CLAP_DIR)
 
 # ---- the tools -----------------------------------------------------------
 
-RENDER_MODS     := scva_native map_policy render_loop pe_loader
-DAEMON_MODS     := scva_daemon map_policy console rt_priority pe_loader
+RENDER_MODS     := scva_native map_policy render_loop pe_loader scva_runtime
+DAEMON_MODS     := scva_daemon map_policy console rt_priority pe_loader scva_runtime
 WIN_RENDER_MODS := scva_render map_policy audio_waveout render_loop
 WINMIDI_MODS    := scva_winmidi map_policy audio_waveout console rt_priority live_sched
 
@@ -157,10 +157,10 @@ $(BUILD)/scva-winmidi.exe: $(call objs,win64,$(WINMIDI_MODS))
 # The 32-bit Windows binaries carry src/pe_loader.c: the system loader will
 # not take a core that imports MSVCR100 and declares a subsystem newer than
 # Windows 98, so the image is mapped here instead, exactly as on Linux.
-$(BUILD)/scva-render32.exe: $(call objs,win32,$(WIN_RENDER_MODS) pe_loader)
+$(BUILD)/scva-render32.exe: $(call objs,win32,$(WIN_RENDER_MODS) pe_loader scva_runtime)
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ $^ -lwinmm
 
-$(BUILD)/scva-winmidi32.exe: $(call objs,win32,$(WINMIDI_MODS) pe_loader)
+$(BUILD)/scva-winmidi32.exe: $(call objs,win32,$(WINMIDI_MODS) pe_loader scva_runtime)
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ $^ -lwinmm
 
 # ---- the engine library --------------------------------------------------
@@ -176,12 +176,12 @@ ENGINE_WIN32 := $(BUILD)/engine/win32/libscvaengine.a
 MINGW_AR   ?= $(MINGW:gcc=ar)
 MINGW32_AR ?= $(MINGW32:gcc=ar)
 
-$(ENGINE): $(call objs,linux64-pic,$(ENGINE_MODS) pe_loader)
+$(ENGINE): $(call objs,linux64-pic,$(ENGINE_MODS) pe_loader scva_runtime)
 	@mkdir -p $(@D)
 	@rm -f $@
 	$(AR) rcs $@ $^
 
-$(ENGINE32): $(call objs,linux32-pic,$(ENGINE_MODS) pe_loader)
+$(ENGINE32): $(call objs,linux32-pic,$(ENGINE_MODS) pe_loader scva_runtime)
 	@mkdir -p $(@D)
 	@rm -f $@
 	$(AR) rcs $@ $^
@@ -191,7 +191,7 @@ $(ENGINE_WIN64): $(call objs,win64,$(ENGINE_MODS))
 	@rm -f $@
 	$(MINGW_AR) rcs $@ $^
 
-$(ENGINE_WIN32): $(call objs,win32,$(ENGINE_MODS) pe_loader)
+$(ENGINE_WIN32): $(call objs,win32,$(ENGINE_MODS) pe_loader scva_runtime)
 	@mkdir -p $(@D)
 	@rm -f $@
 	$(MINGW32_AR) rcs $@ $^
@@ -287,8 +287,24 @@ $(BUILD)/test/unit32/%: $(OBJ)/test32/%.o $(call objs,linux32,$(UNIT_MODS))
 	@mkdir -p $(@D)
 	$(CC) -m32 $(CFLAGS) -o $@ $^ -lm
 
-test-unit: $(UNIT64) $(UNIT32)
-	@tests/run-unit.sh $^
+# The loader's test reads the probe image (tests/peprobe, built below), so it
+# links the loader too.
+LOADER_MODS := pe_loader
+PROBE_DIR := $(BUILD)/test/peprobe
+PROBES    := $(PROBE_DIR)/linux64/peprobe.dll $(PROBE_DIR)/linux32/peprobe.dll
+
+$(BUILD)/test/unit64/test_pe_loader: $(OBJ)/test64/test_pe_loader.o \
+                                     $(call objs,linux64,$(UNIT_MODS) $(LOADER_MODS))
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread -lm
+
+$(BUILD)/test/unit32/test_pe_loader: $(OBJ)/test32/test_pe_loader.o \
+                                     $(call objs,linux32,$(UNIT_MODS) $(LOADER_MODS))
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -o $@ $^ -lpthread -lm
+
+test-unit: $(UNIT64) $(UNIT32) $(PROBES)
+	@tests/run-unit.sh $(UNIT64) $(UNIT32)
 
 # The modules the Windows binaries compile in, built with the same toolchains
 # and flags, run under wine: msvcrt is not glibc (its qsort is not stable, for
@@ -340,6 +356,20 @@ $(FAKE_DIR)/%/SCCore.dll: tests/fakecore/fakecore.c
 	   -Wl,--entry,$(call fake_entry,$*) $(call fake_libs,$*)
 
 fakecores: $(FAKECORES)
+
+# The loader's test image (tests/peprobe/peprobe.c), one per width, and the
+# DLL it imports from, which it is linked against directly.
+
+$(PROBE_DIR)/%/probe_dep.dll: tests/peprobe/peprobe.c
+	@mkdir -p $(@D)
+	$(call fake_cc,$*) $(FAKE_FLAGS) -DPROBE_DEP -o $@ $< \
+	   -Wl,--entry,$(call fake_entry,$*) -lgcc
+
+$(PROBE_DIR)/%/peprobe.dll: tests/peprobe/peprobe.c $(PROBE_DIR)/%/probe_dep.dll
+	$(call fake_cc,$*) $(FAKE_FLAGS) -o $@ $< $(@D)/probe_dep.dll \
+	   -Wl,--entry,$(call fake_entry,$*) -lgcc
+
+peprobes: $(PROBES)
 
 # Minimal plugin hosts for the tests, one per width.
 $(BUILD)/test/lv2_host64: tests/plugins/lv2_host.c
@@ -393,4 +423,5 @@ clean:
 	rm -rf $(BUILD)
 
 .PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones tones32 windows windows32 clean \
-        test test-unit test-unit-win test-cli test-fake test-core test-perf fakecores plugin-hosts
+        test test-unit test-unit-win test-cli test-fake test-core test-perf fakecores plugin-hosts \
+        peprobes

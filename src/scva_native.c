@@ -10,6 +10,7 @@
  */
 #define _GNU_SOURCE
 #include "pe_loader.h"
+#include "scva_runtime.h"
 #include "midi_song.h"
 #include "core_path.h"
 #ifdef SCVA_HAVE_PCM
@@ -179,7 +180,7 @@ int main(int argc, char **argv)
   }
 
   core = scva_core_path(core);
-  img = pe_load(core, err, sizeof err);
+  img = scva_core_map(core, err, sizeof err);
   if (!img) { fprintf(stderr, "pe_load(%s): %s\n", core, err); return 1; }
   if ((missing = scva_core_bind(&a, scva_core_lookup_pe, img, SCVA_CORE_ALL))) {
     fprintf(stderr, "missing %s\n", missing);
@@ -194,7 +195,7 @@ int main(int argc, char **argv)
     /* Two-port performance. The core is a fixed 16-part machine, so port B
        needs an engine of its own; the loader maps a second copy of the image
        with its own globals. */
-    struct pe_image *img2 = pe_load(core, err, sizeof err);
+    struct pe_image *img2 = scva_core_map(core, err, sizeof err);
     if (!img2) { fprintf(stderr, "pe_load(port B): %s\n", err); return 1; }
     if ((missing = scva_core_bind(&b, scva_core_lookup_pe, img2, SCVA_CORE_ALL))) {
       fprintf(stderr, "missing %s\n", missing);
