@@ -312,7 +312,19 @@ $(FAKE_DIR)/%/SCCore.dll: tests/fakecore/fakecore.c
 
 fakecores: $(FAKECORES)
 
-test-fake: $(FAKECORES)
+# Minimal plugin hosts for the tests, one per width.
+$(BUILD)/test/lv2_host64: tests/plugins/lv2_host.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -o $@ $< -ldl -lpthread -lm
+
+$(BUILD)/test/lv2_host32: tests/plugins/lv2_host.c
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -o $@ $< -ldl -lpthread -lm
+
+PLUGIN_HOSTS := $(BUILD)/test/lv2_host64 $(BUILD)/test/lv2_host32
+plugin-hosts: $(PLUGIN_HOSTS)
+
+test-fake: $(FAKECORES) $(PLUGIN_HOSTS)
 	@tests/fake/run.sh
 
 test: test-unit test-cli

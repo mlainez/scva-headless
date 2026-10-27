@@ -128,6 +128,34 @@ static void finish(void)
   sys_write(line, len);
 }
 
+/* ---- the thread block ---------------------------------------------------------
+   Code built by MSVC reads the thread's TEB: its self pointer, and the stack
+   bounds that stack probes compare against. On Windows every thread has one;
+   in a Linux host it exists only if the loader gave this thread one. Read it
+   the same way here, so a thread without one faults as it would with the
+   real core, and bounds that do not contain this stack are reported. */
+
+static void check_teb(void)
+{
+  void *self, *base, *limit;
+  char here;
+#if defined(__x86_64__)
+  __asm__ volatile("mov %%gs:0x30, %0" : "=r"(self));
+  __asm__ volatile("mov %%gs:0x08, %0" : "=r"(base));
+  __asm__ volatile("mov %%gs:0x10, %0" : "=r"(limit));
+#else
+  __asm__ volatile("mov %%fs:0x18, %0" : "=r"(self));
+  __asm__ volatile("mov %%fs:0x04, %0" : "=r"(base));
+  __asm__ volatile("mov %%fs:0x08, %0" : "=r"(limit));
+#endif
+  if (!self || (char *)&here >= (char *)base || (char *)&here < (char *)limit) {
+    len = 0;
+    put_str("BADTEB\n");
+    sys_write(line, len);
+    sys_exit(99);
+  }
+}
+
 /* ---- the engine's exports ------------------------------------------------- */
 
 static unsigned frames;                 /* this instance's output position */
@@ -182,6 +210,7 @@ EXPORT void TG_terminate(void)
 
 EXPORT void TG_ShortMidiIn(unsigned int msg, int when)
 {
+  check_teb();
   begin("TG_ShortMidiIn"); put_str(" ");
   put_hex(msg & 0xff, 2); put_str(" "); put_hex((msg >> 8) & 0xff, 2); put_str(" ");
   put_hex((msg >> 16) & 0xff, 2);
@@ -191,6 +220,7 @@ EXPORT void TG_ShortMidiIn(unsigned int msg, int when)
 EXPORT void TG_LongMidiIn(const unsigned char *msg, int when)
 {
   int i;
+  check_teb();
   begin("TG_LongMidiIn");
   for (i = 0; i < 1000; ++i) {
     put_str(" "); put_hex(msg[i], 2);
@@ -210,6 +240,7 @@ static void flush_process(void)
 EXPORT void TG_Process(float *left, float *right, int n)
 {
   int i;
+  check_teb();
   for (i = 0; i < n; ++i) {
     float v = (float)((frames + (unsigned)i) % 64u) / 256.0f;
     left[i] = v;
