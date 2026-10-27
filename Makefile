@@ -246,7 +246,55 @@ $(BUILD)/scva-render32.exe: src/scva_render.c src/pe_loader.c src/pe_loader.h \
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_render.c \
 	   src/pe_loader.c -lwinmm
 
+# ---- tests ---------------------------------------------------------------
+# make test-unit   module tests, built and run in both widths; no core needed
+# make test-cli    every built binary's command line, up to the point where a
+#                  core would be needed. Binaries not built are reported as
+#                  skipped, or fail the run with SCVA_TEST_STRICT=1 (CI).
+# make test        both
+# tests/checkpoint.sh runs every tier this machine can run and prints a table.
+
+UNIT_TESTS := $(patsubst tests/unit/%.c,%,$(wildcard tests/unit/test_*.c))
+UNIT64     := $(addprefix $(BUILD)/test/unit64/,$(UNIT_TESTS))
+UNIT32     := $(addprefix $(BUILD)/test/unit32/,$(UNIT_TESTS))
+UNIT_DEPS  := tests/unit/check.h $(wildcard src/*.h) src/scva_lists.c
+
+$(BUILD)/test/unit64/%: tests/unit/%.c $(UNIT_DEPS)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -Isrc -o $@ $< src/scva_lists.c -lm
+
+$(BUILD)/test/unit32/%: tests/unit/%.c $(UNIT_DEPS)
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -Isrc -o $@ $< src/scva_lists.c -lm
+
+test-unit: $(UNIT64) $(UNIT32)
+	@tests/run-unit.sh $^
+
+# The modules the Windows binaries compile in, built with the same toolchains
+# and flags, run under wine: msvcrt is not glibc (its qsort is not stable, for
+# one), and the Windows renderers depend on these behaviours too.
+UNIT_WIN      := test_map test_midi_song
+UNIT_WIN64    := $(addprefix $(BUILD)/test/win64/,$(addsuffix .exe,$(UNIT_WIN)))
+UNIT_WIN32    := $(addprefix $(BUILD)/test/win32/,$(addsuffix .exe,$(UNIT_WIN)))
+
+$(BUILD)/test/win64/%.exe: tests/unit/%.c $(UNIT_DEPS)
+	@mkdir -p $(@D)
+	$(MINGW) $(WINFLAGS) -Isrc -o $@ $<
+
+$(BUILD)/test/win32/%.exe: tests/unit/%.c $(UNIT_DEPS)
+	@mkdir -p $(@D)
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -Isrc -o $@ $<
+
+test-unit-win: $(UNIT_WIN64) $(UNIT_WIN32)
+	@SCVA_TEST_RUNNER=wine tests/run-unit.sh $^
+
+test-cli:
+	@tests/cli/run.sh
+
+test: test-unit test-cli
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones tones32 windows windows32 clean
+.PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones tones32 windows windows32 clean \
+        test test-unit test-unit-win test-cli
