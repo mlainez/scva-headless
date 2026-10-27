@@ -25,13 +25,12 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <poll.h>
-#include <sched.h>
-#include <sys/mman.h>
 #include "pe_loader.h"
 #include "core_path.h"
 #include "scva_map.h"
 #include "map_policy.h"
 #include "console.h"
+#include "rt_priority.h"
 #include "scva_pcm.h"
 #include "scva_core.h"
 
@@ -294,17 +293,9 @@ int main(int argc, char **argv)
   signal(SIGTERM, on_signal);
   signal(SIGPIPE, SIG_IGN);          /* a client that hangs up mid-reply */
 
-  /* Both of these are best-effort and silent when refused. A page fault or a
-     scheduler delay in the middle of a block is heard as a dropout, and an
-     ordinary desktop grants neither by default. */
-  mlockall(MCL_CURRENT | MCL_FUTURE);
   {
-    struct sched_param sp;
-    memset(&sp, 0, sizeof sp);
-    sp.sched_priority = sched_get_priority_min(SCHED_FIFO) + 5;
-    if (sched_setscheduler(0, SCHED_FIFO, &sp) == 0)
-      fprintf(stderr, "scva-daemon: realtime priority %d\n",
-              sp.sched_priority);
+    int prio = rt_priority_raise();
+    if (prio) fprintf(stderr, "scva-daemon: realtime priority %d\n", prio);
   }
 
   snd_midi_event_new(1024, &coder);

@@ -38,6 +38,7 @@
 #include "map_policy.h"
 #include "console.h"
 #include "live_sched.h"
+#include "rt_priority.h"
 #include "core_path.h"
 #if defined(__i386__)
 /* The 32-bit core imports MSVCR100 and declares a subsystem newer than
@@ -410,10 +411,7 @@ int main(int argc, char **argv)
     hdr[b].dwFlags |= WHDR_DONE;          /* all free to begin with */
   }
 
-  /* Under a busy-waiting program such as a DOS game in NTVDM, a
-     normal-priority loop misses its turn and the device runs dry. */
-  SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+  rt_priority_raise();
 
   printf("scva-winmidi[%s]: playing. Type a map (" SCVA_MAP_USAGE "), <enter>\n"
          "to show it, q or Ctrl+C to stop.\n", name);

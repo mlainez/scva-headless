@@ -213,16 +213,16 @@ $(LV2_BUNDLE32)/scva.so: src/scva_lv2.c $(ENGINE32) lv2/manifest.ttl lv2/scva.tt
 	      -lpthread -lm
 	@cp lv2/manifest.ttl lv2/scva.ttl $(LV2_BUNDLE32)/
 
-$(BUILD)/scva-daemon: src/scva_daemon.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
+$(BUILD)/scva-daemon: src/scva_daemon.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/rt_priority.c src/rt_priority.h src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
                       src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h src/scva_pcm.h | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ src/scva_daemon.c src/map_policy.c src/console.c src/pe_loader.c \
+	$(CC) $(CFLAGS) -o $@ src/scva_daemon.c src/map_policy.c src/console.c src/rt_priority.c src/pe_loader.c \
 	      $(ALSA) -lpthread -lm
 
-$(BUILD)/scva-daemon32: src/scva_daemon.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
+$(BUILD)/scva-daemon32: src/scva_daemon.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/rt_priority.c src/rt_priority.h src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
                         src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h src/scva_pcm.h | $(BUILD)
-	$(CC) -m32 $(CFLAGS) -o $@ src/scva_daemon.c src/map_policy.c src/console.c src/pe_loader.c \
+	$(CC) -m32 $(CFLAGS) -o $@ src/scva_daemon.c src/map_policy.c src/console.c src/rt_priority.c src/pe_loader.c \
 	      $(ALSA32) -lpthread -lm
 
 $(BUILD)/scva-tones32: src/scva_tones.c src/scva_names.h | $(BUILD)
@@ -231,15 +231,15 @@ $(BUILD)/scva-tones32: src/scva_tones.c src/scva_names.h | $(BUILD)
 $(BUILD)/scva-render.exe: src/scva_render.c src/map_policy.c src/map_policy.h src/render_loop.c src/render_loop.h src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h | $(BUILD)
 	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_render.c src/map_policy.c src/render_loop.c -lwinmm
 
-$(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/live_sched.c src/live_sched.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h \
+$(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/rt_priority.c src/rt_priority.h src/live_sched.c src/live_sched.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h \
                            | $(BUILD)
-	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/console.c src/live_sched.c -lwinmm
+	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/console.c src/rt_priority.c src/live_sched.c -lwinmm
 
-$(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/live_sched.c src/live_sched.h src/pe_loader.c src/pe_loader.h \
+$(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/rt_priority.c src/rt_priority.h src/live_sched.c src/live_sched.h src/pe_loader.c src/pe_loader.h \
                              src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h src/win9x.h src/sse3_shim.h \
                              src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
                              | $(BUILD)
-	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/console.c src/live_sched.c \
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/console.c src/rt_priority.c src/live_sched.c \
 	   src/pe_loader.c -lwinmm
 
 # ---- the 32-bit Windows path --------------------------------------------
