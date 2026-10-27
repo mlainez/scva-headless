@@ -1,0 +1,4 @@
+# user-space instructions retired, baseline
+scva-render 88p_base.mid 10732176359
+scva-render 88p_lofi.mid 10609242026
+scva.lv2 20 s in 512-frame runs 1506360834

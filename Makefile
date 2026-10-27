@@ -349,10 +349,19 @@ test-fake: $(FAKECORES) $(PLUGIN_HOSTS)
 test-core:
 	@tests/core/run.sh
 
+$(BUILD)/test/icount: tests/perf/icount.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -o $@ $<
+
+# Instructions retired, against a baseline per core and CPU; same variables.
+test-perf: $(BUILD)/test/icount $(BUILD)/test/lv2_host64
+	@midi=$$(mktemp -d) && python3 tests/midi/gen.py $$midi && \
+	 SCVA_TEST_MIDI=$$midi python3 tests/perf/run.py $(PERF_ARGS)
+
 test: test-unit test-cli
 
 clean:
 	rm -rf $(BUILD)
 
 .PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones tones32 windows windows32 clean \
-        test test-unit test-unit-win test-cli test-fake test-core fakecores plugin-hosts
+        test test-unit test-unit-win test-cli test-fake test-core test-perf fakecores plugin-hosts

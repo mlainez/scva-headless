@@ -67,7 +67,11 @@ if [ -n "${SCVA_TEST_DLL_DIR:-}" ] && [ -f "$SCVA_TEST_DLL_DIR/SCCore.dll" ]; th
 else
   skip core "real-core golden renders (set SCVA_TEST_DLL_DIR)"
 fi
-skip perf "instruction-count budget (Phase 0.6, not yet written)"
+if [ -n "${SCVA_TEST_DLL_DIR:-}" ] && [ -f "$SCVA_TEST_DLL_DIR/SCCore.dll" ]; then
+  tier perf "instructions retired within 0.25% of the baseline" make test-perf
+else
+  skip perf "instruction-count budget (set SCVA_TEST_DLL_DIR)"
+fi
 
 echo
 echo "checkpoint at $(git rev-parse --short HEAD 2>/dev/null || echo '?')$(git diff --quiet 2>/dev/null || echo ' + uncommitted changes')"
