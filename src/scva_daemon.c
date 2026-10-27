@@ -31,6 +31,7 @@
 #include "core_path.h"
 #include "scva_map.h"
 #include "map_policy.h"
+#include "console.h"
 #include "scva_pcm.h"
 #include "scva_core.h"
 
@@ -105,38 +106,20 @@ static int control_send(const char *path, const char *text)
   return 0;
 }
 
-/* One typed line. Returns 1 when it asked to stop. */
+static void print_fd(void *fd, const char *text)
+{
+  dprintf(*(int *)fd, "%s", text);
+}
+
+/* One typed line, replied to on out. Returns 1 when it asked to stop. */
 static int console_command(char *line, struct map_policy *maps, int out)
 {
-  int ch, want, off = 0;
-  size_t n = strlen(line);
-
-  while (n > 0 && (line[n - 1] == '\r' || line[n - 1] == ' ')) line[--n] = '\0';
-  if (!line[0]) {
-    dprintf(out, "map:");
-    for (ch = 0; ch < 16; ++ch) dprintf(out, " %d", map_policy_map(maps, ch));
-    dprintf(out, "\n");
-    return 0;
-  }
-  if (!strcmp(line, "q") || !strcmp(line, "quit")) return 1;
-
-  /* "<channel> <map>" sets one part, a bare map name sets all of them. */
-  if (sscanf(line, "%d %n", &ch, &off) == 1 && off > 0 && line[off] &&
-      ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
-    map_policy_set(maps, ch - 1, want);
-    dprintf(out, "channel %d -> map %d\n", ch, want);
-    return 0;
-  }
-  if ((want = scva_map_value(line)) >= 0) {
-    map_policy_set(maps, -1, want);
-    dprintf(out, "all parts -> map %d\n", want);
-    return 0;
-  }
-  dprintf(out, "type a map (" SCVA_MAP_USAGE "), or\n"
-                  "  <channel 1-16> <map>   one part only\n"
-                  "  <enter>                what each part is set to\n"
-                  "  q                      stop\n");
-  return 0;
+  struct console c;
+  c.maps = maps;
+  c.trim = "\r ";               /* a socket client may send CRLF */
+  c.print = print_fd;
+  c.ctx = &out;
+  return console_line(&c, line);
 }
 
 int main(int argc, char **argv)

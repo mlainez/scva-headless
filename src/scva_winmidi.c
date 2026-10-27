@@ -36,6 +36,7 @@
 #include <string.h>
 #include "scva_map.h"
 #include "map_policy.h"
+#include "console.h"
 #include "core_path.h"
 #if defined(__i386__)
 /* The 32-bit core imports MSVCR100 and declares a subsystem newer than
@@ -207,40 +208,22 @@ static int find_input(const char *want)
   return -1;
 }
 
-/* One typed line. Mirrors scva-daemon's console_command exactly - same
-   commands, same wording - so switching platforms costs nothing. Returns 1
-   when it asked to stop. */
+static void print_stdout(void *ctx, const char *text)
+{
+  (void)ctx;
+  fputs(text, stdout);
+}
+
+/* One typed line, on scva-daemon's console (console.h). Returns 1 when it
+   asked to stop. */
 static int console_command(char *line, struct map_policy *maps)
 {
-  int ch, want, off = 0;
-  size_t n = strlen(line);
-
-  while (n > 0 && line[n - 1] == ' ') line[--n] = '\0';
-  if (!line[0]) {
-    printf("map:");
-    for (ch = 0; ch < 16; ++ch) printf(" %d", map_policy_map(maps, ch));
-    printf("\n");
-    return 0;
-  }
-  if (!strcmp(line, "q") || !strcmp(line, "quit")) return 1;
-
-  /* "<channel> <map>" sets one part, a bare map name sets all of them. */
-  if (sscanf(line, "%d %n", &ch, &off) == 1 && off > 0 && line[off] &&
-      ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
-    map_policy_set(maps, ch - 1, want);
-    printf("channel %d -> map %d\n", ch, want);
-    return 0;
-  }
-  if ((want = scva_map_value(line)) >= 0) {
-    map_policy_set(maps, -1, want);
-    printf("all parts -> map %d\n", want);
-    return 0;
-  }
-  printf("type a map (" SCVA_MAP_USAGE "), or\n"
-         "  <channel 1-16> <map>   one part only\n"
-         "  <enter>                what each part is set to\n"
-         "  q                      stop\n");
-  return 0;
+  struct console c;
+  c.maps = maps;
+  c.trim = " ";
+  c.print = print_stdout;
+  c.ctx = NULL;
+  return console_line(&c, line);
 }
 
 /* _kbhit()/_getch() rather than ReadFile/ReadConsole on the standard input
