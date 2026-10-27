@@ -80,6 +80,12 @@ jobs:
       - name: Command-line and artifact behaviour of every binary
         run: SCVA_TEST_STRICT=1 make test-cli
 
+      # The tools against a stand-in core built here: what they ask of the
+      # engine, and what they write. The daemon's part needs an ALSA
+      # sequencer, which runners lack, so it reports itself skipped.
+      - name: Engine-level behaviour against the fake core
+        run: SCVA_TEST_STRICT=1 make test-fake
+
       - name: Smoke-test the Linux binaries
         run: |
           # No SCCore.dll here (Roland's, never redistributed), so this only

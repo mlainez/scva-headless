@@ -56,7 +56,12 @@ else
   tier cli "command lines and artifacts (no wine: Windows parts skipped)" make test-cli
 fi
 
-skip fake "fake-core engine traces (Phase 0.4, not yet written)"
+if have wine && have python3; then
+  tier fake "every tool against the fake core (daemon needs /dev/snd/seq)" \
+    env SCVA_TEST_STRICT=1 make test-fake
+else
+  skip fake "fake-core engine tests (need wine and python3)"
+fi
 skip core "real-core golden renders (Phase 0.5, not yet written)"
 skip perf "instruction-count budget (Phase 0.6, not yet written)"
 

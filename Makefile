@@ -291,10 +291,34 @@ test-unit-win: $(UNIT_WIN64) $(UNIT_WIN32)
 test-cli:
 	@tests/cli/run.sh
 
+# The fake core (tests/fakecore/fakecore.c), in the four forms the binaries
+# load: no imports for this project's PE loader on Linux, kernel32 for
+# LoadLibrary and the loader on Windows. Each also comes as "-noexport",
+# lacking one export, for the tools' missing-export path.
+FAKE_DIR      := $(BUILD)/test/fakecore
+FAKE_VARIANTS := linux64 linux32 win64 win32
+FAKECORES     := $(foreach v,$(FAKE_VARIANTS),$(FAKE_DIR)/$(v)/SCCore.dll \
+                                              $(FAKE_DIR)/$(v)-noexport/SCCore.dll)
+FAKE_FLAGS    := -O2 -Wall -shared -nostdlib -ffreestanding -fno-builtin
+fake_cc        = $(if $(findstring 32,$1),$(MINGW32),$(MINGW))
+fake_entry     = $(if $(findstring 32,$1),_DllMain@12,DllMain)
+fake_defs      = $(if $(findstring linux,$1),-DFAKE_LINUX) $(if $(findstring noexport,$1),-DFAKE_NO_VOICES)
+fake_libs      = $(if $(findstring win,$1),-lkernel32) -lgcc
+
+$(FAKE_DIR)/%/SCCore.dll: tests/fakecore/fakecore.c
+	@mkdir -p $(@D)
+	$(call fake_cc,$*) $(FAKE_FLAGS) $(call fake_defs,$*) -o $@ $< \
+	   -Wl,--entry,$(call fake_entry,$*) $(call fake_libs,$*)
+
+fakecores: $(FAKECORES)
+
+test-fake: $(FAKECORES)
+	@tests/fake/run.sh
+
 test: test-unit test-cli
 
 clean:
 	rm -rf $(BUILD)
 
 .PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones tones32 windows windows32 clean \
-        test test-unit test-unit-win test-cli
+        test test-unit test-unit-win test-cli test-fake fakecores
