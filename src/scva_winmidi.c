@@ -47,24 +47,9 @@
 #include "sse3_shim.h"
 #endif
 
-#define SCVA_CC __cdecl
-typedef SCVA_CC int  (*tg_initialize_fn)(int);
-typedef SCVA_CC void (*tg_set_sample_rate_fn)(float);
-typedef SCVA_CC void (*tg_set_max_block_fn)(int);
-typedef SCVA_CC int  (*tg_activate_fn)(float, int);
-typedef SCVA_CC void (*tg_deactivate_fn)(void);
-typedef SCVA_CC void (*tg_short_midi_fn)(unsigned int, int);
-typedef SCVA_CC void (*tg_long_midi_fn)(const unsigned char *, int);
-typedef SCVA_CC void (*tg_process_fn)(float *, float *, int);
-struct tg_system_config { int a, b; };
-typedef SCVA_CC int (*tg_set_config_fn)(const struct tg_system_config *);
+#include "scva_core_api.h"
 
-static tg_set_sample_rate_fn set_rate;
-static tg_activate_fn tg_activate;
-static tg_deactivate_fn tg_deactivate;
-static tg_short_midi_fn short_midi;
-static tg_long_midi_fn long_midi;
-static tg_process_fn process_fn;
+static struct scva_core_api engine;
 
 /* The MIDI callback runs on its own thread, so messages are queued rather
    than pushed into the engine from under it. */
@@ -247,16 +232,16 @@ static int console_command(char *line, unsigned char *map_of,
   if (sscanf(line, "%d %n", &ch, &off) == 1 && off > 0 && line[off] &&
       ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
     map_of[ch - 1] = (unsigned char)want;
-    short_midi(scva_map_cc(ch - 1, want), 0);
-    short_midi(scva_map_pc(ch - 1, last_pc[ch - 1]), 0);
+    engine.short_midi(scva_map_cc(ch - 1, want), 0);
+    engine.short_midi(scva_map_pc(ch - 1, last_pc[ch - 1]), 0);
     printf("channel %d -> map %d\n", ch, want);
     return 0;
   }
   if ((want = scva_map_value(line)) >= 0) {
     for (ch = 0; ch < 16; ++ch) {
       map_of[ch] = (unsigned char)want;
-      short_midi(scva_map_cc(ch, want), 0);
-      short_midi(scva_map_pc(ch, last_pc[ch]), 0);
+      engine.short_midi(scva_map_cc(ch, want), 0);
+      engine.short_midi(scva_map_pc(ch, last_pc[ch]), 0);
     }
     printf("all parts -> map %d\n", want);
     return 0;
@@ -313,11 +298,12 @@ int main(int argc, char **argv)
 #ifdef SCVA_OWN_LOADER
   struct pe_image *lib;
   char peerr[256];
-#define SCVA_SYM(h, n) pe_symbol(h, n)
+  scva_core_lookup_fn lookup = scva_core_lookup_pe;
 #else
   HMODULE lib;
-#define SCVA_SYM(h, n) ((void *)GetProcAddress(h, n))
+  scva_core_lookup_fn lookup = scva_core_lookup_module;
 #endif
+  const char *missing;
   HMIDIIN hin = NULL;
   HWAVEOUT hout = NULL;
   HANDLE ev;
@@ -394,35 +380,24 @@ int main(int argc, char **argv)
     }
 #endif
   }
-#define GET(v, t, n) v = (t)SCVA_SYM(lib, n); \
-  if (!v) { fprintf(stderr, "scva-winmidi: the core has no %s\n", n); return 1; }
+  if ((missing = scva_core_bind(&engine, lookup, (void *)lib, SCVA_CORE_LIVE))) {
+    fprintf(stderr, "scva-winmidi: the core has no %s\n", missing);
+    return 1;
+  }
   {
-    tg_initialize_fn initialize;
-    tg_set_max_block_fn set_block;
-    tg_set_config_fn set_config;
-    GET(initialize, tg_initialize_fn, "TG_initialize")
-    GET(set_block, tg_set_max_block_fn, "TG_setMaxBlockSize")
-    GET(set_config, tg_set_config_fn, "TG_XPsetSystemConfig")
-    GET(set_rate, tg_set_sample_rate_fn, "TG_setSampleRate")
-    GET(tg_activate, tg_activate_fn, "TG_activate")
-    GET(tg_deactivate, tg_deactivate_fn, "TG_deactivate")
-    GET(short_midi, tg_short_midi_fn, "TG_ShortMidiIn")
-    GET(long_midi, tg_long_midi_fn, "TG_LongMidiIn")
-    GET(process_fn, tg_process_fn, "TG_Process")
     /* The rate is set on both sides of the block size and again immediately
        before activate; otherwise the core emits Inf and NaN silently. */
-    initialize(0);
-    set_rate((float)rate);
-    set_block(block);
-    { struct tg_system_config c; c.a = 1; c.b = 1; set_config(&c); }
-    set_rate((float)rate);
-    tg_activate((float)rate, block);
+    engine.initialize(0);
+    engine.set_sample_rate((float)rate);
+    engine.set_max_block(block);
+    { struct tg_system_config c; c.a = 1; c.b = 1; engine.set_config(&c); }
+    engine.set_sample_rate((float)rate);
+    engine.activate((float)rate, block);
   }
-#undef GET
   {
     static const unsigned char gs_reset[] = {
       0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
-    long_midi(gs_reset, 0);
+    engine.long_midi(gs_reset, 0);
   }
 
   /* ---- MIDI in ---- */
@@ -528,7 +503,7 @@ int main(int argc, char **argv)
       while (queue_get_due(&m, rendered, origin, (double)rate,
                            (unsigned)latency_ms, (uint64_t)nbuf * block)) {
         if (m.b[0] == 0xf0) {
-          long_midi(m.b, 0);
+          engine.long_midi(m.b, 0);
         } else {
           unsigned char st = m.b[0] & 0xf0, ch = m.b[0] & 0x0f;
           unsigned int msg;
@@ -541,15 +516,15 @@ int main(int argc, char **argv)
              file's own bank-select traffic cannot fight it. */
           if (st == 0xc0) {
             last_pc[ch] = m.b[1];
-            short_midi(scva_map_cc(ch, map_of[ch]), 0);
+            engine.short_midi(scva_map_cc(ch, map_of[ch]), 0);
           }
           msg = m.b[0];
           if (m.len > 1) msg |= (unsigned int)m.b[1] << 8;
           if (m.len > 2) msg |= (unsigned int)m.b[2] << 16;
-          short_midi(msg, 0);
+          engine.short_midi(msg, 0);
         }
       }
-      process_fn(left, right, block);
+      engine.process(left, right, block);
       for (k = 0; k < block; ++k) {
         float l = left[k], r = right[k];
         if (l > 1.0f) l = 1.0f; else if (l < -1.0f) l = -1.0f;
@@ -565,6 +540,6 @@ int main(int argc, char **argv)
   }
   printf("scva-winmidi[%s]: stopping\n", name);
   timeEndPeriod(1);
-  tg_deactivate();
+  engine.deactivate();
   return 0;
 }

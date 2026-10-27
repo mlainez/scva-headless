@@ -31,17 +31,8 @@
 #include "core_path.h"
 #include "scva_map.h"
 #include "scva_pcm.h"
+#include "scva_core_api.h"
 
-typedef MSABI int  (*tg_initialize_fn)(int);
-typedef MSABI void (*tg_set_sample_rate_fn)(float);
-typedef MSABI void (*tg_set_max_block_fn)(int);
-typedef MSABI int  (*tg_activate_fn)(float, int);
-typedef MSABI void (*tg_deactivate_fn)(void);
-typedef MSABI void (*tg_short_midi_fn)(unsigned int, int);
-typedef MSABI void (*tg_long_midi_fn)(const unsigned char *, int);
-typedef MSABI void (*tg_process_fn)(float *, float *, int);
-struct tg_system_config { int a, b; };
-typedef MSABI int (*tg_set_config_fn)(const struct tg_system_config *);
 
 static volatile sig_atomic_t stop_now;
 static void on_signal(int sig) { (void)sig; stop_now = 1; }
@@ -116,7 +107,7 @@ static int control_send(const char *path, const char *text)
 /* One typed line. Returns 1 when it asked to stop. */
 static int console_command(char *line, unsigned char *map_of,
                            const unsigned char *last_pc,
-                           tg_short_midi_fn short_midi, int out)
+                           scva_tg_short_midi_fn short_midi, int out)
 {
   int ch, want, off = 0;
   size_t n = strlen(line);
@@ -186,12 +177,8 @@ int main(int argc, char **argv)
                                         map changes */
 
   struct pe_image *img;
-  tg_set_sample_rate_fn set_rate;
-  tg_activate_fn tg_activate;
-  tg_deactivate_fn tg_deactivate;
-  tg_short_midi_fn short_midi;
-  tg_long_midi_fn long_midi;
-  tg_process_fn process;
+  struct scva_core_api engine;
+  const char *missing;
   char corebuf[4096], err[256];
 
   snd_seq_t *seq = NULL;
@@ -279,35 +266,24 @@ int main(int argc, char **argv)
             err, corebuf);
     return 1;
   }
-#define GET(v, t, n) v = (t)pe_symbol(img, n); \
-  if (!v) { fprintf(stderr, "scva-daemon: the core has no %s\n", n); return 1; }
+  if ((missing = scva_core_bind(&engine, scva_core_lookup_pe, img, SCVA_CORE_LIVE))) {
+    fprintf(stderr, "scva-daemon: the core has no %s\n", missing);
+    return 1;
+  }
   {
-    tg_initialize_fn initialize;
-    tg_set_max_block_fn set_block;
-    tg_set_config_fn set_config;
-    GET(initialize, tg_initialize_fn, "TG_initialize")
-    GET(set_block, tg_set_max_block_fn, "TG_setMaxBlockSize")
-    GET(set_config, tg_set_config_fn, "TG_XPsetSystemConfig")
-    GET(set_rate, tg_set_sample_rate_fn, "TG_setSampleRate")
-    GET(tg_activate, tg_activate_fn, "TG_activate")
-    GET(tg_deactivate, tg_deactivate_fn, "TG_deactivate")
-    GET(short_midi, tg_short_midi_fn, "TG_ShortMidiIn")
-    GET(long_midi, tg_long_midi_fn, "TG_LongMidiIn")
-    GET(process, tg_process_fn, "TG_Process")
     /* The rate is set on both sides of the block size and again immediately
        before activate; otherwise the core emits Inf and NaN silently. */
-    initialize(0);
-    set_rate((float)rate);
-    set_block(block);
-    { struct tg_system_config c; c.a = 1; c.b = 1; set_config(&c); }
-    set_rate((float)rate);
-    tg_activate((float)rate, block);
+    engine.initialize(0);
+    engine.set_sample_rate((float)rate);
+    engine.set_max_block(block);
+    { struct tg_system_config c; c.a = 1; c.b = 1; engine.set_config(&c); }
+    engine.set_sample_rate((float)rate);
+    engine.activate((float)rate, block);
   }
-#undef GET
   {
     static const unsigned char gs_reset[] = {
       0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
-    long_midi(gs_reset, 0);
+    engine.long_midi(gs_reset, 0);
   }
 
   /* --- the ALSA sequencer port ------------------------------------------ */
@@ -434,7 +410,7 @@ int main(int argc, char **argv)
         buf[n] = '\0';
         while ((nl = strchr(p, '\n')) != NULL) {
           *nl = '\0';
-          if (console_command(p, map_of, last_pc, short_midi, STDERR_FILENO))
+          if (console_command(p, map_of, last_pc, engine.short_midi, STDERR_FILENO))
             stop_now = 1;
           p = nl + 1;
         }
@@ -452,7 +428,7 @@ int main(int argc, char **argv)
           if (!strchr(buf, '\n')) strcat(buf, "\n");
           while ((nl = strchr(p, '\n')) != NULL) {
             *nl = '\0';
-            if (console_command(p, map_of, last_pc, short_midi, c)) stop_now = 1;
+            if (console_command(p, map_of, last_pc, engine.short_midi, c)) stop_now = 1;
             p = nl + 1;
           }
         }
@@ -469,7 +445,7 @@ int main(int argc, char **argv)
         long n = snd_midi_event_decode(coder, mbuf, sizeof mbuf, ev);
         if (n > 0) {
           if (mbuf[0] == 0xF0) {
-            long_midi(mbuf, 0);
+            engine.long_midi(mbuf, 0);
           } else {
             unsigned char st = mbuf[0] & 0xf0, ch = mbuf[0] & 0x0f;
             unsigned int msg;
@@ -482,12 +458,12 @@ int main(int argc, char **argv)
                change, so a file's own bank-select traffic cannot fight it. */
             if (st == 0xC0) {
               last_pc[ch] = mbuf[1];
-              short_midi(scva_map_cc(ch, map_of[ch]), 0);
+              engine.short_midi(scva_map_cc(ch, map_of[ch]), 0);
             }
             msg = mbuf[0];
             if (n > 1) msg |= (unsigned int)mbuf[1] << 8;
             if (n > 2) msg |= (unsigned int)mbuf[2] << 16;
-            short_midi(msg, 0);
+            engine.short_midi(msg, 0);
           }
         }
         snd_seq_free_event(ev);
@@ -497,7 +473,7 @@ int main(int argc, char **argv)
     if (revents & (POLLOUT | POLLERR)) {
       snd_pcm_sframes_t w;
       int k;
-      process(left, right, block);
+      engine.process(left, right, block);
       for (k = 0; k < block; ++k) {
         inter[2 * k]     = left[k];
         inter[2 * k + 1] = right[k];
@@ -522,7 +498,7 @@ done:
   if (coder) snd_midi_event_free(coder);
   if (ctl_fd >= 0) { close(ctl_fd); unlink(ctl_path); }
   /* Deactivate, never terminate: TG_terminate calls exit(). */
-  tg_deactivate();
+  engine.deactivate();
   pe_unload(img);
   if (pcm) snd_pcm_close(pcm);
   if (seq) snd_seq_close(seq);

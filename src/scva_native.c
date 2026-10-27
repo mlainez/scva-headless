@@ -19,44 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-/* The image is Microsoft x86-64, so every pointer into it is MSABI and the
-   compiler emits the shuffling and the shadow space. */
-typedef MSABI int (*tg_initialize_fn)(int);
-typedef MSABI void (*tg_set_sample_rate_fn)(float);
-typedef MSABI void (*tg_set_max_block_fn)(int);
-/* rate in XMM0; second argument is the max block size */
-typedef MSABI int (*tg_activate_fn)(float, int);
-typedef MSABI void (*tg_deactivate_fn)(void);
-typedef MSABI void (*tg_terminate_fn)(void);
-/* second argument is a timestamp in samples */
-typedef MSABI void (*tg_short_midi_fn)(unsigned int, int);
-/* F7-terminated, so the second argument is a timestamp too */
-typedef MSABI void (*tg_long_midi_fn)(const unsigned char *, int);
-typedef MSABI void (*tg_process_fn)(float *, float *, int);
-typedef MSABI int (*tg_running_voices_fn)(void);
-typedef MSABI int (*tg_is_fatal_fn)(void);
-typedef MSABI const char *(*tg_error_strings_fn)(int);
-struct tg_system_config { int a, b; };
-typedef MSABI int (*tg_set_config_fn)(const struct tg_system_config *);
-typedef MSABI void (*tg_get_config_fn)(struct tg_system_config *);
-
-struct api {
-  tg_initialize_fn initialize;
-  tg_set_sample_rate_fn set_sample_rate;
-  tg_set_max_block_fn set_max_block;
-  tg_activate_fn activate;
-  tg_deactivate_fn deactivate;
-  tg_terminate_fn terminate;
-  tg_short_midi_fn short_midi;
-  tg_long_midi_fn long_midi;
-  tg_process_fn process;
-  tg_running_voices_fn voices;
-  tg_is_fatal_fn fatal;
-  tg_set_config_fn set_config;
-  tg_get_config_fn get_config;
-  tg_error_strings_fn errors;
-};
+#include "scva_core_api.h"
 
 #define BLOCK 256
 
@@ -87,7 +50,8 @@ int main(int argc, char **argv)
   static const unsigned char gm_reset[] = { 0xf0, 0x7e, 0x7f, 0x09, 0x01, 0xf7 };
   struct pe_image *img;
   char err[256];
-  struct api a, b;
+  const char *missing;
+  struct scva_core_api a, b;
   int have_b = 0;
   struct song s;
   unsigned char *bytes;
@@ -173,24 +137,10 @@ int main(int argc, char **argv)
   core = scva_core_path(core);
   img = pe_load(core, err, sizeof err);
   if (!img) { fprintf(stderr, "pe_load(%s): %s\n", core, err); return 1; }
-#define GET(field, name) \
-  a.field = (void *)pe_symbol(img, name); \
-  if (!a.field) { fprintf(stderr, "missing %s\n", name); return 1; }
-  GET(initialize, "TG_initialize")
-  GET(set_sample_rate, "TG_setSampleRate")
-  GET(set_max_block, "TG_setMaxBlockSize")
-  GET(activate, "TG_activate")
-  GET(deactivate, "TG_deactivate")
-  GET(terminate, "TG_terminate")
-  GET(short_midi, "TG_ShortMidiIn")
-  GET(long_midi, "TG_LongMidiIn")
-  GET(process, "TG_Process")
-  GET(voices, "TG_XPgetCurTotalRunningVoices")
-  GET(fatal, "TG_isFatalError")
-  GET(set_config, "TG_XPsetSystemConfig")
-  GET(get_config, "TG_XPgetCurSystemConfig")
-  GET(errors, "TG_getErrorStrings")
-#undef GET
+  if ((missing = scva_core_bind(&a, scva_core_lookup_pe, img, SCVA_CORE_ALL))) {
+    fprintf(stderr, "missing %s\n", missing);
+    return 1;
+  }
 
   bytes = slurp(midi, &n);
   if (!bytes || !parse(&s, bytes, n)) { fprintf(stderr, "not a MIDI file this can play\n"); return 1; }
@@ -209,24 +159,10 @@ int main(int argc, char **argv)
        with its own globals. */
     struct pe_image *img2 = pe_load(core, err, sizeof err);
     if (!img2) { fprintf(stderr, "pe_load(port B): %s\n", err); return 1; }
-#define GETB(field, name) \
-    b.field = (void *)pe_symbol(img2, name); \
-    if (!b.field) { fprintf(stderr, "missing %s\n", name); return 1; }
-    GETB(initialize, "TG_initialize")
-    GETB(set_sample_rate, "TG_setSampleRate")
-    GETB(set_max_block, "TG_setMaxBlockSize")
-    GETB(activate, "TG_activate")
-    GETB(deactivate, "TG_deactivate")
-    GETB(terminate, "TG_terminate")
-    GETB(short_midi, "TG_ShortMidiIn")
-    GETB(long_midi, "TG_LongMidiIn")
-    GETB(process, "TG_Process")
-    GETB(voices, "TG_XPgetCurTotalRunningVoices")
-    GETB(fatal, "TG_isFatalError")
-    GETB(set_config, "TG_XPsetSystemConfig")
-    GETB(get_config, "TG_XPgetCurSystemConfig")
-    GETB(errors, "TG_getErrorStrings")
-#undef GETB
+    if ((missing = scva_core_bind(&b, scva_core_lookup_pe, img2, SCVA_CORE_ALL))) {
+      fprintf(stderr, "missing %s\n", missing);
+      return 1;
+    }
     have_b = 1;
     if (nports > 2)
       fprintf(stderr, "this song names %d ports; the engine is a two-port "
@@ -343,7 +279,7 @@ int main(int argc, char **argv)
           ++sent;
         }
       } else {
-        struct api *E = (have_b && e->port) ? &b : &a;
+        struct scva_core_api *E = (have_b && e->port) ? &b : &a;
         unsigned int msg = (unsigned int)e->status |
           ((unsigned int)e->data1 << 8) | ((unsigned int)e->data2 << 16);
         /* a program change latches the map, so set CC32 on that part first */
