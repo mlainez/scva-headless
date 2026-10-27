@@ -7,6 +7,7 @@
 #ifndef SCVA_CORE_H
 #define SCVA_CORE_H
 #include <string.h>
+#include "midi_reset.h"
 #include "scva_core_api.h"
 
 /* How to bring one engine up. */
@@ -63,18 +64,13 @@ static inline void scva_core_start(const struct scva_core_api *api,
   }
 }
 
-/* GS Reset: every part back to its power-on GS state. */
 static inline void scva_core_gs_reset(const struct scva_core_api *api)
 {
-  static const unsigned char gs_reset[] = {
-    0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
-  api->long_midi(gs_reset, 0);
+  api->long_midi(midi_gs_reset(NULL), 0);
 }
 
-/* GM System On, the General MIDI equivalent. */
 static inline void scva_core_gm_reset(const struct scva_core_api *api)
 {
-  static const unsigned char gm_reset[] = { 0xf0, 0x7e, 0x7f, 0x09, 0x01, 0xf7 };
-  api->long_midi(gm_reset, 0);
+  api->long_midi(midi_gm_reset(NULL), 0);
 }
 #endif
