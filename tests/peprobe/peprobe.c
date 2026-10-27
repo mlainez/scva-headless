@@ -7,8 +7,8 @@
  *               imported: the tests bind that import to a function of their
  *               own and never load this one.
  *   (default)   peprobe.dll, which imports probe_hook from probe_dep.dll,
- *               marks when its entry point runs, and keeps an external and a
- *               file-static variable in its COFF symbol table.
+ *               marks when its entry point runs, and keeps external and
+ *               file-static variables in its COFF symbol table.
  */
 #include <windows.h>
 
@@ -21,6 +21,7 @@ __declspec(dllimport) int probe_hook(int x);
 
 static int entry_ran;
 int probe_external = 0x1234;
+int pshort = 0x77;          /* a name short enough to sit in the record */
 /* volatile, or it is folded into probe_read_static and has no symbol */
 static volatile int probe_static = 0x5678;
 

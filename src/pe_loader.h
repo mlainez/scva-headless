@@ -36,6 +36,9 @@ struct pe_image {
   uint64_t entry;           /* DllMain, image-relative */
   int tls_index;            /* slot this image was given, -1 if none */
   void *tls;                /* 32-bit Windows: its thread-local storage */
+  unsigned char *coff;      /* the file's COFF symbols then their strings */
+  size_t coff_size;
+  uint32_t coff_count;      /* symbol records, auxiliary ones included */
 };
 
 /* What an import binds to: dll is the library the image names, name the
@@ -64,6 +67,22 @@ struct pe_image *pe_load(const char *path, const struct pe_options *opt,
 int pe_thread_attach(void);
 /* Look an export up by name. NULL if absent. */
 void *pe_symbol(struct pe_image *img, const char *name);
+
+/* COFF storage classes worth looking up. */
+#define PE_SYM_EXTERNAL 2
+#define PE_SYM_STATIC   3
+
+/* What a COFF symbol's value counts from. The format says its section,
+   which is what mingw writes; some older Microsoft linkers wrote the
+   image-relative address instead. */
+enum pe_coff_base { PE_COFF_SECTION, PE_COFF_IMAGE };
+
+/* Look a symbol up in the image's COFF symbol table, for the images that
+   keep one: a driver's entry points and tables are found there rather than
+   among its exports. NULL if absent, of another class, or outside the
+   image. */
+void *pe_symbol_coff(const struct pe_image *img, const char *name, int cls,
+                     enum pe_coff_base base);
 /* Unmap an image and give its TLS slot back. Safe to call on an engine that
    has been deactivated; do not call TG_terminate first, it calls exit(). */
 void pe_unload(struct pe_image *img);

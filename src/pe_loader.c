@@ -335,6 +335,70 @@ void *pe_resolve_table(void *ctx, const char *dll, const char *name)
   return NULL;
 }
 
+/* One COFF symbol record, 18 bytes. */
+#pragma pack(push, 1)
+struct coff_sym {
+  union { char short_name[8]; struct { uint32_t zero, offset; } l; } n;
+  uint32_t value;
+  int16_t section;
+  uint16_t type;
+  uint8_t cls, naux;
+};
+#pragma pack(pop)
+
+/* Keeps the COFF symbol and string tables, which lie past the sections and
+   so are not mapped. A file without them, or with one that does not fit in
+   the file, keeps nothing. */
+static int keep_coff(struct pe_image *img, const unsigned char *file,
+                     size_t fsz, uint32_t symp, uint32_t nsym)
+{
+  uint64_t strtab = (uint64_t)symp + 18ull * nsym;
+  uint32_t strsz;
+  if (!symp || !nsym || strtab + 4 > fsz) return 1;
+  memcpy(&strsz, file + strtab, 4);
+  if (strsz < 4 || strtab + strsz > fsz) return 1;
+  img->coff_size = (size_t)(strtab - symp) + strsz;
+  img->coff = malloc(img->coff_size);
+  if (!img->coff) return 0;
+  memcpy(img->coff, file + symp, img->coff_size);
+  img->coff_count = nsym;
+  return 1;
+}
+
+void *pe_symbol_coff(const struct pe_image *img, const char *name, int cls,
+                     enum pe_coff_base base)
+{
+  const unsigned char *strtab;
+  size_t strsz, namelen = strlen(name);
+  uint32_t i;
+  if (!img->coff) return NULL;
+  strtab = img->coff + 18ull * img->coff_count;
+  strsz = img->coff_size - 18ull * img->coff_count;
+  for (i = 0; i < img->coff_count; i += 1 + img->coff[18ull * i + 17]) {
+    struct coff_sym e;
+    uint64_t at;
+    memcpy(&e, img->coff + 18ull * i, sizeof e);
+    if (e.cls != cls || e.section <= 0) continue;
+    if (e.n.l.zero) {
+      if (namelen > 8 || memcmp(e.n.short_name, name, namelen) ||
+          (namelen < 8 && e.n.short_name[namelen])) continue;
+    } else {
+      if (e.n.l.offset >= strsz || namelen >= strsz - e.n.l.offset ||
+          memcmp(strtab + e.n.l.offset, name, namelen + 1)) continue;
+    }
+    at = e.value;
+    if (base == PE_COFF_SECTION) {
+      const struct dos *d = (const struct dos *)img->base;
+      const struct fh *fh = (const struct fh *)(img->base + d->lfanew + 4);
+      const struct sh *sec = (const struct sh *)((const unsigned char *)(fh + 1) + fh->optsz);
+      if (e.section > fh->nsec) continue;
+      at += sec[e.section - 1].vaddr;
+    }
+    return at < img->size ? img->base + at : NULL;
+  }
+  return NULL;
+}
+
 struct pe_image *pe_load(const char *path, const struct pe_options *opt,
                          char *err, size_t errlen)
 {
@@ -367,6 +431,8 @@ struct pe_image *pe_load(const char *path, const struct pe_options *opt,
     FAIL("wrong machine: this build hosts %s cores",
          PE_MACHINE == 0x8664 ? "64-bit" : "32-bit");
   if (oh->magic != PE_OPT_MAGIC) FAIL("wrong PE optional header");
+  if (!keep_coff(img, g_file, (size_t)fsz, fh->symp, fh->nsym))
+    FAIL("out of memory for the symbol table");
 
   /* Prefer the image's own base: then the relocation pass has nothing to do
      and cannot be the thing that is wrong. Falling back to anywhere is fine,
@@ -637,5 +703,6 @@ void pe_unload(struct pe_image *img)
   }
 #endif
   if (img->base) pe_release(img->base, img->size);
+  free(img->coff);
   free(img);
 }

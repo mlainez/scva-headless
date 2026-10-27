@@ -8,6 +8,8 @@
 #   CLAP_DIR=...           CLAP SDK include directory (as for make clap)
 #   SCVA_TEST_DLL_DIR=...  the user's own SCCore.dll and name files, for the
 #                          tiers that need them
+#   SCVA_TEST_VSC_SYS=...  the user's own vsc.sys, for the loader's unit test
+#                          that maps it
 #
 # Exit status is non-zero if any tier that ran failed.
 set -u
