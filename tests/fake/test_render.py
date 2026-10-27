@@ -325,6 +325,15 @@ def play_same_as_out(c, tool):
                  f"{name}: the same summary as --out, got {frames} and {written[-1:]}")
 
 
+def play_without_device(c, tool):
+    """Where no sound device will open, --play says so and fails rather than
+    rendering into nothing."""
+    r = play(tool, "timing.mid")
+    c.expect(r.status == 1, f"exit 1, got {r.status}")
+    c.expect("cannot open an audio device at 48000 Hz" in r.text, f"the reason: {r.text.strip()[-200:]}")
+    c.expect(not any(x.fn == "TG_Process" for x in r.calls), "nothing rendered")
+
+
 def main():
     tools = {t.name: t for t in harness.RENDERERS}
     for t in harness.RENDERERS:
@@ -363,7 +372,8 @@ def main():
             case(f"{t.name}: --dump prints the first frames", dump_option, t)
         if t.windows:
             if no_audio_device(t):
-                skip(f"{t.name}: --play drives the engine as --out does", "no audio device under wine")
+                case(f"{t.name}: --play without a sound device says so and fails",
+                     play_without_device, t)
             else:
                 case(f"{t.name}: --play drives the engine as --out does", play_same_as_out, t)
     for native, windows in (("scva-render", "scva-render.exe"), ("scva-render32", "scva-render32.exe")):
