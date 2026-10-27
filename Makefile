@@ -78,13 +78,13 @@ $(BUILD):
 # of linux32 - so --play is a --out-and-play-the-file error there instead.
 $(BUILD)/scva-render: src/scva_native.c src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
-                      src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_pcm.h | $(BUILD)
+                      src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_core.h src/scva_pcm.h | $(BUILD)
 	$(CC) $(CFLAGS) -DSCVA_HAVE_PCM -o $@ src/scva_native.c src/pe_loader.c \
 	      $(ALSA) -lpthread -lm
 
 $(BUILD)/scva-render32: src/scva_native.c src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
-                        src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_map.h | $(BUILD)
+                        src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_core.h src/scva_map.h | $(BUILD)
 	$(CC) -m32 $(CFLAGS) -o $@ src/scva_native.c src/pe_loader.c -lpthread -lm
 
 # ---- the engine library --------------------------------------------------
@@ -92,7 +92,7 @@ $(BUILD)/scva-render32: src/scva_native.c src/pe_loader.c src/pe_loader.h src/ss
 # patch lists - archived once per toolchain and linked statically into each
 # plugin. The 64-bit Windows one has no PE loader: LoadLibrary takes that core.
 
-ENGINE_DEPS := src/scva_engine.c src/scva_engine.h src/scva_core_api.h src/scva_lists.c \
+ENGINE_DEPS := src/scva_engine.c src/scva_engine.h src/scva_core_api.h src/scva_core.h src/scva_lists.c \
                src/scva_lists.h src/scva_map.h \
                src/scva_names.h src/pe_loader.c src/pe_loader.h src/win9x.h \
                src/sse3_shim.h src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h
@@ -205,28 +205,28 @@ $(LV2_BUNDLE32)/scva.so: src/scva_lv2.c $(ENGINE32) lv2/manifest.ttl lv2/scva.tt
 
 $(BUILD)/scva-daemon: src/scva_daemon.c src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
-                      src/core_path.h src/scva_core_api.h src/scva_map.h src/scva_pcm.h | $(BUILD)
+                      src/core_path.h src/scva_core_api.h src/scva_core.h src/scva_map.h src/scva_pcm.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ src/scva_daemon.c src/pe_loader.c \
 	      $(ALSA) -lpthread -lm
 
 $(BUILD)/scva-daemon32: src/scva_daemon.c src/pe_loader.c src/pe_loader.h src/sse3_shim.h \
                     src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
-                        src/core_path.h src/scva_core_api.h src/scva_map.h src/scva_pcm.h | $(BUILD)
+                        src/core_path.h src/scva_core_api.h src/scva_core.h src/scva_map.h src/scva_pcm.h | $(BUILD)
 	$(CC) -m32 $(CFLAGS) -o $@ src/scva_daemon.c src/pe_loader.c \
 	      $(ALSA32) -lpthread -lm
 
 $(BUILD)/scva-tones32: src/scva_tones.c src/scva_names.h | $(BUILD)
 	$(CC) -m32 $(CFLAGS) -Isrc -o $@ src/scva_tones.c
 
-$(BUILD)/scva-render.exe: src/scva_render.c src/midi_song.h src/core_path.h src/scva_core_api.h | $(BUILD)
+$(BUILD)/scva-render.exe: src/scva_render.c src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_core.h | $(BUILD)
 	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ $< -lwinmm
 
-$(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/core_path.h src/scva_core_api.h src/scva_map.h \
+$(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/core_path.h src/scva_core_api.h src/scva_core.h src/scva_map.h \
                            | $(BUILD)
 	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_winmidi.c -lwinmm
 
 $(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/pe_loader.c src/pe_loader.h \
-                             src/core_path.h src/scva_core_api.h src/scva_map.h src/win9x.h src/sse3_shim.h \
+                             src/core_path.h src/scva_core_api.h src/scva_core.h src/scva_map.h src/win9x.h src/sse3_shim.h \
                              src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
                              | $(BUILD)
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_winmidi.c \
@@ -240,7 +240,7 @@ $(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/pe_loader.c src/pe_loader.h 
 # not take a core that imports MSVCR100 and declares a subsystem newer than
 # Windows 98, so the image is mapped here instead, exactly as on Linux.
 $(BUILD)/scva-render32.exe: src/scva_render.c src/pe_loader.c src/pe_loader.h \
-                            src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_map.h \
+                            src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_core.h src/scva_map.h \
                             src/sse3_shim.h src/sse2_shim.h src/sse2_sites.h \
                             src/sse2_cvt.h | $(BUILD)
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_render.c \

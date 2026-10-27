@@ -47,7 +47,7 @@
 #include "sse3_shim.h"
 #endif
 
-#include "scva_core_api.h"
+#include "scva_core.h"
 
 static struct scva_core_api engine;
 
@@ -385,20 +385,15 @@ int main(int argc, char **argv)
     return 1;
   }
   {
-    /* The rate is set on both sides of the block size and again immediately
-       before activate; otherwise the core emits Inf and NaN silently. */
-    engine.initialize(0);
-    engine.set_sample_rate((float)rate);
-    engine.set_max_block(block);
-    { struct tg_system_config c; c.a = 1; c.b = 1; engine.set_config(&c); }
-    engine.set_sample_rate((float)rate);
-    engine.activate((float)rate, block);
+    struct scva_core_setup setup;
+    setup.rate = (float)rate;
+    setup.max_block = block;
+    setup.init_arg = 0;
+    setup.config.a = 1;
+    setup.config.b = 1;
+    scva_core_start(&engine, &setup, NULL);
   }
-  {
-    static const unsigned char gs_reset[] = {
-      0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
-    engine.long_midi(gs_reset, 0);
-  }
+  scva_core_gs_reset(&engine);
 
   /* ---- MIDI in ---- */
   InitializeCriticalSection(&q_lock);

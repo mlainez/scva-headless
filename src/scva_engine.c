@@ -21,7 +21,7 @@
 #else
 #include "pe_loader.h"
 #endif
-#include "scva_core_api.h"
+#include "scva_core.h"
 
 struct scva_engine {
 #ifdef SCVA_LOADLIBRARY
@@ -47,8 +47,6 @@ static void unload(struct scva_engine *e)
 struct scva_engine *scva_engine_open(const char *dir, double rate,
                                      char *err, size_t errlen)
 {
-  static const unsigned char gs_reset[] = {
-    0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
   char path[2048];
   struct scva_engine *e = calloc(1, sizeof *e);
 
@@ -74,16 +72,16 @@ struct scva_engine *scva_engine_open(const char *dir, double rate,
     unload(e);
     return NULL;
   }
-  /* The rate is set on both sides of the block size and the second call is
-     the last thing before activate; otherwise the core emits Inf and NaN
-     while reporting no error. */
-  e->api.initialize(0);
-  e->api.set_sample_rate((float)rate);
-  e->api.set_max_block(SCVA_MAXBLOCK);
-  { struct tg_system_config c; c.a = 1; c.b = 1; e->api.set_config(&c); }
-  e->api.set_sample_rate((float)rate);
-  e->api.activate((float)rate, SCVA_MAXBLOCK);
-  e->api.long_midi(gs_reset, 0);
+  {
+    struct scva_core_setup setup;
+    setup.rate = (float)rate;
+    setup.max_block = SCVA_MAXBLOCK;
+    setup.init_arg = 0;
+    setup.config.a = 1;
+    setup.config.b = 1;
+    scva_core_start(&e->api, &setup, NULL);
+  }
+  scva_core_gs_reset(&e->api);
   e->map_now = -1;
   return e;
 }

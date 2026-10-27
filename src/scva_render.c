@@ -34,7 +34,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "scva_core_api.h"
+#include "scva_core.h"
 
 /* MIDI reading and WAV writing live in midi_song.h, shared with the native
    renderer so both drive the engine from exactly the same events. */
@@ -79,9 +79,6 @@ int main(int argc, char **argv)
   int mapval = 0;
   double rate = 48000.0, tail = 3.0;
   int maxblock = 4096;
-  static const unsigned char gs_reset[] = {
-    0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
-  static const unsigned char gm_reset[] = { 0xf0, 0x7e, 0x7f, 0x09, 0x01, 0xf7 };
 #ifdef SCVA_OWN_LOADER
   struct pe_image *lib = NULL, *lib_b = NULL;
   char peerr[256];
@@ -207,69 +204,39 @@ int main(int argc, char **argv)
     printf("two-port song: second core from %s\n", coreb);
   }
 
-  printf("initialize -> %d\n", a.initialize(0));
-  a.set_sample_rate((float)rate);
   if (maxblock < SCVA_MIN_BLOCK) {
     fprintf(stderr, "%s: --maxblock %d is below the engine's minimum, "
                     "using %d\n", argv[0], maxblock, SCVA_MIN_BLOCK);
     maxblock = SCVA_MIN_BLOCK;
   }
-  a.set_max_block(maxblock);
-  /* And AGAIN, after the block size. This is the whole of TASK-171: with the
-     rate set only once - on either side of set_max_block - the core writes
-     +/-Inf from the second sample onward and NaN after that. Measured on a
-     probe that varies one call at a time:
-
-       rate, block, rate     finite 2048 of 2048
-       rate, block, config, rate   finite 2048 of 2048
-       rate, block           CRASH
-       rate, block, config   CRASH
-       block, rate           CRASH
-       no rate at all        CRASH
-
-     so set_max_block invalidates the rate-derived state and the config call
-     has nothing to do with it. The control that says the rate now actually
-     arrives: with one rate call frame 0 is bit-identical at 22050, 44100 and
-     96000; with two it differs at each. */
-  printf("rate %.0f, max block %d (rate set both sides)\n", rate, maxblock);
   {
-    struct tg_system_config cfg;
-    cfg.a = 1; cfg.b = 1;
-    printf("set_config(1,1) -> %d\n", a.set_config(&cfg));
-    memset(&cfg, 0, sizeof cfg);
-    a.get_config(&cfg);
-    printf("config now: %d, %d\n", cfg.a, cfg.b);
-  }
-  /* LAST call before activate, and this is the whole of TASK-171. */
-  a.set_sample_rate((float)rate);
-  {
-    int act = a.activate((float)rate, maxblock);
-    int fat = a.fatal();
+    struct scva_core_setup setup;
+    struct scva_core_report report;
     int k;
-    printf("activate -> %d, fatal %d\n", act, fat);
+    setup.rate = (float)rate;
+    setup.max_block = maxblock;
+    setup.init_arg = 0;
+    setup.config.a = 1;
+    setup.config.b = 1;
+    scva_core_start(&a, &setup, &report);
+    printf("initialize -> %d\n", report.initialized);
+    printf("rate %.0f, max block %d (rate set both sides)\n", rate, maxblock);
+    printf("set_config(1,1) -> %d\n", report.config_set);
+    printf("config now: %d, %d\n", report.config.a, report.config.b);
+    printf("activate -> %d, fatal %d\n", report.activated, report.fatal);
     for (k = 0; k < 8; ++k) {
       const char *msg = a.errors(k);
       if (msg && *msg && (unsigned char)*msg >= 32)
         printf("  error string %d: %s\n", k, msg);
     }
     fflush(stdout);
+    if (have_b) scva_core_start(&b, &setup, NULL);
   }
-  fflush(stdout);
-  if (have_b) {
-    struct tg_system_config cfg;
-    b.initialize(0);
-    b.set_sample_rate((float)rate);
-    b.set_max_block(maxblock);
-    cfg.a = 1; cfg.b = 1;
-    b.set_config(&cfg);
-    b.set_sample_rate((float)rate);
-    b.activate((float)rate, maxblock);
-  }
-  if (!strcmp(reset, "gs")) { a.long_midi(gs_reset, 0);
-    if (have_b) b.long_midi(gs_reset, 0);
+  if (!strcmp(reset, "gs")) { scva_core_gs_reset(&a);
+    if (have_b) scva_core_gs_reset(&b);
     printf("gs reset sent\n"); fflush(stdout); }
-  else if (!strcmp(reset, "gm")) { a.long_midi(gm_reset, 0);
-    if (have_b) b.long_midi(gm_reset, 0);
+  else if (!strcmp(reset, "gm")) { scva_core_gm_reset(&a);
+    if (have_b) scva_core_gm_reset(&b);
     printf("gm reset sent\n"); fflush(stdout); }
   /* a program change latches CC32, so set it before the music starts */
   { int ch; for (ch = 0; ch < 16; ++ch) {

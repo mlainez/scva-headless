@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "scva_core_api.h"
+#include "scva_core.h"
 
 #define BLOCK 256
 
@@ -45,9 +45,6 @@ int main(int argc, char **argv)
   int mapval = 0;
   double rate = 48000.0, tail = 3.0;
   int maxblock = 4096;
-  static const unsigned char gs_reset[] = {
-    0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7 };
-  static const unsigned char gm_reset[] = { 0xf0, 0x7e, 0x7f, 0x09, 0x01, 0xf7 };
   struct pe_image *img;
   char err[256];
   const char *missing;
@@ -171,47 +168,33 @@ int main(int argc, char **argv)
     printf("two-port song: second engine at %p\n", (void *)img2->base);
   }
 
-  printf("initialize(%d) -> %d\n", initarg, a.initialize(initarg));
-  /* THE ORDER. See README: the rate is set on both sides of the block size and
-     the second call is the last thing before activate. */
-  a.set_sample_rate((float)rate);
   if (maxblock < SCVA_MIN_BLOCK) {
     fprintf(stderr, "%s: --maxblock %d is below the engine's minimum, "
                     "using %d\n", argv[0], maxblock, SCVA_MIN_BLOCK);
     maxblock = SCVA_MIN_BLOCK;
   }
-  a.set_max_block(maxblock);
-  printf("rate %.0f, max block %d (rate set both sides)\n", rate, maxblock);
   {
-    struct tg_system_config cfg;
-    cfg.a = cfga; cfg.b = cfgb;
-    printf("set_config(1,1) -> %d\n", a.set_config(&cfg));
-    memset(&cfg, 0, sizeof cfg);
-    a.get_config(&cfg);
-    printf("config now: %d, %d\n", cfg.a, cfg.b);
-  }
-  a.set_sample_rate((float)rate);
-  {
-    int act = a.activate((float)rate, maxblock);
-    int fat = a.fatal();
-    printf("activate -> %d, fatal %d\n", act, fat);
+    struct scva_core_setup setup;
+    struct scva_core_report report;
+    setup.rate = (float)rate;
+    setup.max_block = maxblock;
+    setup.init_arg = initarg;
+    setup.config.a = cfga;
+    setup.config.b = cfgb;
+    scva_core_start(&a, &setup, &report);
+    printf("initialize(%d) -> %d\n", initarg, report.initialized);
+    printf("rate %.0f, max block %d (rate set both sides)\n", rate, maxblock);
+    printf("set_config(1,1) -> %d\n", report.config_set);
+    printf("config now: %d, %d\n", report.config.a, report.config.b);
+    printf("activate -> %d, fatal %d\n", report.activated, report.fatal);
     fflush(stdout);
+    if (have_b) scva_core_start(&b, &setup, NULL);
   }
-  if (have_b) {
-    struct tg_system_config cfg;
-    b.initialize(initarg);
-    b.set_sample_rate((float)rate);
-    b.set_max_block(maxblock);
-    cfg.a = cfga; cfg.b = cfgb;
-    b.set_config(&cfg);
-    b.set_sample_rate((float)rate);
-    b.activate((float)rate, maxblock);
-  }
-  if (!strcmp(reset, "gs")) { a.long_midi(gs_reset, 0);
-    if (have_b) b.long_midi(gs_reset, 0);
+  if (!strcmp(reset, "gs")) { scva_core_gs_reset(&a);
+    if (have_b) scva_core_gs_reset(&b);
     printf("gs reset sent\n"); fflush(stdout); }
-  else if (!strcmp(reset, "gm")) { a.long_midi(gm_reset, 0);
-    if (have_b) b.long_midi(gm_reset, 0);
+  else if (!strcmp(reset, "gm")) { scva_core_gm_reset(&a);
+    if (have_b) scva_core_gm_reset(&b);
     printf("gm reset sent\n"); fflush(stdout); }
   /* a program change latches CC32, so set it before the music starts */
   { int ch; for (ch = 0; ch < 16; ++ch) {
