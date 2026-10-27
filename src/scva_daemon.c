@@ -30,6 +30,7 @@
 #include "pe_loader.h"
 #include "core_path.h"
 #include "scva_map.h"
+#include "map_policy.h"
 #include "scva_pcm.h"
 #include "scva_core.h"
 
@@ -105,9 +106,7 @@ static int control_send(const char *path, const char *text)
 }
 
 /* One typed line. Returns 1 when it asked to stop. */
-static int console_command(char *line, unsigned char *map_of,
-                           const unsigned char *last_pc,
-                           scva_tg_short_midi_fn short_midi, int out)
+static int console_command(char *line, struct map_policy *maps, int out)
 {
   int ch, want, off = 0;
   size_t n = strlen(line);
@@ -115,31 +114,21 @@ static int console_command(char *line, unsigned char *map_of,
   while (n > 0 && (line[n - 1] == '\r' || line[n - 1] == ' ')) line[--n] = '\0';
   if (!line[0]) {
     dprintf(out, "map:");
-    for (ch = 0; ch < 16; ++ch) dprintf(out, " %d", map_of[ch]);
+    for (ch = 0; ch < 16; ++ch) dprintf(out, " %d", map_policy_map(maps, ch));
     dprintf(out, "\n");
     return 0;
   }
   if (!strcmp(line, "q") || !strcmp(line, "quit")) return 1;
 
-  /* "<channel> <map>" sets one part, a bare map name sets all of them. CC32
-     alone would sit unheard until the next program change happens to arrive
-     on the wire - which may be never, if nothing plays a new instrument in
-     the meantime - so the part's own last program is re-sent right after it
-     to make the change audible now. */
+  /* "<channel> <map>" sets one part, a bare map name sets all of them. */
   if (sscanf(line, "%d %n", &ch, &off) == 1 && off > 0 && line[off] &&
       ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
-    map_of[ch - 1] = (unsigned char)want;
-    short_midi(scva_map_cc(ch - 1, want), 0);
-    short_midi(scva_map_pc(ch - 1, last_pc[ch - 1]), 0);
+    map_policy_set(maps, ch - 1, want);
     dprintf(out, "channel %d -> map %d\n", ch, want);
     return 0;
   }
   if ((want = scva_map_value(line)) >= 0) {
-    for (ch = 0; ch < 16; ++ch) {
-      map_of[ch] = (unsigned char)want;
-      short_midi(scva_map_cc(ch, want), 0);
-      short_midi(scva_map_pc(ch, last_pc[ch]), 0);
-    }
+    map_policy_set(maps, -1, want);
     dprintf(out, "all parts -> map %d\n", want);
     return 0;
   }
@@ -166,15 +155,8 @@ int main(int argc, char **argv)
      that cannot keep up - the symptom is the audio breaking up. */
   unsigned int latency_us = 20000;
   int mapval = 0, block = 256, i;
-  /* One map per part. A program change latches CC32, so it is sent again
-     before every one; only the console or --send changes it while the
-     daemon runs, never a CC32 arriving on the wire - that is ordinary
-     Bank Select LSB, which files and sequencers send constantly on their
-     own, and would fight whatever was chosen here. */
-  unsigned char map_of[16];
-  unsigned char last_pc[16];        /* each part's last program change, so
-                                        the console can re-send it when the
-                                        map changes */
+  /* One map per part, changed only by the console and --send. */
+  struct map_policy maps;
 
   struct pe_image *img;
   struct scva_core_api engine;
@@ -246,8 +228,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "scva-daemon: --map wants " SCVA_MAP_USAGE "\n");
     return 2;
   }
-  for (i = 0; i < 16; ++i) map_of[i] = (unsigned char)mapval;
-  memset(last_pc, 0, sizeof last_pc);   /* GM default until one arrives */
+  map_policy_init(&maps, MAP_LIVE, mapval, scva_core_sink, &engine);
   /* The core corrupts its own heap below 255 frames: 254 aborts every time,
      255 renders identically to 4096. 256 is the floor, rounded. */
   if (block < SCVA_MIN_BLOCK) {
@@ -405,7 +386,7 @@ int main(int argc, char **argv)
         buf[n] = '\0';
         while ((nl = strchr(p, '\n')) != NULL) {
           *nl = '\0';
-          if (console_command(p, map_of, last_pc, engine.short_midi, STDERR_FILENO))
+          if (console_command(p, &maps, STDERR_FILENO))
             stop_now = 1;
           p = nl + 1;
         }
@@ -423,7 +404,7 @@ int main(int argc, char **argv)
           if (!strchr(buf, '\n')) strcat(buf, "\n");
           while ((nl = strchr(p, '\n')) != NULL) {
             *nl = '\0';
-            if (console_command(p, map_of, last_pc, engine.short_midi, c)) stop_now = 1;
+            if (console_command(p, &maps, c)) stop_now = 1;
             p = nl + 1;
           }
         }
@@ -442,23 +423,10 @@ int main(int argc, char **argv)
           if (mbuf[0] == 0xF0) {
             engine.long_midi(mbuf, 0);
           } else {
-            unsigned char st = mbuf[0] & 0xf0, ch = mbuf[0] & 0x0f;
-            unsigned int msg;
-            /* CC32 arriving here is not honoured as a map change: it is
-               ordinary Bank Select LSB, which real files and sequencers
-               send constantly as routine GM/GS housekeeping (0 alongside
-               almost every program change), not a request to switch the
-               SC map. Only the console and --send do that; this still
-               re-asserts whatever they chose right before every program
-               change, so a file's own bank-select traffic cannot fight it. */
-            if (st == 0xC0) {
-              last_pc[ch] = mbuf[1];
-              engine.short_midi(scva_map_cc(ch, map_of[ch]), 0);
-            }
-            msg = mbuf[0];
+            unsigned int msg = mbuf[0];
             if (n > 1) msg |= (unsigned int)mbuf[1] << 8;
             if (n > 2) msg |= (unsigned int)mbuf[2] << 16;
-            engine.short_midi(msg, 0);
+            map_policy_short(&maps, msg);
           }
         }
         snd_seq_free_event(ev);

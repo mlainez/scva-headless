@@ -20,6 +20,8 @@
 #include <string.h>
 #include <time.h>
 #include "scva_core.h"
+#include "scva_map.h"
+#include "map_policy.h"
 
 #define BLOCK 256
 
@@ -49,6 +51,7 @@ int main(int argc, char **argv)
   char err[256];
   const char *missing;
   struct scva_core_api a, b;
+  struct map_policy maps_a, maps_b;
   int have_b = 0;
   struct song s;
   unsigned char *bytes;
@@ -196,12 +199,12 @@ int main(int argc, char **argv)
   else if (!strcmp(reset, "gm")) { scva_core_gm_reset(&a);
     if (have_b) scva_core_gm_reset(&b);
     printf("gm reset sent\n"); fflush(stdout); }
+  map_policy_init(&maps_a, MAP_RENDER, mapval, scva_core_sink, &a);
+  map_policy_init(&maps_b, MAP_RENDER, mapval, scva_core_sink, &b);
   /* a program change latches CC32, so set it before the music starts */
   { int ch; for (ch = 0; ch < 16; ++ch) {
-      unsigned int cc = 0xb0u | (unsigned)ch | (0x20u << 8) |
-                        ((unsigned)mapval << 16);
-      a.short_midi(cc, 0);
-      if (have_b) b.short_midi(cc, 0);
+      a.short_midi(scva_map_cc(ch, mapval), 0);
+      if (have_b) b.short_midi(scva_map_cc(ch, mapval), 0);
     }
     printf("tone map %s (CC32=%d)\n", mapname, mapval); fflush(stdout); }
 
@@ -262,14 +265,9 @@ int main(int argc, char **argv)
           ++sent;
         }
       } else {
-        struct scva_core_api *E = (have_b && e->port) ? &b : &a;
         unsigned int msg = (unsigned int)e->status |
           ((unsigned int)e->data1 << 8) | ((unsigned int)e->data2 << 16);
-        /* a program change latches the map, so set CC32 on that part first */
-        if (mapval && (e->status & 0xf0) == 0xc0)
-          E->short_midi(0xb0u | (unsigned)(e->status & 0x0f) |
-                        (0x20u << 8) | ((unsigned)mapval << 16), 0);
-        E->short_midi(msg, 0);
+        map_policy_short((have_b && e->port) ? &maps_b : &maps_a, msg);
         ++sent;
       }
       ++ei;

@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "scva_map.h"
+#include "map_policy.h"
 #include "core_path.h"
 #if defined(__i386__)
 /* The 32-bit core imports MSVCR100 and declares a subsystem newer than
@@ -209,8 +210,7 @@ static int find_input(const char *want)
 /* One typed line. Mirrors scva-daemon's console_command exactly - same
    commands, same wording - so switching platforms costs nothing. Returns 1
    when it asked to stop. */
-static int console_command(char *line, unsigned char *map_of,
-                           const unsigned char *last_pc)
+static int console_command(char *line, struct map_policy *maps)
 {
   int ch, want, off = 0;
   size_t n = strlen(line);
@@ -218,31 +218,21 @@ static int console_command(char *line, unsigned char *map_of,
   while (n > 0 && line[n - 1] == ' ') line[--n] = '\0';
   if (!line[0]) {
     printf("map:");
-    for (ch = 0; ch < 16; ++ch) printf(" %d", map_of[ch]);
+    for (ch = 0; ch < 16; ++ch) printf(" %d", map_policy_map(maps, ch));
     printf("\n");
     return 0;
   }
   if (!strcmp(line, "q") || !strcmp(line, "quit")) return 1;
 
-  /* "<channel> <map>" sets one part, a bare map name sets all of them. CC32
-     alone would sit unheard until the next program change happens to arrive
-     on the wire - which may be never, if nothing plays a new instrument in
-     the meantime - so the part's own last program is re-sent right after it
-     to make the change audible now. */
+  /* "<channel> <map>" sets one part, a bare map name sets all of them. */
   if (sscanf(line, "%d %n", &ch, &off) == 1 && off > 0 && line[off] &&
       ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
-    map_of[ch - 1] = (unsigned char)want;
-    engine.short_midi(scva_map_cc(ch - 1, want), 0);
-    engine.short_midi(scva_map_pc(ch - 1, last_pc[ch - 1]), 0);
+    map_policy_set(maps, ch - 1, want);
     printf("channel %d -> map %d\n", ch, want);
     return 0;
   }
   if ((want = scva_map_value(line)) >= 0) {
-    for (ch = 0; ch < 16; ++ch) {
-      map_of[ch] = (unsigned char)want;
-      engine.short_midi(scva_map_cc(ch, want), 0);
-      engine.short_midi(scva_map_pc(ch, last_pc[ch]), 0);
-    }
+    map_policy_set(maps, -1, want);
     printf("all parts -> map %d\n", want);
     return 0;
   }
@@ -261,7 +251,7 @@ static int console_command(char *line, unsigned char *map_of,
    the loop; the worst case for noticing a keystroke is one iteration, the
    same as the 100 ms this loop can already wait for a wave buffer to free.
    Returns 1 when it was told to stop. */
-static int poll_console(unsigned char *map_of, const unsigned char *last_pc)
+static int poll_console(struct map_policy *maps)
 {
   static char line[256];
   static size_t len = 0;
@@ -271,7 +261,7 @@ static int poll_console(unsigned char *map_of, const unsigned char *last_pc)
       putchar('\n');
       line[len] = '\0';
       len = 0;
-      if (console_command(line, map_of, last_pc)) return 1;
+      if (console_command(line, maps)) return 1;
     } else if (c == '\b' || c == 127) {
       if (len > 0) { --len; printf("\b \b"); }
     } else if (len + 1 < sizeof line) {
@@ -291,10 +281,7 @@ int main(int argc, char **argv)
                                         apart */
   unsigned int rate = 48000;
   int block = 256, latency_ms = 40, mapval = 0, i;
-  unsigned char map_of[16];
-  unsigned char last_pc[16];        /* each part's last program change, so
-                                        the console can re-send it when the
-                                        map changes */
+  struct map_policy maps;           /* one map per part, from the console */
 #ifdef SCVA_OWN_LOADER
   struct pe_image *lib;
   char peerr[256];
@@ -345,8 +332,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "scva-winmidi: --map wants " SCVA_MAP_USAGE "\n");
     return 2;
   }
-  for (i = 0; i < 16; ++i) map_of[i] = (unsigned char)mapval;
-  memset(last_pc, 0, sizeof last_pc);   /* GM default until one arrives */
+  map_policy_init(&maps, MAP_LIVE, mapval, scva_core_sink, &engine);
   if (block < SCVA_MIN_BLOCK) {
     if (block > 0)
       fprintf(stderr, "scva-winmidi: --block %d is below the engine's "
@@ -469,7 +455,7 @@ int main(int argc, char **argv)
     int did = 0;
     uint64_t played;
     double measured;
-    if (poll_console(map_of, last_pc)) break;
+    if (poll_console(&maps)) break;
     for (b = 0; b < NSYSBUF; ++b)
       if (InterlockedExchange(&sys_returned[b], 0))
         midiInAddBuffer(hin, &sys_hdr[b], sizeof sys_hdr[b]);
@@ -500,23 +486,10 @@ int main(int argc, char **argv)
         if (m.b[0] == 0xf0) {
           engine.long_midi(m.b, 0);
         } else {
-          unsigned char st = m.b[0] & 0xf0, ch = m.b[0] & 0x0f;
-          unsigned int msg;
-          /* CC32 arriving here is not honoured as a map change: it is
-             ordinary Bank Select LSB, which real files and sequencers
-             send constantly as routine GM/GS housekeeping (0 alongside
-             almost every program change), not a request to switch the
-             SC map. Only the console does that; this still re-asserts
-             whatever it chose right before every program change, so a
-             file's own bank-select traffic cannot fight it. */
-          if (st == 0xc0) {
-            last_pc[ch] = m.b[1];
-            engine.short_midi(scva_map_cc(ch, map_of[ch]), 0);
-          }
-          msg = m.b[0];
+          unsigned int msg = m.b[0];
           if (m.len > 1) msg |= (unsigned int)m.b[1] << 8;
           if (m.len > 2) msg |= (unsigned int)m.b[2] << 16;
-          engine.short_midi(msg, 0);
+          map_policy_short(&maps, msg);
         }
       }
       engine.process(left, right, block);

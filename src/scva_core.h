@@ -6,6 +6,7 @@
  */
 #ifndef SCVA_CORE_H
 #define SCVA_CORE_H
+#include <stdint.h>
 #include <string.h>
 #include "midi_reset.h"
 #include "scva_core_api.h"
@@ -62,6 +63,12 @@ static inline void scva_core_start(const struct scva_core_api *api,
   } else {
     api->activate(setup->rate, setup->max_block);
   }
+}
+
+/* TG_ShortMidiIn, untimed, in the shape of a map_policy sink. */
+static inline void scva_core_sink(void *api, uint32_t msg)
+{
+  ((const struct scva_core_api *)api)->short_midi(msg, 0);
 }
 
 static inline void scva_core_gs_reset(const struct scva_core_api *api)

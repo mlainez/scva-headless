@@ -56,6 +56,9 @@ static inline void synth_long(struct synth *s, const uint8_t *msg, size_t len)
 static inline void synth_render(struct synth *s, float *l, float *r, uint32_t n)
 { s->backend->render(s, l, r, n); }
 
+/* synth_short in the shape of a map_policy sink. */
+static inline void synth_sink(void *s, uint32_t msg) { synth_short((struct synth *)s, msg); }
+
 /* The backends this build has. */
 extern const struct synth_backend synth_scva;
 #endif
