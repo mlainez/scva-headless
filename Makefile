@@ -228,18 +228,18 @@ $(BUILD)/scva-daemon32: src/scva_daemon.c src/map_policy.c src/map_policy.h src/
 $(BUILD)/scva-tones32: src/scva_tones.c src/scva_names.h | $(BUILD)
 	$(CC) -m32 $(CFLAGS) -Isrc -o $@ src/scva_tones.c
 
-$(BUILD)/scva-render.exe: src/scva_render.c src/map_policy.c src/map_policy.h src/render_loop.c src/render_loop.h src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h | $(BUILD)
-	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_render.c src/map_policy.c src/render_loop.c -lwinmm
+$(BUILD)/scva-render.exe: src/scva_render.c src/map_policy.c src/map_policy.h src/audio_waveout.c src/audio_waveout.h src/render_loop.c src/render_loop.h src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h | $(BUILD)
+	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_render.c src/map_policy.c src/audio_waveout.c src/render_loop.c -lwinmm
 
-$(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/rt_priority.c src/rt_priority.h src/live_sched.c src/live_sched.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h \
+$(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/audio_waveout.c src/audio_waveout.h src/console.c src/console.h src/rt_priority.c src/rt_priority.h src/live_sched.c src/live_sched.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h \
                            | $(BUILD)
-	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/console.c src/rt_priority.c src/live_sched.c -lwinmm
+	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/audio_waveout.c src/console.c src/rt_priority.c src/live_sched.c -lwinmm
 
-$(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/rt_priority.c src/rt_priority.h src/live_sched.c src/live_sched.h src/pe_loader.c src/pe_loader.h \
+$(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/audio_waveout.c src/audio_waveout.h src/console.c src/console.h src/rt_priority.c src/rt_priority.h src/live_sched.c src/live_sched.h src/pe_loader.c src/pe_loader.h \
                              src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h src/win9x.h src/sse3_shim.h \
                              src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
                              | $(BUILD)
-	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/console.c src/rt_priority.c src/live_sched.c \
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/audio_waveout.c src/console.c src/rt_priority.c src/live_sched.c \
 	   src/pe_loader.c -lwinmm
 
 # ---- the 32-bit Windows path --------------------------------------------
@@ -249,11 +249,11 @@ $(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.
 # The 32-bit Windows binaries carry src/pe_loader.c: the system loader will
 # not take a core that imports MSVCR100 and declares a subsystem newer than
 # Windows 98, so the image is mapped here instead, exactly as on Linux.
-$(BUILD)/scva-render32.exe: src/scva_render.c src/map_policy.c src/map_policy.h src/render_loop.c src/render_loop.h src/pe_loader.c src/pe_loader.h \
+$(BUILD)/scva-render32.exe: src/scva_render.c src/map_policy.c src/map_policy.h src/audio_waveout.c src/audio_waveout.h src/render_loop.c src/render_loop.h src/pe_loader.c src/pe_loader.h \
                             src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h \
                             src/sse3_shim.h src/sse2_shim.h src/sse2_sites.h \
                             src/sse2_cvt.h | $(BUILD)
-	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_render.c src/map_policy.c src/render_loop.c \
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_render.c src/map_policy.c src/audio_waveout.c src/render_loop.c \
 	   src/pe_loader.c -lwinmm
 
 # ---- tests ---------------------------------------------------------------

@@ -38,6 +38,7 @@
 #include "scva_map.h"
 #include "map_policy.h"
 #include "render_loop.h"
+#include "audio_waveout.h"
 
 /* Windows refcounts modules by path: a second LoadLibrary of the same file
    hands back the first module, globals and all. A copy under another name
@@ -77,19 +78,17 @@ struct sink {
   int realtime;                      /* hold to the wall clock */
   double rate;
   DWORD start_ms;
-  HWAVEOUT hout;                     /* --play */
-  WAVEHDR *whdr;
-  short **wbuf;
-  HANDLE wev;
-  int nbuf, wb;
+  int play;
+  struct waveout out;                /* --play */
+  int wb;                            /* the next buffer to fill */
 };
 
 static void pace(void *ctx, uint64_t frame)
 {
   struct sink *o = ctx;
-  if (o->hout) {
+  if (o->play) {
     /* waveOut is the clock now: wait for a buffer to come free */
-    while (!(o->whdr[o->wb].dwFlags & WHDR_DONE)) WaitForSingleObject(o->wev, 100);
+    while (!waveout_is_free(&o->out, o->wb)) waveout_wait(&o->out, 100);
   } else if (o->realtime) {
     /* TG_Process generates on demand, so --flat-out is correct and faster */
     double audio_ms = 1000.0 * (double)frame / o->rate;
@@ -109,17 +108,16 @@ static int deliver(void *ctx, const float *left, const float *right, int n,
   int k;
   if (!frame) { printf("first process returned\n"); fflush(stdout); }
   for (k = 0; k < n; ++k) {
-    if (o->hout) {
-      o->wbuf[o->wb][2 * k]     = to_s16(left[k]);
-      o->wbuf[o->wb][2 * k + 1] = to_s16(right[k]);
+    if (o->play) {
+      o->out.pcm[o->wb][2 * k]     = to_s16(left[k]);
+      o->out.pcm[o->wb][2 * k + 1] = to_s16(right[k]);
     } else {
       put_frame(o->wav, left[k], right[k], o->bits);
     }
   }
-  if (o->hout) {
-    o->whdr[o->wb].dwFlags &= ~WHDR_DONE;
-    waveOutWrite(o->hout, &o->whdr[o->wb], sizeof o->whdr[o->wb]);
-    o->wb = (o->wb + 1) % o->nbuf;
+  if (o->play) {
+    waveout_write(&o->out, o->wb);
+    o->wb = (o->wb + 1) % o->out.nbuf;
   }
   return 1;
 }
@@ -292,37 +290,20 @@ int main(int argc, char **argv)
        rather than route a file through a driver and a virtual cable, the
        renderer reads it and puts the audio out itself. waveOut in 16-bit
        stereo is what every Windows sound device accepts. */
-    WAVEFORMATEX wf;
-    int j;
-    o.nbuf = (int)((double)200.0 * rate / 1000.0 / RENDER_BLOCK);   /* ~200 ms ahead */
-    if (o.nbuf < 4) o.nbuf = 4;
-    if (o.nbuf > 64) o.nbuf = 64;
-    o.wev = CreateEventA(NULL, FALSE, FALSE, NULL);
-    memset(&wf, 0, sizeof wf);
-    wf.wFormatTag = WAVE_FORMAT_PCM;
-    wf.nChannels = 2;
-    wf.nSamplesPerSec = (DWORD)rate;
-    wf.wBitsPerSample = 16;
-    wf.nBlockAlign = (WORD)(wf.nChannels * wf.wBitsPerSample / 8);
-    wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
-    if (waveOutOpen(&o.hout, WAVE_MAPPER, &wf, (DWORD_PTR)o.wev, 0,
-                    CALLBACK_EVENT) != MMSYSERR_NOERROR) {
+    int nbuf = (int)((double)200.0 * rate / 1000.0 / RENDER_BLOCK);   /* ~200 ms ahead */
+    if (nbuf < 4) nbuf = 4;
+    if (nbuf > 64) nbuf = 64;
+    switch (waveout_open(&o.out, (unsigned)rate, nbuf, RENDER_BLOCK)) {
+    case WAVEOUT_NO_DEVICE:
       fprintf(stderr, "cannot open an audio device at %.0f Hz\n", rate);
       return 1;
+    case WAVEOUT_NO_MEMORY:
+      fprintf(stderr, "out of memory\n");
+      return 1;
     }
-    o.whdr = calloc((size_t)o.nbuf, sizeof *o.whdr);
-    o.wbuf = calloc((size_t)o.nbuf, sizeof *o.wbuf);
-    if (!o.whdr || !o.wbuf) { fprintf(stderr, "out of memory\n"); return 1; }
-    for (j = 0; j < o.nbuf; ++j) {
-      o.wbuf[j] = calloc((size_t)RENDER_BLOCK * 2, sizeof **o.wbuf);
-      if (!o.wbuf[j]) { fprintf(stderr, "out of memory\n"); return 1; }
-      o.whdr[j].lpData = (LPSTR)o.wbuf[j];
-      o.whdr[j].dwBufferLength = (DWORD)(RENDER_BLOCK * 2 * sizeof **o.wbuf);
-      waveOutPrepareHeader(o.hout, &o.whdr[j], sizeof o.whdr[j]);
-      o.whdr[j].dwFlags |= WHDR_DONE;                /* all free to begin */
-    }
+    o.play = 1;
     printf("playing, %d x %d frames buffered (%.0f ms)\n",
-           o.nbuf, RENDER_BLOCK, 1000.0 * o.nbuf * RENDER_BLOCK / rate);
+           nbuf, RENDER_BLOCK, 1000.0 * nbuf * RENDER_BLOCK / rate);
     fflush(stdout);
   } else {
     o.wav = fopen(out, "wb");
@@ -346,12 +327,7 @@ int main(int argc, char **argv)
     return 1;
   }
   if (play) {
-    int j;                                   /* let the tail drain */
-    for (j = 0; j < o.nbuf; ++j)
-      while (!(o.whdr[(o.wb + j) % o.nbuf].dwFlags & WHDR_DONE))
-        WaitForSingleObject(o.wev, 100);
-    waveOutReset(o.hout);
-    waveOutClose(o.hout);
+    waveout_drain_close(&o.out);             /* let the tail drain */
   } else {
     rewind(o.wav);
     header(o.wav, (unsigned)rate, res.frames, bits);

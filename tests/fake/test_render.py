@@ -296,6 +296,35 @@ def same_as_native(c, native, windows):
                      f"{name} {' '.join(extra)}: the same messages and blocks from both builds")
 
 
+# ---- --play on Windows ---------------------------------------------------------
+
+def play(tool, name, *extra):
+    return tool.run(["--core", "{core}", "--midi", song(name), "--play",
+                     "--rate", str(RATE), "--tail", "0.1"] + list(extra))
+
+
+def no_audio_device(tool):
+    try:
+        return "cannot open an audio device" in play(tool, "timing.mid").text
+    except Exception:               # a hang is for the case to report
+        return False
+
+
+def play_same_as_out(c, tool):
+    """Played to the sound card, a song drives the engine exactly as when it
+    is written to a file, and is played to its end."""
+    for name in ("timing.mid", "twoport.mid"):
+        p, o = play(tool, name), render(tool, name)
+        if not (ran(c, p) and ran(c, o)):
+            return
+        c.expect(midi_and_blocks(p) == midi_and_blocks(o),
+                 f"{name}: the same messages and blocks as --out")
+        frames = [l for l in p.text.splitlines() if l.startswith("played: ")]
+        written = [l for l in o.text.splitlines() if ": " in l and " frames at " in l]
+        c.expect(frames and written and frames[0].split(": ", 1)[1] == written[-1].split(": ", 1)[1],
+                 f"{name}: the same summary as --out, got {frames} and {written[-1:]}")
+
+
 def main():
     tools = {t.name: t for t in harness.RENDERERS}
     for t in harness.RENDERERS:
@@ -332,6 +361,11 @@ def main():
         if not t.windows:
             case(f"{t.name}: --init and --cfg reach the engine", init_and_cfg, t)
             case(f"{t.name}: --dump prints the first frames", dump_option, t)
+        if t.windows:
+            if no_audio_device(t):
+                skip(f"{t.name}: --play drives the engine as --out does", "no audio device under wine")
+            else:
+                case(f"{t.name}: --play drives the engine as --out does", play_same_as_out, t)
     for native, windows in (("scva-render", "scva-render.exe"), ("scva-render32", "scva-render32.exe")):
         if tools[native].built() and tools[windows].built():
             case(f"{windows} drives the engine exactly as {native}", same_as_native,

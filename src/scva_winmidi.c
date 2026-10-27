@@ -39,6 +39,7 @@
 #include "console.h"
 #include "live_sched.h"
 #include "rt_priority.h"
+#include "audio_waveout.h"
 #include "core_path.h"
 #if defined(__i386__)
 /* The 32-bit core imports MSVCR100 and declares a subsystem newer than
@@ -258,11 +259,7 @@ int main(int argc, char **argv)
 #endif
   const char *missing;
   HMIDIIN hin = NULL;
-  HWAVEOUT hout = NULL;
-  HANDLE ev;
-  WAVEFORMATEX wf;
-  WAVEHDR *hdr;
-  short **pcm;
+  struct waveout out;
   float *left, *right;
   int nbuf, b, dev;
   uint64_t rendered = 0;            /* frames handed to the device so far */
@@ -381,35 +378,20 @@ int main(int argc, char **argv)
   }
 
   /* ---- audio out ---- */
-  ev = CreateEventA(NULL, FALSE, FALSE, NULL);
-  memset(&wf, 0, sizeof wf);
-  wf.wFormatTag = WAVE_FORMAT_PCM;
-  wf.nChannels = 2;
-  wf.nSamplesPerSec = rate;
-  wf.wBitsPerSample = 16;
-  wf.nBlockAlign = (WORD)(wf.nChannels * wf.wBitsPerSample / 8);
-  wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
-  if (waveOutOpen(&hout, WAVE_MAPPER, &wf, (DWORD_PTR)ev, 0,
-                  CALLBACK_EVENT) != MMSYSERR_NOERROR) {
+  switch (waveout_open(&out, rate, nbuf, block)) {
+  case WAVEOUT_NO_DEVICE:
     fprintf(stderr, "scva-winmidi: cannot open an audio device at %u Hz\n",
             rate);
+    return 1;
+  case WAVEOUT_NO_MEMORY:
     return 1;
   }
   printf("scva-winmidi[%s]: audio %u Hz, %d x %d frames (%.0f ms), map %s\n",
          name, rate, nbuf, block, 1000.0 * nbuf * block / rate, mapname);
 
-  hdr = calloc((size_t)nbuf, sizeof *hdr);
-  pcm = calloc((size_t)nbuf, sizeof *pcm);
   left = malloc((size_t)block * sizeof *left);
   right = malloc((size_t)block * sizeof *right);
-  if (!hdr || !pcm || !left || !right) return 1;
-  for (b = 0; b < nbuf; ++b) {
-    pcm[b] = calloc((size_t)block * 2, sizeof **pcm);
-    hdr[b].lpData = (LPSTR)pcm[b];
-    hdr[b].dwBufferLength = (DWORD)(block * 2 * sizeof **pcm);
-    waveOutPrepareHeader(hout, &hdr[b], sizeof hdr[b]);
-    hdr[b].dwFlags |= WHDR_DONE;          /* all free to begin with */
-  }
+  if (!left || !right) return 1;
 
   rt_priority_raise();
 
@@ -425,13 +407,13 @@ int main(int argc, char **argv)
         midiInAddBuffer(hin, &sys_hdr[b], sizeof sys_hdr[b]);
     /* Where MIDI time 0 falls in the stream: the frame playing now, less
        the MIDI time that has passed. */
-    have_played = played_frames(hout, &sched, &played);
+    have_played = played_frames(out.h, &sched, &played);
     live_sched_measure(&sched, have_played ? &played : NULL, rendered,
                        (uint32_t)(DWORD)(timeGetTime() - midi_t0));
     for (b = 0; b < nbuf; ++b) {
       struct qmsg m;
       int k;
-      if (!(hdr[b].dwFlags & WHDR_DONE)) continue;
+      if (!waveout_is_free(&out, b)) continue;
 
       /* Only what is due by the end of this block, so the timing error is one
          block rather than the whole output buffer. Anything already late goes
@@ -452,14 +434,13 @@ int main(int argc, char **argv)
         float l = left[k], r = right[k];
         if (l > 1.0f) l = 1.0f; else if (l < -1.0f) l = -1.0f;
         if (r > 1.0f) r = 1.0f; else if (r < -1.0f) r = -1.0f;
-        pcm[b][2 * k]     = (short)(l * 32767.0f);
-        pcm[b][2 * k + 1] = (short)(r * 32767.0f);
+        out.pcm[b][2 * k]     = (short)(l * 32767.0f);
+        out.pcm[b][2 * k + 1] = (short)(r * 32767.0f);
       }
-      hdr[b].dwFlags &= ~WHDR_DONE;
-      waveOutWrite(hout, &hdr[b], sizeof hdr[b]);
+      waveout_write(&out, b);
       did = 1;
     }
-    if (!did) WaitForSingleObject(ev, 100);
+    if (!did) waveout_wait(&out, 100);
   }
   printf("scva-winmidi[%s]: stopping\n", name);
   timeEndPeriod(1);
