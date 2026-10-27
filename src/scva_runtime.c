@@ -17,6 +17,10 @@
 #include <pthread.h>
 #include <unistd.h>
 #endif
+#include "sse3_shim.h"
+#if defined(__i386__)
+#include "sse2_shim.h"
+#endif
 
 /* ---------- the fifty functions the image asks for ---------------------- */
 /* Every one is MSABI because the image calls them with the Microsoft
@@ -390,4 +394,67 @@ void *scva_runtime_resolve(void *ctx, const char *dll, const char *name)
   (void)dll;
 #endif
   return NULL;
+}
+
+/* ---------- the shims ----------------------------------------------------- */
+
+int scva_runtime_patch(void *ctx, struct pe_image *img,
+                       const struct pe_patch_area *area, char *err,
+                       size_t errlen)
+{
+  (void)ctx; (void)err; (void)errlen;
+#if defined(__i386__)
+  {
+    const char *force = getenv("SCVA_SSE2");
+    int want = force ? (*force == '0' ? 0 : 1) : !scva_cpu_has_sse2();
+    if (want) {
+      int left = 0;
+      int done = scva_sse2_patch(img->base, area->spare + 0x1000,
+                                 area->spare_size - 0x1000, &left);
+      if (done < 0)
+        fprintf(stderr, "pe: SSE2 shim: this is not the core the table "
+                        "describes, leaving it alone\n");
+      else
+        fprintf(stderr, "pe: SSE2 shim, %d sites patched, %d left\n",
+                done, left);
+    }
+  }
+#else
+  (void)img;
+#endif
+
+  /* The core's interpolation sums four taps with a pair of haddps. Where the
+     processor has no SSE3 that pair becomes a call to an SSE1 stub which
+     pairs the lanes the same way, so the audio does not change. SCVA_SSE3
+     forces it on for testing on a machine that does have SSE3. */
+  {
+    const char *force = getenv("SCVA_SSE3");
+    int want = force ? (*force == '0' ? 0 : 1) : !scva_cpu_has_sse3();
+    if (want) {
+      int done = 0, i;
+      for (i = 0; i < area->ncode; ++i)
+        done += scva_sse3_patch(area->code[i].start, area->code[i].size,
+                                area->spare);
+      if (done || getenv("PE_TRACE"))
+        fprintf(stderr, "pe: SSE3 shim, %d site%s patched\n",
+                done, done == 1 ? "" : "s");
+    }
+  }
+
+  /* SCVA_DUMP_TEXT writes the patched code out so a disassembler can confirm
+     that nothing outside SSE1 survived either pass. */
+  {
+    const char *dump = getenv("SCVA_DUMP_TEXT");
+    if (dump) {
+      FILE *f = fopen(dump, "wb");
+      if (f) {
+        int i;
+        for (i = 0; i < area->ncode; ++i)
+          fwrite(area->code[i].start, 1, area->code[i].size, f);
+        fclose(f);
+        fprintf(stderr, "pe: patched code written to %s\n", dump);
+      }
+    }
+  }
+  return 1;
 }

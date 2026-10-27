@@ -45,10 +45,36 @@ struct pe_image {
    function. NULL when there is nothing to bind it to. */
 typedef void *(*pe_resolve_fn)(void *ctx, const char *dll, const char *name);
 
+struct pe_image;
+
+/* The image's code as a patch hook sees it, still writable. */
+struct pe_code {
+  unsigned char *start;
+  size_t size;
+};
+struct pe_patch_area {
+  const struct pe_code *code;   /* the code sections */
+  int ncode;
+  unsigned char *spare;         /* pe_options.spare bytes past the image,
+                                   executable once loaded and within rel32
+                                   reach of all of it; NULL if none */
+  size_t spare_size;
+};
+
+/* Rewrites the image's code before it is made read-only: instructions this
+   host cannot run, or calls that must go elsewhere. The image is relocated
+   and its imports bound; pe_symbol_coff works on it. 0, with the reason in
+   err, fails the load. */
+typedef int (*pe_patch_fn)(void *ctx, struct pe_image *img,
+                           const struct pe_patch_area *area,
+                           char *err, size_t errlen);
+
 struct pe_options {
   pe_resolve_fn resolve;
-  void *ctx;                /* passed to resolve */
+  void *ctx;                /* passed to resolve and to patch */
   int no_entry;             /* leave the entry point alone */
+  pe_patch_fn patch;        /* NULL: the code is left as it is */
+  size_t spare;             /* bytes to reserve past the image for patch */
 };
 
 /* A resolver over a table: ctx is an array of these ending in {NULL, NULL},
@@ -56,8 +82,9 @@ struct pe_options {
 struct pe_binding { const char *name; void *fn; };
 void *pe_resolve_table(void *ctx, const char *dll, const char *name);
 
-/* Map, relocate, bind the imports through opt, and run the entry point
-   unless opt says not to. NULL, with the reason in err, on failure. */
+/* Map, relocate, bind the imports through opt, patch the code through it,
+   and run the entry point unless opt says not to. NULL, with the reason in
+   err, on failure. */
 struct pe_image *pe_load(const char *path, const struct pe_options *opt,
                          char *err, size_t errlen);
 /* Gives the calling thread what the image expects of a Windows thread. Call

@@ -15,6 +15,14 @@
    these, then the library the core names, if the system has it. */
 void *scva_runtime_resolve(void *ctx, const char *dll, const char *name);
 
+/* A pe_patch_fn: the SSE2 and SSE3 shims, for a processor without them. */
+int scva_runtime_patch(void *ctx, struct pe_image *img,
+                       const struct pe_patch_area *area, char *err,
+                       size_t errlen);
+
+/* Space past the image for the shims: SSE3 stubs, then the SSE2 arena. */
+#define SCVA_SHIM_SPACE 0x10000
+
 /* Maps a core and runs its start-up. NULL, with the reason in err, on
    failure. */
 static inline struct pe_image *scva_core_map(const char *path, char *err,
@@ -24,6 +32,8 @@ static inline struct pe_image *scva_core_map(const char *path, char *err,
   opt.resolve = scva_runtime_resolve;
   opt.ctx = NULL;
   opt.no_entry = 0;
+  opt.patch = scva_runtime_patch;
+  opt.spare = SCVA_SHIM_SPACE;
   return pe_load(path, &opt, err, errlen);
 }
 #endif

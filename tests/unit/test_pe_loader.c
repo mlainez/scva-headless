@@ -43,13 +43,21 @@ static void *recording(void *ctx, const char *dll, const char *name)
   return pe_resolve_table(ctx, dll, name);
 }
 
-static struct pe_image *load(pe_resolve_fn resolve, const void *ctx, int no_entry,
-                             char *err, size_t errlen)
+static struct pe_options options(pe_resolve_fn resolve, const void *ctx,
+                                 int no_entry)
 {
   struct pe_options opt;
+  memset(&opt, 0, sizeof opt);
   opt.resolve = resolve;
   opt.ctx = (void *)ctx;
   opt.no_entry = no_entry;
+  return opt;
+}
+
+static struct pe_image *load(pe_resolve_fn resolve, const void *ctx, int no_entry,
+                             char *err, size_t errlen)
+{
+  struct pe_options opt = options(resolve, ctx, no_entry);
   return pe_load(probe_path(), &opt, err, errlen);
 }
 
@@ -114,11 +122,8 @@ TEST(a_table_binds_by_name_whatever_the_library)
 
 TEST(a_missing_file_is_named)
 {
-  struct pe_options opt;
+  struct pe_options opt = options(pe_resolve_table, hooks, 0);
   char err[256] = "";
-  opt.resolve = pe_resolve_table;
-  opt.ctx = (void *)hooks;
-  opt.no_entry = 0;
   CHECK(pe_load("/nonexistent/x.dll", &opt, err, sizeof err) == NULL);
   CHECK_STR(err, "cannot open /nonexistent/x.dll");
 }
@@ -202,14 +207,11 @@ TEST(vsc_sys_maps_and_its_entry_points_resolve)
     "_tgInit@8", "_FillAudioBuffer@8", "_InitSynth@0", "_RxMidiMsg@4"
   };
   const char *path = getenv("SCVA_TEST_VSC_SYS");
-  struct pe_options opt;
+  struct pe_options opt = options(bind_anything, NULL, 1);
   struct pe_image *img;
   char err[256] = "";
   size_t i;
   if (!path) SKIP("set SCVA_TEST_VSC_SYS to a vsc.sys");
-  opt.resolve = bind_anything;
-  opt.ctx = NULL;
-  opt.no_entry = 1;
   img = pe_load(path, &opt, err, sizeof err);
   CHECK(img != NULL);
   if (!img) { fprintf(stderr, "  %s\n", err); return; }
@@ -223,6 +225,111 @@ TEST(vsc_sys_maps_and_its_entry_points_resolve)
 #else
   SKIP("vsc.sys is a 32-bit image");
 #endif
+}
+
+/* ---- the patch hook ------------------------------------------------------ */
+
+/* mov eax, v; ret */
+static void put_return(unsigned char *at, int32_t v)
+{
+  at[0] = 0xb8;
+  memcpy(at + 1, &v, 4);
+  at[5] = 0xc3;
+}
+
+/* What a hook saw, and what it is to do. */
+struct patching {
+  int calls;
+  int covered;              /* probe_read_static lies in a code section */
+  int use_spare;            /* jump to a stub in the spare area */
+  int fail;
+};
+
+static int patch_read_static(struct patching *p, struct pe_image *img,
+                             const struct pe_patch_area *area,
+                             char *err, size_t errlen)
+{
+  unsigned char *fn = pe_symbol(img, "probe_read_static");
+  int i;
+  ++p->calls;
+  if (p->fail) { snprintf(err, errlen, "refused by the hook"); return 0; }
+  if (!fn) return 1;
+  for (i = 0; i < area->ncode; ++i)
+    if (fn >= area->code[i].start && fn < area->code[i].start + area->code[i].size)
+      p->covered = 1;
+  if (p->use_spare && area->spare) {
+    int32_t rel = (int32_t)(area->spare - (fn + 5));
+    put_return(area->spare, 0x2222);
+    fn[0] = 0xe9;                         /* jmp rel32 */
+    memcpy(fn + 1, &rel, 4);
+  } else {
+    put_return(fn, 0x1111);
+  }
+  return 1;
+}
+
+/* resolve and patch share one ctx: the table, and the hook's state. */
+struct hooked_ctx { const struct pe_binding *table; struct patching *p; };
+
+static void *resolve_hooked(void *ctx, const char *dll, const char *name)
+{
+  return pe_resolve_table((void *)((struct hooked_ctx *)ctx)->table, dll, name);
+}
+
+static int patch_hooked(void *ctx, struct pe_image *img,
+                        const struct pe_patch_area *area, char *err, size_t errlen)
+{
+  return patch_read_static(((struct hooked_ctx *)ctx)->p, img, area, err, errlen);
+}
+
+static struct pe_image *load_patched(struct patching *p, size_t spare,
+                                     char *err, size_t errlen)
+{
+  static struct hooked_ctx hc;
+  struct pe_options opt = options(resolve_hooked, &hc, 0);
+  hc.table = hooks;
+  hc.p = p;
+  opt.patch = patch_hooked;
+  opt.spare = spare;
+  return pe_load(probe_path(), &opt, err, errlen);
+}
+
+TEST(without_a_hook_the_code_is_left_as_it_is)
+{
+  char err[256] = "";
+  struct pe_image *img = load(pe_resolve_table, hooks, 0, err, sizeof err);
+  CHECK(img && call_void(img, "probe_read_static") == 0x5678);
+  pe_unload(img);
+}
+
+TEST(a_hook_rewrites_code_that_then_runs)
+{
+  struct patching p = {0, 0, 0, 0};
+  char err[256] = "";
+  struct pe_image *img = load_patched(&p, 0, err, sizeof err);
+  CHECK(img != NULL);
+  CHECK_INT(p.calls, 1);
+  CHECK(p.covered);
+  CHECK(img && call_void(img, "probe_read_static") == 0x1111);
+  CHECK(img && call_int(img, "probe_call", 4) == 8);     /* the rest untouched */
+  pe_unload(img);
+}
+
+TEST(the_spare_area_runs_and_is_in_reach_of_the_image)
+{
+  struct patching p = {0, 0, 1, 0};
+  char err[256] = "";
+  struct pe_image *img = load_patched(&p, 0x1000, err, sizeof err);
+  CHECK(img && call_void(img, "probe_read_static") == 0x2222);
+  pe_unload(img);
+}
+
+TEST(a_hook_that_fails_fails_the_load_with_its_reason)
+{
+  struct patching p = {0, 0, 0, 1};
+  char err[256] = "";
+  CHECK(load_patched(&p, 0, err, sizeof err) == NULL);
+  CHECK_STR(err, "refused by the hook");
 }
 
 int main(void)
@@ -242,5 +349,9 @@ int main(void)
   RUN(a_file_static_is_found_as_a_static_and_only_as_one);
   RUN(a_name_is_matched_whole);
   RUN(vsc_sys_maps_and_its_entry_points_resolve);
+  RUN(without_a_hook_the_code_is_left_as_it_is);
+  RUN(a_hook_rewrites_code_that_then_runs);
+  RUN(the_spare_area_runs_and_is_in_reach_of_the_image);
+  RUN(a_hook_that_fails_fails_the_load_with_its_reason);
   return test_summary();
 }

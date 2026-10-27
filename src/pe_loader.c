@@ -23,13 +23,6 @@
 #include <sys/syscall.h>
 #endif
 
-/* stub space reserved past the image: SSE3 stubs then the SSE2 arena */
-#define SCVA_SHIM_SPACE 0x10000
-#include "sse3_shim.h"
-#if defined(__i386__)
-#include "sse2_shim.h"
-#endif
-
 
 /* Windows reads its thread block through a segment register, and on both
    widths Linux happens to leave that exact register alone: 64-bit Windows
@@ -437,15 +430,16 @@ struct pe_image *pe_load(const char *path, const struct pe_options *opt,
   /* Prefer the image's own base: then the relocation pass has nothing to do
      and cannot be the thing that is wrong. Falling back to anywhere is fine,
      but if behaviour differs between the two, the relocations are the suspect. */
-  /* Space past the image belongs to the shim stubs, so that the calls which
+  /* Space past the image belongs to the patch hook, so that the calls which
      replace each patched site are always within reach of rel32. */
-  size_t mapsz = (size_t)oh->imagesz + SCVA_SHIM_SPACE;
+  size_t mapsz = (size_t)oh->imagesz + opt->spare;
   unsigned char *base = pe_reserve((void *)(uintptr_t)oh->imagebase, mapsz);
   if (!base) FAIL("cannot reserve %u bytes", oh->imagesz);
   if (getenv("PE_TRACE"))
     fprintf(stderr, base == (unsigned char *)(uintptr_t)oh->imagebase
             ? "pe: mapped at its preferred base, no relocation needed\n"
             : "pe: relocating (preferred base taken)\n");
+  img->base = base; img->size = mapsz;
   memcpy(base, g_file, oh->headersz);
   struct sh *sec = (struct sh *)(nt + 4 + sizeof *fh + fh->optsz);
   for (int i = 0; i < fh->nsec; ++i) {
@@ -499,42 +493,24 @@ struct pe_image *pe_load(const char *path, const struct pe_options *opt,
 
   if (getenv("PE_TRACE")) fprintf(stderr, "pe: %s\n", "imports bound");
 
-  /* The core's interpolation sums four taps with a pair of haddps. Where the
-     processor has no SSE3 that pair becomes a call to an SSE1 stub which
-     pairs the lanes the same way, so the audio does not change. SCVA_SSE3
-     forces it on for testing on a machine that does have SSE3. */
-#if defined(__i386__)
-  {
-    const char *force = getenv("SCVA_SSE2");
-    int want = force ? (*force == '0' ? 0 : 1) : !scva_cpu_has_sse2();
-    if (want) {
-      int left = 0;
-      int done = scva_sse2_patch(base, base + oh->imagesz + 0x1000,
-                                 SCVA_SHIM_SPACE - 0x1000, &left);
-      if (done < 0)
-        fprintf(stderr, "pe: SSE2 shim: this is not the core the table "
-                        "describes, leaving it alone\n");
-      else
-        fprintf(stderr, "pe: SSE2 shim, %d sites patched, %d left\n",
-                done, left);
+  if (opt->patch) {
+    struct pe_patch_area area;
+    struct pe_code *code = calloc(fh->nsec ? fh->nsec : 1, sizeof *code);
+    int ok;
+    if (!code) FAIL("out of memory");
+    area.code = code;
+    area.ncode = 0;
+    for (int i = 0; i < fh->nsec; ++i) {
+      if (!(sec[i].chars & 0x20000000)) continue;       /* code only */
+      code[area.ncode].start = base + sec[i].vaddr;
+      code[area.ncode].size = sec[i].vsize;
+      ++area.ncode;
     }
-  }
-#endif
-
-  {
-    const char *force = getenv("SCVA_SSE3");
-    int want = force ? (*force == '0' ? 0 : 1) : !scva_cpu_has_sse3();
-    if (want) {
-      int done = 0;
-      for (int i = 0; i < fh->nsec; ++i) {
-        if (!(sec[i].chars & 0x20000000)) continue;      /* code only */
-        done += scva_sse3_patch(base + sec[i].vaddr, sec[i].vsize,
-                                base + oh->imagesz);
-      }
-      if (done || getenv("PE_TRACE"))
-        fprintf(stderr, "pe: SSE3 shim, %d site%s patched\n",
-                done, done == 1 ? "" : "s");
-    }
+    area.spare = opt->spare ? base + oh->imagesz : NULL;
+    area.spare_size = opt->spare;
+    ok = opt->patch(opt->ctx, img, &area, err, errlen);
+    free(code);
+    if (!ok) return NULL;
   }
 
 #if defined(_WIN32) && defined(__i386__)
@@ -587,22 +563,6 @@ struct pe_image *pe_load(const char *path, const struct pe_options *opt,
   }
 #endif
 
-  /* SCVA_DUMP_TEXT writes the patched code out so a disassembler can confirm
-     that nothing outside SSE1 survived either pass. */
-  {
-    const char *dump = getenv("SCVA_DUMP_TEXT");
-    if (dump) {
-      FILE *f = fopen(dump, "wb");
-      if (f) {
-        for (int k = 0; k < fh->nsec; ++k)
-          if (sec[k].chars & 0x20000000)
-            fwrite(base + sec[k].vaddr, 1, sec[k].vsize, f);
-        fclose(f);
-        fprintf(stderr, "pe: patched code written to %s\n", dump);
-      }
-    }
-  }
-
   /* protections: everything executable-and-readable is simplest and safe here */
   for (int i = 0; i < fh->nsec; ++i) {
     size_t len = (sec[i].vsize + 0xfff) & ~(size_t)0xfff;
@@ -610,7 +570,7 @@ struct pe_image *pe_load(const char *path, const struct pe_options *opt,
                (sec[i].chars & 0x20000000) != 0,
                (sec[i].chars & 0x80000000) != 0);
   }
-  pe_setprot(base + oh->imagesz, SCVA_SHIM_SPACE, 1, 0);
+  if (opt->spare) pe_setprot(base + oh->imagesz, opt->spare, 1, 0);
 
   if (getenv("PE_TRACE")) fprintf(stderr, "pe: %s\n", "protections set");
   /* Thread-local storage. The image reads gs:[0x58] for its TLS pointer array
@@ -669,7 +629,7 @@ struct pe_image *pe_load(const char *path, const struct pe_options *opt,
   }
 #endif
 
-  img->base = base; img->size = mapsz; img->entry = oh->entry;
+  img->entry = oh->entry;
   if (oh->entry && !opt->no_entry) {
     /* DllMain is WINAPI: stdcall on i386, so the callee clears the arguments
        and the caller must not. */
