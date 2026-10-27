@@ -321,7 +321,25 @@ $(BUILD)/test/lv2_host32: tests/plugins/lv2_host.c
 	@mkdir -p $(@D)
 	$(CC) -m32 $(CFLAGS) -o $@ $< -ldl -lpthread -lm
 
-PLUGIN_HOSTS := $(BUILD)/test/lv2_host64 $(BUILD)/test/lv2_host32
+$(BUILD)/test/clap_host64: tests/plugins/clap_host.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -I$(CLAP_DIR) -o $@ $< -ldl -lpthread -lm
+
+$(BUILD)/test/clap_host32: tests/plugins/clap_host.c
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -I$(CLAP_DIR) -o $@ $< -ldl -lpthread -lm
+
+$(BUILD)/test/clap_host_win64.exe: tests/plugins/clap_host.c
+	@mkdir -p $(@D)
+	$(MINGW) $(WINFLAGS) -I$(CLAP_DIR) -o $@ $<
+
+$(BUILD)/test/clap_host_win32.exe: tests/plugins/clap_host.c
+	@mkdir -p $(@D)
+	$(MINGW32) $(WINFLAGS) -I$(CLAP_DIR) -o $@ $<
+
+PLUGIN_HOSTS := $(BUILD)/test/lv2_host64 $(BUILD)/test/lv2_host32 \
+                $(BUILD)/test/clap_host64 $(BUILD)/test/clap_host32 \
+                $(BUILD)/test/clap_host_win64.exe $(BUILD)/test/clap_host_win32.exe
 plugin-hosts: $(PLUGIN_HOSTS)
 
 test-fake: $(FAKECORES) $(PLUGIN_HOSTS)

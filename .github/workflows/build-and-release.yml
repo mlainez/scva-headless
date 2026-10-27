@@ -84,7 +84,7 @@ jobs:
       # engine, and what they write. The daemon's part needs an ALSA
       # sequencer, which runners lack, so it reports itself skipped.
       - name: Engine-level behaviour against the fake core
-        run: SCVA_TEST_STRICT=1 make test-fake
+        run: SCVA_TEST_STRICT=1 make test-fake CLAP_DIR=/tmp/clap/include
 
       - name: Smoke-test the Linux binaries
         run: |

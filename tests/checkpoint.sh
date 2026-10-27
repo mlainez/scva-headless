@@ -57,8 +57,8 @@ else
 fi
 
 if have wine && have python3; then
-  tier fake "every tool against the fake core (daemon needs /dev/snd/seq)" \
-    env SCVA_TEST_STRICT=1 make test-fake
+  tier fake "every tool and plugin against the fake core (daemon needs /dev/snd/seq)" \
+    env SCVA_TEST_STRICT=1 make test-fake CLAP_DIR="$clap_dir"
 else
   skip fake "fake-core engine tests (need wine and python3)"
 fi
