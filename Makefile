@@ -246,7 +246,122 @@ $(BUILD)/scva-render32.exe: src/scva_render.c src/pe_loader.c src/pe_loader.h \
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_render.c \
 	   src/pe_loader.c -lwinmm
 
+# ---- tests ---------------------------------------------------------------
+# make test-unit   module tests, built and run in both widths; no core needed
+# make test-cli    every built binary's command line, up to the point where a
+#                  core would be needed. Binaries not built are reported as
+#                  skipped, or fail the run with SCVA_TEST_STRICT=1 (CI).
+# make test        both
+# tests/checkpoint.sh runs every tier this machine can run and prints a table.
+
+UNIT_TESTS := $(patsubst tests/unit/%.c,%,$(wildcard tests/unit/test_*.c))
+UNIT64     := $(addprefix $(BUILD)/test/unit64/,$(UNIT_TESTS))
+UNIT32     := $(addprefix $(BUILD)/test/unit32/,$(UNIT_TESTS))
+UNIT_DEPS  := tests/unit/check.h $(wildcard src/*.h) src/scva_lists.c
+
+$(BUILD)/test/unit64/%: tests/unit/%.c $(UNIT_DEPS)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -Isrc -o $@ $< src/scva_lists.c -lm
+
+$(BUILD)/test/unit32/%: tests/unit/%.c $(UNIT_DEPS)
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -Isrc -o $@ $< src/scva_lists.c -lm
+
+test-unit: $(UNIT64) $(UNIT32)
+	@tests/run-unit.sh $^
+
+# The modules the Windows binaries compile in, built with the same toolchains
+# and flags, run under wine: msvcrt is not glibc (its qsort is not stable, for
+# one), and the Windows renderers depend on these behaviours too.
+UNIT_WIN      := test_map test_midi_song
+UNIT_WIN64    := $(addprefix $(BUILD)/test/win64/,$(addsuffix .exe,$(UNIT_WIN)))
+UNIT_WIN32    := $(addprefix $(BUILD)/test/win32/,$(addsuffix .exe,$(UNIT_WIN)))
+
+$(BUILD)/test/win64/%.exe: tests/unit/%.c $(UNIT_DEPS)
+	@mkdir -p $(@D)
+	$(MINGW) $(WINFLAGS) -Isrc -o $@ $<
+
+$(BUILD)/test/win32/%.exe: tests/unit/%.c $(UNIT_DEPS)
+	@mkdir -p $(@D)
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -Isrc -o $@ $<
+
+test-unit-win: $(UNIT_WIN64) $(UNIT_WIN32)
+	@SCVA_TEST_RUNNER=wine tests/run-unit.sh $^
+
+test-cli:
+	@tests/cli/run.sh
+
+# The fake core (tests/fakecore/fakecore.c), in the four forms the binaries
+# load: no imports for this project's PE loader on Linux, kernel32 for
+# LoadLibrary and the loader on Windows. Each also comes as "-noexport",
+# lacking one export, for the tools' missing-export path.
+FAKE_DIR      := $(BUILD)/test/fakecore
+FAKE_VARIANTS := linux64 linux32 win64 win32
+FAKECORES     := $(foreach v,$(FAKE_VARIANTS),$(FAKE_DIR)/$(v)/SCCore.dll \
+                                              $(FAKE_DIR)/$(v)-noexport/SCCore.dll)
+FAKE_FLAGS    := -O2 -Wall -shared -nostdlib -ffreestanding -fno-builtin
+fake_cc        = $(if $(findstring 32,$1),$(MINGW32),$(MINGW))
+fake_entry     = $(if $(findstring 32,$1),_DllMain@12,DllMain)
+fake_defs      = $(if $(findstring linux,$1),-DFAKE_LINUX) $(if $(findstring noexport,$1),-DFAKE_NO_VOICES)
+fake_libs      = $(if $(findstring win,$1),-lkernel32) -lgcc
+
+$(FAKE_DIR)/%/SCCore.dll: tests/fakecore/fakecore.c
+	@mkdir -p $(@D)
+	$(call fake_cc,$*) $(FAKE_FLAGS) $(call fake_defs,$*) -o $@ $< \
+	   -Wl,--entry,$(call fake_entry,$*) $(call fake_libs,$*)
+
+fakecores: $(FAKECORES)
+
+# Minimal plugin hosts for the tests, one per width.
+$(BUILD)/test/lv2_host64: tests/plugins/lv2_host.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -o $@ $< -ldl -lpthread -lm
+
+$(BUILD)/test/lv2_host32: tests/plugins/lv2_host.c
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -o $@ $< -ldl -lpthread -lm
+
+$(BUILD)/test/clap_host64: tests/plugins/clap_host.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -I$(CLAP_DIR) -o $@ $< -ldl -lpthread -lm
+
+$(BUILD)/test/clap_host32: tests/plugins/clap_host.c
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -I$(CLAP_DIR) -o $@ $< -ldl -lpthread -lm
+
+$(BUILD)/test/clap_host_win64.exe: tests/plugins/clap_host.c
+	@mkdir -p $(@D)
+	$(MINGW) $(WINFLAGS) -I$(CLAP_DIR) -o $@ $<
+
+$(BUILD)/test/clap_host_win32.exe: tests/plugins/clap_host.c
+	@mkdir -p $(@D)
+	$(MINGW32) $(WINFLAGS) -I$(CLAP_DIR) -o $@ $<
+
+PLUGIN_HOSTS := $(BUILD)/test/lv2_host64 $(BUILD)/test/lv2_host32 \
+                $(BUILD)/test/clap_host64 $(BUILD)/test/clap_host32 \
+                $(BUILD)/test/clap_host_win64.exe $(BUILD)/test/clap_host_win32.exe
+plugin-hosts: $(PLUGIN_HOSTS)
+
+test-fake: $(FAKECORES) $(PLUGIN_HOSTS)
+	@tests/fake/run.sh
+
+# Needs the user's own core: SCVA_TEST_DLL_DIR=<dir with SCCore.dll>.
+test-core:
+	@tests/core/run.sh
+
+$(BUILD)/test/icount: tests/perf/icount.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -o $@ $<
+
+# Instructions retired, against a baseline per core and CPU; same variables.
+test-perf: $(BUILD)/test/icount $(BUILD)/test/lv2_host64
+	@midi=$$(mktemp -d) && python3 tests/midi/gen.py $$midi && \
+	 SCVA_TEST_MIDI=$$midi python3 tests/perf/run.py $(PERF_ARGS)
+
+test: test-unit test-cli
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones tones32 windows windows32 clean
+.PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones tones32 windows windows32 clean \
+        test test-unit test-unit-win test-cli test-fake test-core test-perf fakecores plugin-hosts

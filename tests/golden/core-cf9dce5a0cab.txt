@@ -1,0 +1,39 @@
+# SHA-256 of scva-render output with core SHA-1 cf9dce5a0cab...
+# case | settings  sha256
+corpus/88p_base.mid@ec3b4859 | default 48k f32 d2477cf62b48aeb53f62ff0bd418dc17e390b9e9754a35d040b03541721addd6
+corpus/88p_base.mid@ec3b4859 | sc-88 48k f32 685e913b6e29291c25911dc70844948e9492af7441bfc83641ab2c9ab3f05065
+corpus/88p_lofi.mid@eef27ec1 | default 48k f32 d83a1e9e03316f6af89f38c4df50a1891eb012a31f311b7417cecde45cc4b277
+corpus/88p_lofi.mid@eef27ec1 | sc-88 48k f32 0324bb1eb1fd2d765426635e98074c2fca25ad7df0d44e8dc322e62cfa2d1c1c
+corpus/88p_orch.mid@4f268367 | default 48k f32 21675c83ba960ab13223c0b58caf291415c3cf85c3c9aaa1f387e5431ed9d0a7
+corpus/88p_orch.mid@4f268367 | sc-88 48k f32 fb67eb37ef165c4ef0155b3672b5c747c4f22d74e71beef3fe0d9e0e54353e13
+corpus/autumnal.mid@a28b0465 | default 48k f32 f7ca7346103898e7777c6e44de9cbaf2d62183da52b93d5d4122013d877f227f
+corpus/autumnal.mid@a28b0465 | sc-88 48k f32 f7ca7346103898e7777c6e44de9cbaf2d62183da52b93d5d4122013d877f227f
+corpus/dotabata.mid@02a921bc | default 48k f32 31bedd907e6c74c36a3c753c826332a23a18bbbf0faded5bdfe5a418b08178ea
+corpus/dotabata.mid@02a921bc | sc-88 48k f32 31bedd907e6c74c36a3c753c826332a23a18bbbf0faded5bdfe5a418b08178ea
+corpus/gold_spr.mid@1c7e19ea | default 48k f32 31ca900c4946891a2315c4427db06e9566d44769d6a006917d9f964493d311b8
+corpus/gold_spr.mid@1c7e19ea | sc-88 48k f32 31ca900c4946891a2315c4427db06e9566d44769d6a006917d9f964493d311b8
+corpus/skatey8.mid@566db4de | default 48k f32 323db0f4bc98d64d11ad293f95cb39af269d00098dbbf132075058818423c88e
+corpus/skatey8.mid@566db4de | sc-88 48k f32 323db0f4bc98d64d11ad293f95cb39af269d00098dbbf132075058818423c88e
+corpus/txplasma.mid@166fd54c | default 48k f32 7c2e3f025ad3b1e0c42dc355b45f4bcac462451c546737941eb89ff58907abea
+corpus/txplasma.mid@166fd54c | sc-88 48k f32 7c2e3f025ad3b1e0c42dc355b45f4bcac462451c546737941eb89ff58907abea
+synthetic/programs.mid | default 44.1k s16 c25b8c26681f75d5117ce3994499b757ff116a9d8a8db538c38c78b2cb084ec6
+synthetic/programs.mid | default 48k f32 62c7e219e946bc19c36233285a984aec1d8709f16567c2abed900a8ad03f7a05
+synthetic/programs.mid | gm reset 48k f32 2d05a07d8f5cb731bc7dc4aea827c866e669e6d76aa373781bb096908c98bde0
+synthetic/programs.mid | sc-55 48k f32 b8d03d0dd16dce83e476f528aefc778dd0cf18b23feffb1a1de42cdffe3707e2
+synthetic/programs.mid | sc-88 48k f32 62c7e219e946bc19c36233285a984aec1d8709f16567c2abed900a8ad03f7a05
+synthetic/programs.mid | sc-8820 48k f32 2d05a07d8f5cb731bc7dc4aea827c866e669e6d76aa373781bb096908c98bde0
+synthetic/programs.mid | sc-88pro 48k f32 2d05a07d8f5cb731bc7dc4aea827c866e669e6d76aa373781bb096908c98bde0
+synthetic/timing.mid | default 44.1k s16 7018ab6969ffd0716ea8c5ce36e8f62a4cb71b20d55b18ce3037e09dea31c41a
+synthetic/timing.mid | default 48k f32 d95b00368c73b6dcf57a3289809a07cad58dacb8fddfc32228201f9f45a3b036
+synthetic/timing.mid | gm reset 48k f32 d95b00368c73b6dcf57a3289809a07cad58dacb8fddfc32228201f9f45a3b036
+synthetic/timing.mid | sc-55 48k f32 d95b00368c73b6dcf57a3289809a07cad58dacb8fddfc32228201f9f45a3b036
+synthetic/timing.mid | sc-88 48k f32 d95b00368c73b6dcf57a3289809a07cad58dacb8fddfc32228201f9f45a3b036
+synthetic/timing.mid | sc-8820 48k f32 d95b00368c73b6dcf57a3289809a07cad58dacb8fddfc32228201f9f45a3b036
+synthetic/timing.mid | sc-88pro 48k f32 d95b00368c73b6dcf57a3289809a07cad58dacb8fddfc32228201f9f45a3b036
+synthetic/twoport.mid | default 44.1k s16 618382f4b535b58250b521a7c21698f5f77867a28e7ffac7f43e833cb5743b11
+synthetic/twoport.mid | default 48k f32 60f385ea4c68320a1aabec3b6fc46d0643969456494706c18cac1503914b789b
+synthetic/twoport.mid | gm reset 48k f32 60f385ea4c68320a1aabec3b6fc46d0643969456494706c18cac1503914b789b
+synthetic/twoport.mid | sc-55 48k f32 d3cb73b8d1ebba13dcd4c065671e61c73d34587a00493520d55d4b6f3c3968b5
+synthetic/twoport.mid | sc-88 48k f32 e7877fe102921ea300641ec0bfc245378b735de6f77f27232effbae6efed01bc
+synthetic/twoport.mid | sc-8820 48k f32 60f385ea4c68320a1aabec3b6fc46d0643969456494706c18cac1503914b789b
+synthetic/twoport.mid | sc-88pro 48k f32 60f385ea4c68320a1aabec3b6fc46d0643969456494706c18cac1503914b789b

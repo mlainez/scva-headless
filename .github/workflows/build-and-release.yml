@@ -28,7 +28,8 @@ jobs:
             libasound2-dev libasound2-dev:i386 \
             lv2-dev \
             gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
-            libx11-dev libx11-6:i386
+            libx11-dev libx11-6:i386 \
+            wine wine64 wine32:i386
 
       # Header-only, MIT (https://github.com/free-audio/clap), not vendored -
       # same source the Makefile's CLAP_DIR comment already points at.
@@ -64,6 +65,26 @@ jobs:
 
       - name: make clap-32 (32-bit Linux .clap)
         run: make clap-32 CLAP_DIR=/tmp/clap/include
+
+      - name: make tones tones32
+        run: make tones tones32
+
+      # No SCCore.dll here, so these pin everything that does not need one.
+      # Strict: a binary or tool that is missing fails the run.
+      - name: Module tests (64- and 32-bit)
+        run: make test-unit
+
+      - name: Module tests in the Windows builds (under wine)
+        run: make test-unit-win
+
+      - name: Command-line and artifact behaviour of every binary
+        run: SCVA_TEST_STRICT=1 make test-cli
+
+      # The tools against a stand-in core built here: what they ask of the
+      # engine, and what they write. The daemon's part needs an ALSA
+      # sequencer, which runners lack, so it reports itself skipped.
+      - name: Engine-level behaviour against the fake core
+        run: SCVA_TEST_STRICT=1 make test-fake CLAP_DIR=/tmp/clap/include
 
       - name: Smoke-test the Linux binaries
         run: |
