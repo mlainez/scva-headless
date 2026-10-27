@@ -231,15 +231,15 @@ $(BUILD)/scva-tones32: src/scva_tones.c src/scva_names.h | $(BUILD)
 $(BUILD)/scva-render.exe: src/scva_render.c src/map_policy.c src/map_policy.h src/render_loop.c src/render_loop.h src/midi_song.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h | $(BUILD)
 	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_render.c src/map_policy.c src/render_loop.c -lwinmm
 
-$(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h \
+$(BUILD)/scva-winmidi.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/live_sched.c src/live_sched.h src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h \
                            | $(BUILD)
-	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/console.c -lwinmm
+	$(MINGW) $(WINFLAGS) $(WINXPFLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/console.c src/live_sched.c -lwinmm
 
-$(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/pe_loader.c src/pe_loader.h \
+$(BUILD)/scva-winmidi32.exe: src/scva_winmidi.c src/map_policy.c src/map_policy.h src/console.c src/console.h src/live_sched.c src/live_sched.h src/pe_loader.c src/pe_loader.h \
                              src/core_path.h src/scva_core_api.h src/scva_core.h src/midi_reset.h src/scva_map.h src/win9x.h src/sse3_shim.h \
                              src/sse2_shim.h src/sse2_sites.h src/sse2_cvt.h \
                              | $(BUILD)
-	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/console.c \
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ src/scva_winmidi.c src/map_policy.c src/console.c src/live_sched.c \
 	   src/pe_loader.c -lwinmm
 
 # ---- the 32-bit Windows path --------------------------------------------
@@ -267,15 +267,15 @@ $(BUILD)/scva-render32.exe: src/scva_render.c src/map_policy.c src/map_policy.h 
 UNIT_TESTS := $(patsubst tests/unit/%.c,%,$(wildcard tests/unit/test_*.c))
 UNIT64     := $(addprefix $(BUILD)/test/unit64/,$(UNIT_TESTS))
 UNIT32     := $(addprefix $(BUILD)/test/unit32/,$(UNIT_TESTS))
-UNIT_DEPS  := tests/unit/check.h $(wildcard src/*.h) src/scva_lists.c src/map_policy.c src/render_loop.c src/console.c
+UNIT_DEPS  := tests/unit/check.h $(wildcard src/*.h) src/scva_lists.c src/map_policy.c src/render_loop.c src/console.c src/live_sched.c
 
 $(BUILD)/test/unit64/%: tests/unit/%.c $(UNIT_DEPS)
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -Isrc -o $@ $< src/scva_lists.c src/map_policy.c src/render_loop.c src/console.c -lm
+	$(CC) $(CFLAGS) -Isrc -o $@ $< src/scva_lists.c src/map_policy.c src/render_loop.c src/console.c src/live_sched.c -lm
 
 $(BUILD)/test/unit32/%: tests/unit/%.c $(UNIT_DEPS)
 	@mkdir -p $(@D)
-	$(CC) -m32 $(CFLAGS) -Isrc -o $@ $< src/scva_lists.c src/map_policy.c src/render_loop.c src/console.c -lm
+	$(CC) -m32 $(CFLAGS) -Isrc -o $@ $< src/scva_lists.c src/map_policy.c src/render_loop.c src/console.c src/live_sched.c -lm
 
 test-unit: $(UNIT64) $(UNIT32)
 	@tests/run-unit.sh $^
@@ -283,17 +283,17 @@ test-unit: $(UNIT64) $(UNIT32)
 # The modules the Windows binaries compile in, built with the same toolchains
 # and flags, run under wine: msvcrt is not glibc (its qsort is not stable, for
 # one), and the Windows renderers depend on these behaviours too.
-UNIT_WIN      := test_console test_map test_map_policy test_midi_song test_render_loop
+UNIT_WIN      := test_console test_live_sched test_map test_map_policy test_midi_song test_render_loop
 UNIT_WIN64    := $(addprefix $(BUILD)/test/win64/,$(addsuffix .exe,$(UNIT_WIN)))
 UNIT_WIN32    := $(addprefix $(BUILD)/test/win32/,$(addsuffix .exe,$(UNIT_WIN)))
 
 $(BUILD)/test/win64/%.exe: tests/unit/%.c $(UNIT_DEPS)
 	@mkdir -p $(@D)
-	$(MINGW) $(WINFLAGS) -Isrc -o $@ $< src/map_policy.c src/render_loop.c src/console.c
+	$(MINGW) $(WINFLAGS) -Isrc -o $@ $< src/map_policy.c src/render_loop.c src/console.c src/live_sched.c
 
 $(BUILD)/test/win32/%.exe: tests/unit/%.c $(UNIT_DEPS)
 	@mkdir -p $(@D)
-	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -Isrc -o $@ $< src/map_policy.c src/render_loop.c src/console.c
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -Isrc -o $@ $< src/map_policy.c src/render_loop.c src/console.c src/live_sched.c
 
 test-unit-win: $(UNIT_WIN64) $(UNIT_WIN32)
 	@SCVA_TEST_RUNNER=wine tests/run-unit.sh $^

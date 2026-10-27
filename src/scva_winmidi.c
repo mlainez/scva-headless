@@ -37,6 +37,7 @@
 #include "scva_map.h"
 #include "map_policy.h"
 #include "console.h"
+#include "live_sched.h"
 #include "core_path.h"
 #if defined(__i386__)
 /* The 32-bit core imports MSVCR100 and declares a subsystem newer than
@@ -86,25 +87,14 @@ static void queue_put(const unsigned char *b, int len, unsigned int when)
    the stream being rendered. Draining the whole queue into each block instead
    is what makes a large buffer ruin the rhythm: every event that arrived
    during the buffer window lands on the same instant, so the timing error is
-   the buffer size. Honouring the arrival time keeps it at one block.
-
-   `origin` is the stream frame that was playing at MIDI time 0, re-measured
-   from the device's position every time round the loop, so an underrun or
-   two drifting clocks move it rather than delay every later message. */
-static int queue_get_due(struct qmsg *out, uint64_t until, double origin,
-                         double rate, unsigned int latency_ms,
-                         uint64_t horizon)
+   the buffer size. Honouring the arrival time keeps it at one block. */
+static int queue_get_due(struct qmsg *out, uint64_t until,
+                         const struct live_sched *sched)
 {
   int got = 0;
   EnterCriticalSection(&q_lock);
   if (q_tail != q_head) {
-    double at = origin + ((double)q[q_tail].when + latency_ms)
-                         * rate / 1000.0;
-    uint64_t due = at > 0.0 ? (uint64_t)at : 0;
-    /* Never hold a message longer than the buffer is deep, so a bad
-       position reading cannot stall the queue. */
-    if (due > until + horizon) due = until;
-    if (due <= until) {
+    if (live_sched_due(sched, q[q_tail].when, until)) {
       *out = q[q_tail];
       q_tail = (q_tail + 1) % QCAP;
       got = 1;
@@ -148,14 +138,10 @@ static void CALLBACK midi_cb(HMIDIIN h, UINT msg, DWORD_PTR inst,
   }
 }
 
-/* Frames the device has played. Some drivers only report bytes, and either
-   count is a DWORD that wraps, so it is extended to 64 bits here. Returns 0
+/* Frames the device has played. Some drivers only report bytes. Returns 0
    when the device reports neither. */
-static int played_frames(HWAVEOUT h, uint64_t *frames)
+static int played_frames(HWAVEOUT h, struct live_sched *sched, uint64_t *frames)
 {
-  static DWORD last;
-  static uint64_t total;
-  static int have;
   MMTIME t;
   DWORD now;
 
@@ -164,11 +150,7 @@ static int played_frames(HWAVEOUT h, uint64_t *frames)
   if (t.wType == TIME_SAMPLES) now = t.u.sample;
   else if (t.wType == TIME_BYTES) now = t.u.cb / 4;  /* 16-bit stereo */
   else return 0;
-  if (have) total += (DWORD)(now - last);
-  else total = now;
-  last = now;
-  have = 1;
-  *frames = total;
+  *frames = live_sched_position(sched, now);
   return 1;
 }
 
@@ -284,8 +266,7 @@ int main(int argc, char **argv)
   int nbuf, b, dev;
   uint64_t rendered = 0;            /* frames handed to the device so far */
   DWORD midi_t0;                    /* timeGetTime() at midiInStart */
-  double origin = 0.0;              /* stream frame at MIDI time 0 */
-  int have_origin = 0;
+  struct live_sched sched;
 
   for (i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--core") && i + 1 < argc) core = argv[++i];
@@ -325,6 +306,8 @@ int main(int argc, char **argv)
   nbuf = (int)((double)latency_ms * rate / 1000.0 / block);
   if (nbuf < 2) nbuf = 2;
   if (nbuf > 32) nbuf = 32;
+  live_sched_init(&sched, (double)rate, (unsigned)latency_ms,
+                  (uint64_t)nbuf * block);
 
   /* ---- the engine ---- */
   {
@@ -437,24 +420,16 @@ int main(int argc, char **argv)
   for (;;) {
     int did = 0;
     uint64_t played;
-    double measured;
+    int have_played;
     if (poll_console(&maps)) break;
     for (b = 0; b < NSYSBUF; ++b)
       if (InterlockedExchange(&sys_returned[b], 0))
         midiInAddBuffer(hin, &sys_hdr[b], sizeof sys_hdr[b]);
     /* Where MIDI time 0 falls in the stream: the frame playing now, less
-       the MIDI time that has passed. Without a position from the device,
-       assume it is a whole buffer behind what was handed to it. */
-    if (!played_frames(hout, &played))
-      played = rendered > (uint64_t)nbuf * block
-               ? rendered - (uint64_t)nbuf * block : 0;
-    measured = (double)played
-               - (double)(DWORD)(timeGetTime() - midi_t0) * rate / 1000.0;
-    /* Drivers report the position in steps of several milliseconds, so one
-       reading is smoothed over the last 16 rather than used as it is. A
-       step from an underrun settles within about 16 blocks. */
-    if (have_origin) origin += (measured - origin) / 16.0;
-    else { origin = measured; have_origin = 1; }
+       the MIDI time that has passed. */
+    have_played = played_frames(hout, &sched, &played);
+    live_sched_measure(&sched, have_played ? &played : NULL, rendered,
+                       (uint32_t)(DWORD)(timeGetTime() - midi_t0));
     for (b = 0; b < nbuf; ++b) {
       struct qmsg m;
       int k;
@@ -464,8 +439,7 @@ int main(int argc, char **argv)
          block rather than the whole output buffer. Anything already late goes
          in here too: it cannot be put back. */
       rendered += block;
-      while (queue_get_due(&m, rendered, origin, (double)rate,
-                           (unsigned)latency_ms, (uint64_t)nbuf * block)) {
+      while (queue_get_due(&m, rendered, &sched)) {
         if (m.b[0] == 0xf0) {
           engine.long_midi(m.b, 0);
         } else {
