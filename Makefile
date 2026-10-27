@@ -345,10 +345,14 @@ plugin-hosts: $(PLUGIN_HOSTS)
 test-fake: $(FAKECORES) $(PLUGIN_HOSTS)
 	@tests/fake/run.sh
 
+# Needs the user's own core: SCVA_TEST_DLL_DIR=<dir with SCCore.dll>.
+test-core:
+	@tests/core/run.sh
+
 test: test-unit test-cli
 
 clean:
 	rm -rf $(BUILD)
 
 .PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones tones32 windows windows32 clean \
-        test test-unit test-unit-win test-cli test-fake fakecores
+        test test-unit test-unit-win test-cli test-fake test-core fakecores plugin-hosts

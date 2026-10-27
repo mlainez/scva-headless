@@ -62,7 +62,11 @@ if have wine && have python3; then
 else
   skip fake "fake-core engine tests (need wine and python3)"
 fi
-skip core "real-core golden renders (Phase 0.5, not yet written)"
+if [ -n "${SCVA_TEST_DLL_DIR:-}" ] && [ -f "$SCVA_TEST_DLL_DIR/SCCore.dll" ]; then
+  tier core "renders with your SCCore.dll match the baseline's audio" make test-core
+else
+  skip core "real-core golden renders (set SCVA_TEST_DLL_DIR)"
+fi
 skip perf "instruction-count budget (Phase 0.6, not yet written)"
 
 echo
