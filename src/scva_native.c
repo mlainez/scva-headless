@@ -22,8 +22,7 @@
 #include "scva_core.h"
 #include "scva_map.h"
 #include "map_policy.h"
-
-#define BLOCK 256
+#include "render_loop.h"
 
 static uint64_t now_ms(void)
 {
@@ -40,6 +39,59 @@ static void nap(unsigned ms)
   nanosleep(&t, NULL);
 }
 
+/* Where the audio goes and how fast. */
+struct sink {
+  FILE *wav;
+  int bits;
+  int dump;                          /* print this many first samples */
+  int realtime;                      /* hold to the wall clock */
+  double rate;
+  uint64_t start_ms;
+#ifdef SCVA_HAVE_PCM
+  snd_pcm_t *pcm;
+  float *inter;
+  long underruns;
+#endif
+};
+
+/* TG_Process generates on demand, so --flat-out is correct and faster */
+static void pace(void *ctx, uint64_t frame)
+{
+  struct sink *o = ctx;
+  double audio_ms = 1000.0 * (double)frame / o->rate;
+  if (!o->realtime) return;
+  for (;;) {
+    double elapsed = (double)(now_ms() - o->start_ms);
+    if (elapsed >= audio_ms) break;
+    nap(audio_ms - elapsed > 4.0 ? 2 : 1);
+  }
+}
+
+static int deliver(void *ctx, const float *left, const float *right, int n,
+                   uint64_t frame)
+{
+  struct sink *o = ctx;
+  int k;
+  for (k = 0; k < n; ++k) {
+    if (o->dump && frame + (uint64_t)k < (uint64_t)o->dump)
+      printf("  [%5u] L %.9g  R %.9g\n", (uint32_t)frame + k, left[k], right[k]);
+    if (o->wav) put_frame(o->wav, left[k], right[k], o->bits);
+#ifdef SCVA_HAVE_PCM
+    if (o->inter) { o->inter[2 * k] = left[k]; o->inter[2 * k + 1] = right[k]; }
+#endif
+  }
+#ifdef SCVA_HAVE_PCM
+  if (o->pcm) {
+    snd_pcm_sframes_t w = snd_pcm_writei(o->pcm, o->inter, (snd_pcm_uframes_t)n);
+    if (w < 0) {
+      ++o->underruns;
+      if (snd_pcm_recover(o->pcm, (int)w, 1) < 0) return 0;
+    }
+  }
+#endif
+  return 1;
+}
+
 int main(int argc, char **argv)
 {
   const char *core = NULL, *midi = NULL, *out = NULL, *reset = "gs";
@@ -52,33 +104,25 @@ int main(int argc, char **argv)
   const char *missing;
   struct scva_core_api a, b;
   struct map_policy maps_a, maps_b;
+  struct render_port ports[2];
+  struct render_io io;
+  struct render_result res;
+  struct sink o;
   int have_b = 0;
   struct song s;
   unsigned char *bytes;
-  size_t n = 0, ei = 0;
-  FILE *wav = NULL;
-  float *left, *right, *left_b = NULL, *right_b = NULL;
-  unsigned char *sysex_buf = NULL;
-  uint64_t frame = 0, at = 0;
-  uint32_t total = 0, tempo = 500000;
-  uint64_t last_tick = 0;
-  double per_tick;
-  float peak = 0.0f;
+  size_t n = 0;
   int bits = 32;                     /* --bits 16 for integer PCM */
-  int i, sent = 0, nports;
+  int i, nports;
   int realtime = 1;
   int dump = 0;
   int initarg = 0;
   int cfga = 1, cfgb = 1;
-  uint64_t start_ms;
   int play = 0;                      /* --play: straight to the sound card */
 #ifdef SCVA_HAVE_PCM
   const char *pcm_name = NULL;       /* --pcm DEV, otherwise auto-detected */
   const char *pcm_opened = NULL;
-  snd_pcm_t *pcm = NULL;
   unsigned int latency_us = 20000;
-  float *inter = NULL;
-  long underruns = 0;
 #endif
 
   for (i = 1; i < argc; ++i) {
@@ -145,13 +189,6 @@ int main(int argc, char **argv)
   bytes = slurp(midi, &n);
   if (!bytes || !parse(&s, bytes, n)) { fprintf(stderr, "not a MIDI file this can play\n"); return 1; }
 
-  /* One buffer for the longest SysEx in the song: a GS bulk dump runs well
-     past the 255 bytes a byte-sized length could hold. */
-  if (s.sysex_max) {
-    sysex_buf = malloc((size_t)s.sysex_max + 1);
-    if (!sysex_buf) { fprintf(stderr, "out of memory\n"); return 1; }
-  }
-
   nports = song_ports(&s);
   if (nports > 1) {
     /* Two-port performance. The core is a fixed 16-part machine, so port B
@@ -208,21 +245,16 @@ int main(int argc, char **argv)
     }
     printf("tone map %s (CC32=%d)\n", mapname, mapval); fflush(stdout); }
 
-  left = calloc((size_t)maxblock, sizeof *left);
-  right = calloc((size_t)maxblock, sizeof *right);
-  if (!left || !right) { fprintf(stderr, "out of memory\n"); return 1; }
-  if (have_b) {
-    left_b = calloc((size_t)maxblock, sizeof *left_b);
-    right_b = calloc((size_t)maxblock, sizeof *right_b);
-    if (!left_b || !right_b) { fprintf(stderr, "out of memory\n"); return 1; }
-  }
-
+  memset(&o, 0, sizeof o);
+  o.bits = bits;
+  o.dump = dump;
+  o.rate = rate;
 #ifdef SCVA_HAVE_PCM
   if (play) {
-    inter = calloc((size_t)BLOCK * 2, sizeof *inter);
-    if (!inter) { fprintf(stderr, "out of memory\n"); return 1; }
-    pcm = open_pcm(pcm_name, (unsigned)rate, latency_us, &pcm_opened, 0);
-    if (!pcm) {
+    o.inter = calloc((size_t)RENDER_BLOCK * 2, sizeof *o.inter);
+    if (!o.inter) { fprintf(stderr, "out of memory\n"); return 1; }
+    o.pcm = open_pcm(pcm_name, (unsigned)rate, latency_us, &pcm_opened, 0);
+    if (!o.pcm) {
       fprintf(stderr, "no PCM device would take float32 stereo at %.0f Hz",
               rate);
       if (pcm_name) fprintf(stderr, " ('%s')", pcm_name);
@@ -231,112 +263,51 @@ int main(int argc, char **argv)
     }
     printf("playing on %s\n", pcm_opened);
     /* The PCM device's own blocking write sets the pace, the same way
-       scva-daemon lets the card be the clock, so the wall-clock wait below
-       is for --out alone and would only fight it here. */
+       scva-daemon lets the card be the clock, so the wall-clock wait is for
+       --out alone and would only fight it here. */
     realtime = 0;
   }
 #endif
   if (out) {
-    wav = fopen(out, "wb");
-    if (!wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
-    header(wav, (unsigned)rate, 0, bits);
+    o.wav = fopen(out, "wb");
+    if (!o.wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
+    header(o.wav, (unsigned)rate, 0, bits);
   }
-  per_tick = song_frames_per_tick(&s, rate, tempo);
-  start_ms = now_ms();
+  o.realtime = realtime;
 
-  while (ei < s.count || frame < at + (uint64_t)(tail * rate)) {
-    int k;
-    while (ei < s.count) {
-      const struct event *e = s.ev + ei;
-      uint64_t when = at + (uint64_t)((double)(e->tick - last_tick) * per_tick);
-      if (when > frame + BLOCK) break;
-      at = when;
-      last_tick = e->tick;
-      if (e->tempo) {
-        tempo = e->tempo;
-        per_tick = song_frames_per_tick(&s, rate, tempo);
-      } else if (e->sysex_len) {
-        int sn = sysex_message(e, sysex_buf, (size_t)s.sysex_max + 1);
-        if (sn) {
-          /* SysEx carries no channel, so it is addressed to the whole
-             machine: both halves of a two-port performance get it. */
-          a.long_midi(sysex_buf, 0);
-          if (have_b) b.long_midi(sysex_buf, 0);
-          ++sent;
-        }
-      } else {
-        unsigned int msg = (unsigned int)e->status |
-          ((unsigned int)e->data1 << 8) | ((unsigned int)e->data2 << 16);
-        map_policy_short((have_b && e->port) ? &maps_b : &maps_a, msg);
-        ++sent;
-      }
-      ++ei;
-    }
-    memset(left, 0, (size_t)maxblock * sizeof *left);
-    memset(right, 0, (size_t)maxblock * sizeof *right);
-    if (have_b) {
-      memset(left_b, 0, (size_t)maxblock * sizeof *left_b);
-      memset(right_b, 0, (size_t)maxblock * sizeof *right_b);
-    }
-    /* TG_Process generates on demand, so --flat-out is correct and faster */
-    if (realtime) {
-      double audio_ms = 1000.0 * (double)frame / rate;
-      for (;;) {
-        double elapsed = (double)(now_ms() - start_ms);
-        if (elapsed >= audio_ms) break;
-        nap(audio_ms - elapsed > 4.0 ? 2 : 1);
-      }
-    }
-    a.process(left, right, BLOCK);
-    if (have_b) {
-      b.process(left_b, right_b, BLOCK);
-      for (k = 0; k < BLOCK; ++k) {
-        left[k] += left_b[k];
-        right[k] += right_b[k];
-      }
-    }
-    for (k = 0; k < BLOCK; ++k) {
-      float l = left[k] < 0 ? -left[k] : left[k];
-      float r = right[k] < 0 ? -right[k] : right[k];
-      if (l > peak) peak = l;
-      if (r > peak) peak = r;
-      if (dump && (int)(total + k) < dump)
-        printf("  [%5u] L %.9g  R %.9g\n", total + k, left[k], right[k]);
-      if (wav) put_frame(wav, left[k], right[k], bits);
-#ifdef SCVA_HAVE_PCM
-      if (inter) { inter[2 * k] = left[k]; inter[2 * k + 1] = right[k]; }
-#endif
-    }
-#ifdef SCVA_HAVE_PCM
-    if (pcm) {
-      snd_pcm_sframes_t w = snd_pcm_writei(pcm, inter, (snd_pcm_uframes_t)BLOCK);
-      if (w < 0) {
-        ++underruns;
-        if (snd_pcm_recover(pcm, (int)w, 1) < 0) break;
-      }
-    }
-#endif
-    frame += BLOCK;
-    total += BLOCK;
+  ports[0].maps = &maps_a;
+  ports[0].long_msg = scva_core_long_sink;
+  ports[0].process = scva_core_process_sink;
+  ports[0].ctx = &a;
+  ports[1] = ports[0];
+  ports[1].maps = &maps_b;
+  ports[1].ctx = &b;
+  io.pace = pace;
+  io.deliver = deliver;
+  io.ctx = &o;
+  o.start_ms = now_ms();
+  if (render_song(&s, rate, tail, ports, have_b ? 2 : 1, &io, &res) < 0) {
+    fprintf(stderr, "out of memory\n");
+    return 1;
   }
-  if (wav) {
-    rewind(wav);
-    header(wav, (unsigned)rate, total, bits);
-    fclose(wav);
+  if (o.wav) {
+    rewind(o.wav);
+    header(o.wav, (unsigned)rate, res.frames, bits);
+    fclose(o.wav);
   }
   /* TG_terminate calls exit(), so print first */
   printf("%s: %u frames at %.0f Hz, %.1f s, peak %.5f, %d messages, voices %d\n",
-         out ? out : "(play)", total, rate, total / rate, peak, sent,
-         a.voices());
+         out ? out : "(play)", res.frames, rate, res.frames / rate, res.peak,
+         res.sent, a.voices());
 #ifdef SCVA_HAVE_PCM
-  if (underruns)
+  if (o.underruns)
     printf("%ld dropout%s on the PCM device - raise --latency\n",
-           underruns, underruns == 1 ? "" : "s");
+           o.underruns, o.underruns == 1 ? "" : "s");
 #endif
   fflush(stdout);
 #ifdef SCVA_HAVE_PCM
-  if (pcm) snd_pcm_close(pcm);
-  free(inter);
+  if (o.pcm) snd_pcm_close(o.pcm);
+  free(o.inter);
 #endif
   if (have_b) b.deactivate();
   a.deactivate();

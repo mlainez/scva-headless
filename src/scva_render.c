@@ -37,11 +37,7 @@
 #include "scva_core.h"
 #include "scva_map.h"
 #include "map_policy.h"
-
-/* MIDI reading and WAV writing live in midi_song.h, shared with the native
-   renderer so both drive the engine from exactly the same events. */
-
-#define BLOCK 256
+#include "render_loop.h"
 
 /* Windows refcounts modules by path: a second LoadLibrary of the same file
    hands back the first module, globals and all. A copy under another name
@@ -74,6 +70,60 @@ static HMODULE load_second_core(const char *core, char *made, size_t madelen)
 }
 #endif
 
+/* Where the audio goes and how fast. */
+struct sink {
+  FILE *wav;
+  int bits;
+  int realtime;                      /* hold to the wall clock */
+  double rate;
+  DWORD start_ms;
+  HWAVEOUT hout;                     /* --play */
+  WAVEHDR *whdr;
+  short **wbuf;
+  HANDLE wev;
+  int nbuf, wb;
+};
+
+static void pace(void *ctx, uint64_t frame)
+{
+  struct sink *o = ctx;
+  if (o->hout) {
+    /* waveOut is the clock now: wait for a buffer to come free */
+    while (!(o->whdr[o->wb].dwFlags & WHDR_DONE)) WaitForSingleObject(o->wev, 100);
+  } else if (o->realtime) {
+    /* TG_Process generates on demand, so --flat-out is correct and faster */
+    double audio_ms = 1000.0 * (double)frame / o->rate;
+    for (;;) {
+      double elapsed = (double)(GetTickCount() - o->start_ms);
+      if (elapsed >= audio_ms) break;
+      Sleep(audio_ms - elapsed > 4.0 ? 2 : 1);
+    }
+  }
+  if (!frame) { printf("first process...\n"); fflush(stdout); }
+}
+
+static int deliver(void *ctx, const float *left, const float *right, int n,
+                   uint64_t frame)
+{
+  struct sink *o = ctx;
+  int k;
+  if (!frame) { printf("first process returned\n"); fflush(stdout); }
+  for (k = 0; k < n; ++k) {
+    if (o->hout) {
+      o->wbuf[o->wb][2 * k]     = to_s16(left[k]);
+      o->wbuf[o->wb][2 * k + 1] = to_s16(right[k]);
+    } else {
+      put_frame(o->wav, left[k], right[k], o->bits);
+    }
+  }
+  if (o->hout) {
+    o->whdr[o->wb].dwFlags &= ~WHDR_DONE;
+    waveOutWrite(o->hout, &o->whdr[o->wb], sizeof o->whdr[o->wb]);
+    o->wb = (o->wb + 1) % o->nbuf;
+  }
+  return 1;
+}
+
 int main(int argc, char **argv)
 {
   const char *core = NULL, *midi = NULL, *out = NULL, *reset = "gs";
@@ -92,29 +142,19 @@ int main(int argc, char **argv)
   const char *missing;
   struct scva_core_api a, b;
   struct map_policy maps_a, maps_b;
+  struct render_port ports[2];
+  struct render_io io;
+  struct render_result res;
+  struct sink o;
   int have_b = 0;
   char coreb[MAX_PATH] = "";
   struct song s;
   unsigned char *bytes;
-  size_t n = 0, ei = 0;
-  FILE *wav = NULL;
-  float *left, *right, *left_b = NULL, *right_b = NULL;
-  unsigned char *sysex_buf = NULL;
-  uint64_t frame = 0, at = 0;
-  uint32_t total = 0, tempo = 500000;
-  uint64_t last_tick = 0;
-  double per_tick;
-  float peak = 0.0f;
+  size_t n = 0;
   int bits = 32;                     /* --bits 16 for integer PCM */
   int play = 0;                      /* --play: to the sound card, no file */
-  HWAVEOUT hout = NULL;
-  WAVEHDR *whdr = NULL;
-  short **wbuf = NULL;
-  HANDLE wev = NULL;
-  int nbuf = 0, wb = 0;
-  int i, sent = 0, nports;
+  int i, nports;
   int realtime = 1;
-  DWORD start_ms;
 
   for (i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--core") && i + 1 < argc) core = argv[++i];
@@ -171,13 +211,6 @@ int main(int argc, char **argv)
 
   bytes = slurp(midi, &n);
   if (!bytes || !parse(&s, bytes, n)) { fprintf(stderr, "not a MIDI file this can play\n"); return 1; }
-
-  /* One buffer for the longest SysEx in the song: a GS bulk dump runs well
-     past the 255 bytes a byte-sized length could hold. */
-  if (s.sysex_max) {
-    sysex_buf = malloc((size_t)s.sysex_max + 1);
-    if (!sysex_buf) { fprintf(stderr, "out of memory\n"); return 1; }
-  }
 
   /* get_config before initialize removed: under test */
 
@@ -250,15 +283,10 @@ int main(int argc, char **argv)
     }
     printf("tone map %s (CC32=%d)\n", mapname, mapval); fflush(stdout); }
 
-  left = calloc((size_t)maxblock, sizeof *left);
-  right = calloc((size_t)maxblock, sizeof *right);
-  if (!left || !right) { fprintf(stderr, "out of memory\n"); return 1; }
-  if (have_b) {
-    left_b = calloc((size_t)maxblock, sizeof *left_b);
-    right_b = calloc((size_t)maxblock, sizeof *right_b);
-    if (!left_b || !right_b) { fprintf(stderr, "out of memory\n"); return 1; }
-  }
-
+  memset(&o, 0, sizeof o);
+  o.bits = bits;
+  o.realtime = realtime;
+  o.rate = rate;
   if (play) {
     /* Windows offers no way for a program to join the MIDI device list, so
        rather than route a file through a driver and a virtual cable, the
@@ -266,10 +294,10 @@ int main(int argc, char **argv)
        stereo is what every Windows sound device accepts. */
     WAVEFORMATEX wf;
     int j;
-    nbuf = (int)((double)200.0 * rate / 1000.0 / BLOCK);   /* ~200 ms ahead */
-    if (nbuf < 4) nbuf = 4;
-    if (nbuf > 64) nbuf = 64;
-    wev = CreateEventA(NULL, FALSE, FALSE, NULL);
+    o.nbuf = (int)((double)200.0 * rate / 1000.0 / RENDER_BLOCK);   /* ~200 ms ahead */
+    if (o.nbuf < 4) o.nbuf = 4;
+    if (o.nbuf > 64) o.nbuf = 64;
+    o.wev = CreateEventA(NULL, FALSE, FALSE, NULL);
     memset(&wf, 0, sizeof wf);
     wf.wFormatTag = WAVE_FORMAT_PCM;
     wf.nChannels = 2;
@@ -277,125 +305,62 @@ int main(int argc, char **argv)
     wf.wBitsPerSample = 16;
     wf.nBlockAlign = (WORD)(wf.nChannels * wf.wBitsPerSample / 8);
     wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
-    if (waveOutOpen(&hout, WAVE_MAPPER, &wf, (DWORD_PTR)wev, 0,
+    if (waveOutOpen(&o.hout, WAVE_MAPPER, &wf, (DWORD_PTR)o.wev, 0,
                     CALLBACK_EVENT) != MMSYSERR_NOERROR) {
       fprintf(stderr, "cannot open an audio device at %.0f Hz\n", rate);
       return 1;
     }
-    whdr = calloc((size_t)nbuf, sizeof *whdr);
-    wbuf = calloc((size_t)nbuf, sizeof *wbuf);
-    if (!whdr || !wbuf) { fprintf(stderr, "out of memory\n"); return 1; }
-    for (j = 0; j < nbuf; ++j) {
-      wbuf[j] = calloc((size_t)BLOCK * 2, sizeof **wbuf);
-      if (!wbuf[j]) { fprintf(stderr, "out of memory\n"); return 1; }
-      whdr[j].lpData = (LPSTR)wbuf[j];
-      whdr[j].dwBufferLength = (DWORD)(BLOCK * 2 * sizeof **wbuf);
-      waveOutPrepareHeader(hout, &whdr[j], sizeof whdr[j]);
-      whdr[j].dwFlags |= WHDR_DONE;                  /* all free to begin */
+    o.whdr = calloc((size_t)o.nbuf, sizeof *o.whdr);
+    o.wbuf = calloc((size_t)o.nbuf, sizeof *o.wbuf);
+    if (!o.whdr || !o.wbuf) { fprintf(stderr, "out of memory\n"); return 1; }
+    for (j = 0; j < o.nbuf; ++j) {
+      o.wbuf[j] = calloc((size_t)RENDER_BLOCK * 2, sizeof **o.wbuf);
+      if (!o.wbuf[j]) { fprintf(stderr, "out of memory\n"); return 1; }
+      o.whdr[j].lpData = (LPSTR)o.wbuf[j];
+      o.whdr[j].dwBufferLength = (DWORD)(RENDER_BLOCK * 2 * sizeof **o.wbuf);
+      waveOutPrepareHeader(o.hout, &o.whdr[j], sizeof o.whdr[j]);
+      o.whdr[j].dwFlags |= WHDR_DONE;                /* all free to begin */
     }
     printf("playing, %d x %d frames buffered (%.0f ms)\n",
-           nbuf, BLOCK, 1000.0 * nbuf * BLOCK / rate);
+           o.nbuf, RENDER_BLOCK, 1000.0 * o.nbuf * RENDER_BLOCK / rate);
     fflush(stdout);
   } else {
-    wav = fopen(out, "wb");
-    if (!wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
-    header(wav, (unsigned)rate, 0, bits);
+    o.wav = fopen(out, "wb");
+    if (!o.wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
+    header(o.wav, (unsigned)rate, 0, bits);
   }
-  per_tick = song_frames_per_tick(&s, rate, tempo);
-  /* TG_Process generates on demand, so --flat-out is correct and faster */
-  start_ms = GetTickCount();
 
-  while (ei < s.count || frame < at + (uint64_t)(tail * rate)) {
-    int k;
-    while (ei < s.count) {
-      const struct event *e = s.ev + ei;
-      uint64_t when = at + (uint64_t)((double)(e->tick - last_tick) * per_tick);
-      if (when > frame + BLOCK) break;
-      at = when;
-      last_tick = e->tick;
-      if (e->tempo) {
-        tempo = e->tempo;
-        per_tick = song_frames_per_tick(&s, rate, tempo);
-      } else if (e->sysex_len) {
-        int sn = sysex_message(e, sysex_buf, (size_t)s.sysex_max + 1);
-        if (sn) {
-          /* SysEx carries no channel: it addresses the whole machine, so both
-             halves of a two-port performance get it. */
-          a.long_midi(sysex_buf, 0);
-          if (have_b) b.long_midi(sysex_buf, 0);
-          ++sent;
-        }
-      } else {
-        unsigned int msg = (unsigned int)e->status |
-          ((unsigned int)e->data1 << 8) | ((unsigned int)e->data2 << 16);
-        map_policy_short((have_b && e->port) ? &maps_b : &maps_a, msg);
-        ++sent;
-      }
-      ++ei;
-    }
-    memset(left, 0, (size_t)maxblock * sizeof *left);
-    memset(right, 0, (size_t)maxblock * sizeof *right);
-    if (have_b) {
-      memset(left_b, 0, (size_t)maxblock * sizeof *left_b);
-      memset(right_b, 0, (size_t)maxblock * sizeof *right_b);
-    }
-    if (play) {
-      /* waveOut is the clock now: wait for a buffer to come free */
-      while (!(whdr[wb].dwFlags & WHDR_DONE)) WaitForSingleObject(wev, 100);
-    } else if (realtime) {
-      double audio_ms = 1000.0 * (double)frame / rate;
-      for (;;) {
-        double elapsed = (double)(GetTickCount() - start_ms);
-        if (elapsed >= audio_ms) break;
-        Sleep(audio_ms - elapsed > 4.0 ? 2 : 1);
-      }
-    }
-    if (!total) { printf("first process...\n"); fflush(stdout); }
-    a.process(left, right, BLOCK);
-    if (have_b) {
-      int j;
-      b.process(left_b, right_b, BLOCK);
-      for (j = 0; j < BLOCK; ++j) {
-        left[j] += left_b[j];
-        right[j] += right_b[j];
-      }
-    }
-    if (!total) { printf("first process returned\n"); fflush(stdout); }
-    for (k = 0; k < BLOCK; ++k) {
-      float l = left[k] < 0 ? -left[k] : left[k];
-      float r = right[k] < 0 ? -right[k] : right[k];
-      if (l > peak) peak = l;
-      if (r > peak) peak = r;
-      if (play) {
-        wbuf[wb][2 * k]     = to_s16(left[k]);
-        wbuf[wb][2 * k + 1] = to_s16(right[k]);
-      } else {
-        put_frame(wav, left[k], right[k], bits);
-      }
-    }
-    if (play) {
-      whdr[wb].dwFlags &= ~WHDR_DONE;
-      waveOutWrite(hout, &whdr[wb], sizeof whdr[wb]);
-      wb = (wb + 1) % nbuf;
-    }
-    frame += BLOCK;
-    total += BLOCK;
+  ports[0].maps = &maps_a;
+  ports[0].long_msg = scva_core_long_sink;
+  ports[0].process = scva_core_process_sink;
+  ports[0].ctx = &a;
+  ports[1] = ports[0];
+  ports[1].maps = &maps_b;
+  ports[1].ctx = &b;
+  io.pace = pace;
+  io.deliver = deliver;
+  io.ctx = &o;
+  o.start_ms = GetTickCount();
+  if (render_song(&s, rate, tail, ports, have_b ? 2 : 1, &io, &res) < 0) {
+    fprintf(stderr, "out of memory\n");
+    return 1;
   }
   if (play) {
     int j;                                   /* let the tail drain */
-    for (j = 0; j < nbuf; ++j)
-      while (!(whdr[(wb + j) % nbuf].dwFlags & WHDR_DONE))
-        WaitForSingleObject(wev, 100);
-    waveOutReset(hout);
-    waveOutClose(hout);
+    for (j = 0; j < o.nbuf; ++j)
+      while (!(o.whdr[(o.wb + j) % o.nbuf].dwFlags & WHDR_DONE))
+        WaitForSingleObject(o.wev, 100);
+    waveOutReset(o.hout);
+    waveOutClose(o.hout);
   } else {
-    rewind(wav);
-    header(wav, (unsigned)rate, total, bits);
-    fclose(wav);
+    rewind(o.wav);
+    header(o.wav, (unsigned)rate, res.frames, bits);
+    fclose(o.wav);
   }
   /* TG_terminate calls exit(), so print first */
   printf("%s: %u frames at %.0f Hz, %.1f s, peak %.5f, %d messages, voices %d\n",
-         play ? "played" : out, total, rate, total / rate, peak, sent, a.voices());
+         play ? "played" : out, res.frames, rate, res.frames / rate, res.peak,
+         res.sent, a.voices());
   fflush(stdout);
   if (have_b) {
     b.deactivate();

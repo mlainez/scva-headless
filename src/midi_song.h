@@ -31,7 +31,7 @@ struct song {
                                            map decides instead */
 };
 
-static void push(struct song *s, const struct event *e)
+static inline void push(struct song *s, const struct event *e)
 {
   if (s->count == s->cap) {
     s->cap = s->cap ? s->cap * 2 : 2048;
@@ -43,7 +43,7 @@ static void push(struct song *s, const struct event *e)
   ++s->count;
 }
 
-static int vlq(const unsigned char *p, size_t n, size_t *i, uint32_t *out)
+static inline int vlq(const unsigned char *p, size_t n, size_t *i, uint32_t *out)
 {
   uint32_t v = 0;
   int k;
@@ -57,7 +57,7 @@ static int vlq(const unsigned char *p, size_t n, size_t *i, uint32_t *out)
   return 0;
 }
 
-static uint32_t be32(const unsigned char *p)
+static inline uint32_t be32(const unsigned char *p)
 {
   return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
@@ -66,7 +66,7 @@ static uint32_t be32(const unsigned char *p)
    "PartA nch." / "PartB nch.", and carry no FF 21. The name can arrive after
    events have been pushed, so the port is applied to the whole track at the
    end rather than as events are read. */
-static int track_name_port(const unsigned char *p, uint32_t len)
+static inline int track_name_port(const unsigned char *p, uint32_t len)
 {
   uint32_t i;
   for (i = 0; i + 4 < len; ++i)
@@ -81,7 +81,7 @@ static int track_name_port(const unsigned char *p, uint32_t len)
    plays, and the other tracks are untouched. Files in the wild are truncated
    often enough that refusing the whole song over one bad byte loses music
    that every other player manages to sound. */
-static void parse_track(struct song *s, const unsigned char *p, size_t n)
+static inline void parse_track(struct song *s, const unsigned char *p, size_t n)
 {
   uint64_t tick = 0;
   unsigned char running = 0;
@@ -146,7 +146,7 @@ static void parse_track(struct song *s, const unsigned char *p, size_t n)
 
 /* How many ports the song actually uses: one past the highest it names. The
    engine is a 16-part machine, so each port costs another instance. */
-static int song_ports(const struct song *s)
+static inline int song_ports(const struct song *s)
 {
   int top = 0;
   size_t i;
@@ -157,21 +157,21 @@ static int song_ports(const struct song *s)
 
 /* Frames per tick. An SMPTE file measures its ticks in real time, so the
    tempo map has no say there. */
-static double song_frames_per_tick(const struct song *s, double rate,
+static inline double song_frames_per_tick(const struct song *s, double rate,
                                    uint32_t tempo)
 {
   if (s->smpte_tick > 0.0) return rate * s->smpte_tick;
   return rate * (double)tempo / (1e6 * s->division);
 }
 
-static int cmp(const void *a, const void *b)
+static inline int cmp(const void *a, const void *b)
 {
   const struct event *x = a, *y = b;
   if (x->tick != y->tick) return x->tick < y->tick ? -1 : 1;
   return x->order < y->order ? -1 : x->order > y->order;
 }
 
-static int parse(struct song *s, const unsigned char *p, size_t n)
+static inline int parse(struct song *s, const unsigned char *p, size_t n)
 {
   uint16_t format;
   size_t i;
@@ -206,7 +206,7 @@ static int parse(struct song *s, const unsigned char *p, size_t n)
 
 /* An SMF stores an F0 event without its leading F0; the engine wants the whole
    message. An F7 event is a raw continuation. Returns 0 if it does not fit. */
-static int sysex_message(const struct event *e, unsigned char *buf, size_t cap)
+static inline int sysex_message(const struct event *e, unsigned char *buf, size_t cap)
 {
   size_t n = e->sysex_len;
   if (e->status == 0xf7) {
@@ -222,12 +222,12 @@ static int sysex_message(const struct event *e, unsigned char *buf, size_t cap)
 
 /* ------------------------------------------------------------------ WAV */
 
-static void put32(FILE *f, uint32_t v) { fwrite(&v, 4, 1, f); }
-static void put16(FILE *f, uint16_t v) { fwrite(&v, 2, 1, f); }
+static inline void put32(FILE *f, uint32_t v) { fwrite(&v, 4, 1, f); }
+static inline void put16(FILE *f, uint16_t v) { fwrite(&v, 2, 1, f); }
 
 /* bits is 32 for float samples, the engine's own format, or 16 for the
    integer PCM that every player accepts. */
-static void header(FILE *f, unsigned rate, uint32_t frames, int bits)
+static inline void header(FILE *f, unsigned rate, uint32_t frames, int bits)
 {
   unsigned bytes = bits == 16 ? 2u : 4u;
   uint32_t data = frames * 2u * bytes;
@@ -243,7 +243,7 @@ static void header(FILE *f, unsigned rate, uint32_t frames, int bits)
    power of two, so the multiply is exact whatever width the machine evaluates
    in, and the truncation that follows cannot land either side of an integer
    depending on whether an x87 register held 80 bits or 32. */
-static int16_t to_s16(float v)
+static inline int16_t to_s16(float v)
 {
   int n;
   if (v > 1.0f) v = 1.0f; else if (v < -1.0f) v = -1.0f;
@@ -255,7 +255,7 @@ static int16_t to_s16(float v)
 
 /* One frame out. Float is what the engine produced; 16-bit clips, because
    summed voices can pass full scale and an integer sample cannot. */
-static void put_frame(FILE *f, float l, float r, int bits)
+static inline void put_frame(FILE *f, float l, float r, int bits)
 {
   if (bits != 16) {
     fwrite(&l, 4, 1, f);
@@ -266,7 +266,7 @@ static void put_frame(FILE *f, float l, float r, int bits)
   put16(f, (uint16_t)to_s16(r));
 }
 
-static unsigned char *slurp(const char *path, size_t *n)
+static inline unsigned char *slurp(const char *path, size_t *n)
 {
   FILE *f = fopen(path, "rb");
   unsigned char *b;

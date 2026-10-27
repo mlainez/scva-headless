@@ -71,6 +71,17 @@ static inline void scva_core_sink(void *api, uint32_t msg)
   ((const struct scva_core_api *)api)->short_midi(msg, 0);
 }
 
+/* TG_LongMidiIn and TG_Process, in the shape of a render_loop port. */
+static inline void scva_core_long_sink(void *api, const unsigned char *msg)
+{
+  ((const struct scva_core_api *)api)->long_midi(msg, 0);
+}
+
+static inline void scva_core_process_sink(void *api, float *l, float *r, int n)
+{
+  ((const struct scva_core_api *)api)->process(l, r, n);
+}
+
 static inline void scva_core_gs_reset(const struct scva_core_api *api)
 {
   api->long_midi(midi_gs_reset(NULL), 0);
