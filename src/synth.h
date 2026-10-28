@@ -36,13 +36,32 @@ struct synth_caps {
   const char *name;           /* "scva", "vsc" */
   const int *rates;           /* the only rates it renders at, ending in 0;
                                  NULL when it takes any */
+  int default_rate;           /* the rate to use when none is asked for; 0
+                                 when the caller's own default will do */
   int midi_timestamps;        /* MIDI lands on its sample, not its block */
   int tone_map_per_part;      /* CC32 picks a tone map per part; otherwise
                                  one tone set serves every part */
 };
 
+/* One command-line option a backend takes, so that front ends offer it
+   without knowing it. */
+struct synth_option {
+  const char *flag;           /* "--set" */
+  const char *arg;            /* what it takes, as the help shows it */
+  const char *help;
+  /* Applies value to the backend's options. 0, with the reason in err, if
+     the value is not one it takes. */
+  int (*apply)(void *opts, const char *value, char *err, size_t errlen);
+};
+
 struct synth_backend {
   const struct synth_caps *caps;
+  /* Its options: a table ending in a NULL flag, and the struct they fill,
+     opts_size bytes set to the defaults by opts_init, which open takes as
+     synth_options.backend_opts. No options: NULL, 0, NULL. */
+  const struct synth_option *options;
+  size_t opts_size;
+  void (*opts_init)(void *opts);
   /* NULL, with the reason in err, if the engine cannot be loaded. */
   struct synth *(*open)(const struct synth_options *opt, char *err, size_t errlen);
   /* Stops the engine and frees it. */

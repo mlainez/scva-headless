@@ -8,10 +8,11 @@
 #include "synth.h"
 #include "vsc_engine.h"
 
-/* synth_options.backend_opts for synth_vsc. */
+/* synth_options.backend_opts for synth_vsc; synth_vsc.opts_init sets VSC's
+   own defaults. */
 struct synth_vsc_options {
-  const char *tones;          /* vsc55.dat, vsc88.dat or vsc88pro.dat; NULL
-                                 for vsc88pro.dat beside vsc.sys */
+  const char *tones;          /* the tone set: a path, or a file name beside
+                                 vsc.sys (vsc55.dat, vsc88.dat, vsc88pro.dat) */
   struct vsc_config config;   /* its rate is synth_options.rate */
 };
 #endif

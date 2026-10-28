@@ -21,32 +21,42 @@ struct vsc_synth {
   char drums[128][VSC_NAME_LEN + 1];
 };
 
-/* The tone set beside vsc.sys, for a caller that names none. */
-static void default_tones(const char *core, char *out, size_t cap)
+static int has_dir(const char *path)
+{
+#ifdef _WIN32
+  if (strchr(path, '\\') || strchr(path, ':')) return 1;
+#endif
+  return strchr(path, '/') != NULL;
+}
+
+/* A tone set named without a directory is looked for beside vsc.sys. */
+static void tones_path(const char *core, const char *tones, char *out, size_t cap)
 {
   const char *slash = strrchr(core, '/');
 #ifdef _WIN32
   const char *back = strrchr(core, '\\');
   if (back && (!slash || back > slash)) slash = back;
 #endif
-  snprintf(out, cap, "%.*svsc88pro.dat", slash ? (int)(slash - core + 1) : 0, core);
+  if (has_dir(tones)) snprintf(out, cap, "%s", tones);
+  else snprintf(out, cap, "%.*s%s", slash ? (int)(slash - core + 1) : 0, core, tones);
 }
 
 static struct synth *open_vsc(const struct synth_options *opt, char *err,
                               size_t errlen)
 {
-  static const struct vsc_config defaults = VSC_CONFIG_DEFAULT;
+  struct synth_vsc_options defaults;
   const struct synth_vsc_options *vo = opt->backend_opts;
-  struct vsc_config cfg = vo ? vo->config : defaults;
+  struct vsc_config cfg;
   struct vsc_synth *e = calloc(1, sizeof *e);
-  char tones_path[2048];
+  char tones[2048];
   int p;
 
   if (!e) { snprintf(err, errlen, "out of memory"); return NULL; }
-  if (vo && vo->tones) snprintf(tones_path, sizeof tones_path, "%s", vo->tones);
-  else default_tones(opt->core, tones_path, sizeof tones_path);
+  if (!vo) { synth_vsc.opts_init(&defaults); vo = &defaults; }
+  cfg = vo->config;
   cfg.rate = (int)opt->rate;
-  e->engine = vsc_open(opt->core, tones_path, &cfg, err, errlen);
+  tones_path(opt->core, vo->tones, tones, sizeof tones);
+  e->engine = vsc_open(opt->core, tones, &cfg, err, errlen);
   if (!e->engine) { free(e); return NULL; }
   e->base.backend = &synth_vsc;
   e->base.rate = vsc_rate(e->engine);
@@ -124,15 +134,119 @@ static const char *name(struct synth *s, int drums, int bank, int program)
   return n[0] ? n : NULL;
 }
 
+/* ---- options ------------------------------------------------------------- */
+
+static void opts_init(void *opts)
+{
+  static const struct vsc_config defaults = VSC_CONFIG_DEFAULT;
+  struct synth_vsc_options *o = opts;
+  o->tones = "vsc88pro.dat";
+  o->config = defaults;
+}
+
+/* An integer from lo to hi, all of value. */
+static int int_in(const char *value, int lo, int hi, int *out)
+{
+  char *end;
+  long v = strtol(value, &end, 10);
+  if (end == value || *end || v < lo || v > hi) return 0;
+  *out = (int)v;
+  return 1;
+}
+
+/* A decimal from 0 to 8. Checked by hand and read with atof: mingw replaces
+   strtod with its own, which the Windows 98 build cannot import. */
+static int gain(const char *value, float *out)
+{
+  const char *dot = strchr(value, '.');
+  double v;
+  if (!*value || strspn(value, "0123456789.") != strlen(value) ||
+      (dot && strchr(dot + 1, '.')) || !strcmp(value, "."))
+    return 0;
+  v = atof(value);
+  if (v > 8.0) return 0;
+  *out = (float)v;
+  return 1;
+}
+
+#define REFUSE(...) do { snprintf(err, errlen, __VA_ARGS__); return 0; } while (0)
+
+static int apply_set(void *opts, const char *v, char *err, size_t errlen)
+{
+  struct synth_vsc_options *o = opts;
+  if (!strcmp(v, "55")) o->tones = "vsc55.dat";
+  else if (!strcmp(v, "88")) o->tones = "vsc88.dat";
+  else if (!strcmp(v, "88pro")) o->tones = "vsc88pro.dat";
+  else REFUSE("--set takes 55, 88 or 88pro");
+  return 1;
+}
+
+static int apply_poly(void *opts, const char *v, char *err, size_t errlen)
+{
+  if (!int_in(v, 1, 128, &((struct synth_vsc_options *)opts)->config.polyphony))
+    REFUSE("--poly takes 1 to 128");
+  return 1;
+}
+
+static int apply_volume(void *opts, const char *v, char *err, size_t errlen)
+{
+  if (!int_in(v, 0, 100, &((struct synth_vsc_options *)opts)->config.volume))
+    REFUSE("--volume takes 0 to 100");
+  return 1;
+}
+
+static int apply_rev(void *opts, const char *v, char *err, size_t errlen)
+{
+  if (!gain(v, &((struct synth_vsc_options *)opts)->config.rev_gain))
+    REFUSE("--rev-gain takes 0 to 8");
+  return 1;
+}
+
+static int apply_cho(void *opts, const char *v, char *err, size_t errlen)
+{
+  if (!gain(v, &((struct synth_vsc_options *)opts)->config.cho_gain))
+    REFUSE("--cho-gain takes 0 to 8");
+  return 1;
+}
+
+static int apply_delay(void *opts, const char *v, char *err, size_t errlen)
+{
+  if (!gain(v, &((struct synth_vsc_options *)opts)->config.delay_gain))
+    REFUSE("--delay-gain takes 0 to 8");
+  return 1;
+}
+
+static int apply_cpu(void *opts, const char *v, char *err, size_t errlen)
+{
+  struct synth_vsc_options *o = opts;
+  if (!strcmp(v, "auto")) o->config.cpu = VSC_CPU_AUTO;
+  else if (!strcmp(v, "mmx")) o->config.cpu = VSC_CPU_MMX;
+  else if (!strcmp(v, "fpu")) o->config.cpu = VSC_CPU_FPU;
+  else REFUSE("--cpu takes auto, mmx or fpu");
+  return 1;
+}
+
+static const struct synth_option options[] = {
+  {"--set", "55|88|88pro", "tone set, beside vsc.sys (default 88pro)", apply_set},
+  {"--poly", "N", "maximum voices, 1-128 (default 64)", apply_poly},
+  {"--volume", "N", "master volume, 0-100 (default 80)", apply_volume},
+  {"--rev-gain", "G", "reverb return gain (default 1.26)", apply_rev},
+  {"--cho-gain", "G", "chorus return gain (default 1.26)", apply_cho},
+  {"--delay-gain", "G", "delay return gain (default 1.26)", apply_delay},
+  {"--cpu", "auto|mmx|fpu", "engine code path (default auto)", apply_cpu},
+  {NULL, NULL, NULL, NULL}
+};
+
 static const int rates[] = { 11025, 22050, 44100, 0 };
 
 static const struct synth_caps caps = {
   "vsc",
   rates,
+  22050,                      /* VSC 3.2's own */
   0,                          /* MIDI lands on the next block */
   0                           /* one tone set for every part */
 };
 
 const struct synth_backend synth_vsc = {
-  &caps, open_vsc, close_vsc, attach_thread, short_msg, long_msg, render, name
+  &caps, options, sizeof(struct synth_vsc_options), opts_init, open_vsc, close_vsc, attach_thread, short_msg, long_msg, render, name
 };

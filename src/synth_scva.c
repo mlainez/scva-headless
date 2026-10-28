@@ -9,6 +9,7 @@
  * engine either way.
  */
 #include "synth.h"
+#include "win9x.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -132,11 +133,12 @@ static void render(struct synth *s, float *l, float *r, uint32_t n)
 static const struct synth_caps caps = {
   "scva",
   NULL,                       /* any rate: it resamples from 32 kHz itself */
+  0,
   1,                          /* TG_ShortMidiIn takes a sample timestamp */
   1                           /* CC32 selects the map, per part */
 };
 
 const struct synth_backend synth_scva = {
-  &caps, open_scva, close_scva, attach_thread, short_msg, long_msg, render,
+  &caps, NULL, 0, NULL, open_scva, close_scva, attach_thread, short_msg, long_msg, render,
   NULL                        /* names come from the name files */
 };

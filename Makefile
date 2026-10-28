@@ -121,15 +121,19 @@ $(OBJ)/win64/scva_clap.o $(OBJ)/win32/scva_clap.o: XDEFS := -I$(CLAP_DIR)
 
 # ---- the tools -----------------------------------------------------------
 
-RENDER_MODS     := scva_native map_policy render_loop pe_loader scva_runtime
+RENDER_MODS     := scva_native map_policy render_loop render_engines synth_registry \
+                   synth_scva pe_loader scva_runtime
+# The engines only a 32-bit build can host.
+VSC_ENGINE_MODS := synth_vsc vsc_engine
 DAEMON_MODS     := scva_daemon map_policy console rt_priority pe_loader scva_runtime
-WIN_RENDER_MODS := scva_render map_policy audio_waveout render_loop
+WIN_RENDER_MODS := scva_render map_policy audio_waveout render_loop render_engines \
+                   synth_registry synth_scva
 WINMIDI_MODS    := scva_winmidi map_policy audio_waveout console rt_priority live_sched
 
 $(BUILD)/scva-render: $(call objs,linux64,$(RENDER_MODS))
 	$(CC) $(CFLAGS) -o $@ $^ $(ALSA) -lpthread -lm
 
-$(BUILD)/scva-render32: $(call objs,linux32,$(RENDER_MODS))
+$(BUILD)/scva-render32: $(call objs,linux32,$(RENDER_MODS) $(VSC_ENGINE_MODS))
 	$(CC) -m32 $(CFLAGS) -o $@ $^ -lpthread -lm
 
 $(BUILD)/scva-daemon: $(call objs,linux64,$(DAEMON_MODS))
@@ -157,7 +161,8 @@ $(BUILD)/scva-winmidi.exe: $(call objs,win64,$(WINMIDI_MODS))
 # The 32-bit Windows binaries carry src/pe_loader.c: the system loader will
 # not take a core that imports MSVCR100 and declares a subsystem newer than
 # Windows 98, so the image is mapped here instead, exactly as on Linux.
-$(BUILD)/scva-render32.exe: $(call objs,win32,$(WIN_RENDER_MODS) pe_loader scva_runtime)
+$(BUILD)/scva-render32.exe: $(call objs,win32,$(WIN_RENDER_MODS) pe_loader scva_runtime \
+                                              $(VSC_ENGINE_MODS))
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ $^ -lwinmm
 
 $(BUILD)/scva-winmidi32.exe: $(call objs,win32,$(WINMIDI_MODS) pe_loader scva_runtime)
@@ -434,7 +439,7 @@ $(BUILD)/test/test_synth_vsc: $(OBJ)/vsctest32/test_synth_vsc.o \
 	@mkdir -p $(@D)
 	$(CC) -m32 $(CFLAGS) -o $@ $^ -lpthread -lm
 
-test-vsc: $(BUILD)/test/vsc_drive $(BUILD)/test/test_synth_vsc
+test-vsc: $(BUILD)/test/vsc_drive $(BUILD)/test/test_synth_vsc $(BUILD)/scva-render32
 	@$(BUILD)/test/test_synth_vsc
 	@python3 tests/vsc/run.py
 

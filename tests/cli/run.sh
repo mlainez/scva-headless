@@ -79,6 +79,61 @@ if have scva-render; then
   end
 fi
 
+# ---- --engine, every renderer -------------------------------------------
+for r in scva-render scva-render32 scva-render.exe scva-render32.exe; do
+  have "$r" || continue
+
+  begin "$r: an unknown --engine is refused and the ones it has are named"
+  run "$r" --midi song.mid --out out.wav --engine nonesuch
+  exit_is 2; says scva
+  end
+
+  case "$r" in
+    *32*) ;;
+    *)
+      begin "$r: a 64-bit build has no VSC engine, whose code is 32-bit"
+      run "$r" --midi song.mid --out out.wav --engine vsc
+      exit_is 2; says scva
+      end
+      continue ;;
+  esac
+
+  begin "$r: its usage shows --engine and the VSC engine's own options"
+  run "$r" --frobnicate
+  exit_is 2; says --engine; says vsc; says --set; says --poly; says --volume
+  says --rev-gain; says --cpu
+  end
+
+  begin "$r: --engine vsc needs its engine file"
+  run "$r" --engine vsc --midi song.mid --out out.wav
+  exit_is 2; says --core
+  end
+
+  begin "$r: --engine vsc refuses a rate VSC lacks and names the ones it has"
+  run "$r" --engine vsc --core vsc.sys --midi song.mid --out out.wav --rate 48000
+  exit_is 2; says 11025; says 22050; says 44100
+  end
+
+  begin "$r: --engine vsc checks its own options' values"
+  run "$r" --engine vsc --core vsc.sys --midi song.mid --out out.wav --set 99
+  exit_is 2; says 88pro
+  run "$r" --engine vsc --core vsc.sys --midi song.mid --out out.wav --poly 0
+  exit_is 2; says 128
+  run "$r" --engine vsc --core vsc.sys --midi song.mid --out out.wav --cpu sse9
+  exit_is 2; says mmx
+  end
+
+  begin "$r: --engine vsc takes its tone set from --set, not --map"
+  run "$r" --engine vsc --core vsc.sys --midi song.mid --out out.wav --map 88
+  exit_is 2; says --set
+  end
+
+  begin "$r: the VSC engine's options mean nothing to the default engine"
+  run "$r" --midi song.mid --out out.wav --set 88
+  exit_is 2
+  end
+done
+
 # ---- scva-daemon, both widths -------------------------------------------
 for d in scva-daemon scva-daemon32; do
   have "$d" || continue

@@ -72,8 +72,11 @@ static inline void scva_core_sink(void *api, uint32_t msg)
 }
 
 /* TG_LongMidiIn and TG_Process, in the shape of a render_loop port. */
-static inline void scva_core_long_sink(void *api, const unsigned char *msg)
+/* The core reads up to F7, so the length goes unused. */
+static inline void scva_core_long_sink(void *api, const unsigned char *msg,
+                                       size_t len)
 {
+  (void)len;
   ((const struct scva_core_api *)api)->long_midi(msg, 0);
 }
 
