@@ -243,6 +243,7 @@ static const int rates[] = { 11025, 22050, 44100, 0 };
 
 static const struct synth_caps caps = {
   "vsc",
+  "vsc.sys",
   rates,
   22050,                      /* VSC 3.2's own */
   0,                          /* MIDI lands on the next block */

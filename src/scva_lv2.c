@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: CC0-1.0
  *
- * SOUND Canvas VA as an LV2 instrument: MIDI in, stereo out.
+ * SOUND Canvas VA as an LV2 instrument: MIDI in, stereo out. A 32-bit build
+ * offers Virtual Sound Canvas 3.2's engine as a second plugin, its tone
+ * sets in place of the tone maps and its names from the engine itself.
  *
  * The engine is Roland's, loaded from your own SCCore.dll at instantiate
  * time. Nothing of Roland's is distributed with this plugin - the core is
@@ -19,6 +21,7 @@
 #include "scva_engine.h"
 #include "scva_map.h"
 #include "scva_names.h"
+#include "plugin_names.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +33,7 @@
 #include <lv2/midi/midi.h>
 
 #define SCVA_URI "https://github.com/mlainez/scva-headless#scva"
+#define VSC_URI  "https://github.com/mlainez/scva-headless#vsc"
 
 enum {
   PORT_MIDI_IN = 0,
@@ -98,7 +102,12 @@ static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
   char err[256], here[1024], dir[1024];
   size_t n;
   int i;
+  const struct synth_backend *b = &synth_scva;
+#if defined(__i386__)
+  if (!strcmp(desc->URI, VSC_URI)) b = &synth_vsc;
+#else
   (void)desc;
+#endif
 
   for (i = 0; features && features[i]; ++i)
     if (!strcmp(features[i]->URI, LV2_URID__map))
@@ -114,20 +123,25 @@ static LV2_Handle instantiate(const LV2_Descriptor *desc, double rate,
   snprintf(here, sizeof here, "%s", bundle ? bundle : "");
   n = strlen(here);
   while (n > 1 && here[n - 1] == '/') here[--n] = '\0';
-  scva_core_dir(here, dir, sizeof dir);
+  scva_engine_dir(b->caps->core_file, here, dir, sizeof dir);
 
-  /* The instrument and kit lists are the install's own: nothing of Roland's
-     ships with this plugin, so without them there is nothing to offer. */
-  scva_names_load(&s->names, dir);
+  /* The instrument and kit lists are the install's own - the name files
+     beside SCCore.dll, or VSC's engine itself: nothing of Roland's ships
+     with this plugin, so without them there is nothing to offer. */
+  plugin_names_load(b, &s->names, dir);
   if (!s->names.npatch || !strcmp(s->names.module, "General MIDI") ||
       !scva_lists_build(&s->lists, &s->names)) {
-    fprintf(stderr, "scva.lv2: no SOUND Canvas VA name files (SCVSC.tnf, "
-            "SCVSC.drf) beside SCCore.dll in %s\n", dir);
+    if (b == &synth_scva)
+      fprintf(stderr, "scva.lv2: no SOUND Canvas VA name files (SCVSC.tnf, "
+              "SCVSC.drf) beside SCCore.dll in %s\n", dir);
+    else
+      fprintf(stderr, "scva.lv2: no %s with a tone set in %s\n",
+              b->caps->core_file, dir);
     scva_names_free(&s->names);
     free(s);
     return NULL;
   }
-  s->eng = scva_engine_open(dir, rate, err, sizeof err);
+  s->eng = scva_engine_open(b, dir, rate, err, sizeof err);
   if (!s->eng) {
     fprintf(stderr, "scva.lv2: %s\n", err);
     scva_lists_free(&s->lists);
@@ -159,7 +173,7 @@ static void run(LV2_Handle h, uint32_t n_samples)
   int map;
 
   /* The host's audio thread, not the one that opened the engine. */
-  if (!scva_engine_thread()) {
+  if (!scva_engine_thread(s->eng)) {
     memset(s->out_l, 0, n_samples * sizeof *s->out_l);
     memset(s->out_r, 0, n_samples * sizeof *s->out_r);
     return;
@@ -203,11 +217,14 @@ static const void *extension_data(const char *uri)
   return NULL;
 }
 
-static const LV2_Descriptor descriptor = {
-  SCVA_URI, instantiate, connect_port, NULL, run, NULL, cleanup, extension_data
+static const LV2_Descriptor descriptors[] = {
+  { SCVA_URI, instantiate, connect_port, NULL, run, NULL, cleanup, extension_data },
+#if defined(__i386__)
+  { VSC_URI, instantiate, connect_port, NULL, run, NULL, cleanup, extension_data },
+#endif
 };
 
 LV2_SYMBOL_EXPORT const LV2_Descriptor *lv2_descriptor(uint32_t index)
 {
-  return index == 0 ? &descriptor : NULL;
+  return index < sizeof descriptors / sizeof *descriptors ? &descriptors[index] : NULL;
 }

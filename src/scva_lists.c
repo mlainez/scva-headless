@@ -8,12 +8,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-const char *scva_core_dir(const char *fallback, char *buf, size_t cap)
+const char *scva_engine_dir(const char *file, const char *fallback, char *buf,
+                            size_t cap)
 {
   const char *env = getenv("SCVA_DLL_DIR");
   if (env && *env) {
     FILE *f;
-    snprintf(buf, cap, "%s/SCCore.dll", env);
+    snprintf(buf, cap, "%s/%s", env, file);
     f = fopen(buf, "rb");
     if (f) {
       fclose(f);
@@ -25,16 +26,26 @@ const char *scva_core_dir(const char *fallback, char *buf, size_t cap)
   return buf;
 }
 
+const char *scva_core_dir(const char *fallback, char *buf, size_t cap)
+{
+  return scva_engine_dir("SCCore.dll", fallback, buf, cap);
+}
+
 int scva_lists_build(struct scva_lists *L, const struct scva_names *N)
 {
   size_t i, n = N->npatch ? N->npatch : 1;
-  int m;
+  int m, top = SCVA_MAP_DEFAULT, has[SCVA_MAPS] = {0};
 
   memset(L, 0, sizeof *L);
-  for (i = 0; i < N->npatch; ++i) if (N->patch[i].map) L->has_maps = 1;
+  for (i = 0; i < N->npatch; ++i)
+    if (N->patch[i].map < SCVA_MAPS) {
+      has[N->patch[i].map] = 1;
+      if (N->patch[i].map > top) top = N->patch[i].map;
+    }
+  L->has_maps = top != SCVA_MAP_DEFAULT;
   for (m = 0; m < SCVA_MAPS; ++m) {
     int src = !L->has_maps ? SCVA_MAP_DEFAULT :
-              m == SCVA_MAP_DEFAULT ? SCVA_MAP_8820 : m;
+              m == SCVA_MAP_DEFAULT || !has[m] ? top : m;
     L->tone[m] = calloc(n, sizeof *L->tone[m]);
     L->kit[m] = calloc(n, sizeof *L->kit[m]);
     if (!L->tone[m] || !L->kit[m]) { scva_lists_free(L); return 0; }

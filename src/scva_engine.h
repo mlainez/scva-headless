@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "scva_lists.h"
+#include "synth.h"
 
 /* Declared to the engine; scva_engine_render() is chunked to it. */
 #define SCVA_MAXBLOCK 4096
@@ -20,19 +21,21 @@
 struct scva_engine;
 
 
-/* Loads dir/SCCore.dll and starts it at rate. NULL, with err filled, if the
-   core cannot be loaded or lacks an export. */
-struct scva_engine *scva_engine_open(const char *dir, double rate,
-                                     char *err, size_t errlen);
+/* Loads backend b's engine from dir (dir/SCCore.dll, dir/vsc.sys) and starts
+   it at rate, resampled where b does not render at that rate. NULL, with err
+   filled, if it cannot be loaded. */
+struct scva_engine *scva_engine_open(const struct synth_backend *b, const char *dir,
+                                     double rate, char *err, size_t errlen);
 /* Deactivates and unloads. Never TG_terminate: it calls exit(), which would
    take the host with it. */
 void scva_engine_close(struct scva_engine *e);
 
 /* Call on a thread before it enters the engine: a plugin host's audio thread
    is rarely the one that opened it. 0 if the thread cannot be set up. */
-int scva_engine_thread(void);
+int scva_engine_thread(const struct scva_engine *e);
 
-/* Puts every part on a tone map, audibly. 1 if the map changed. */
+/* Puts every part on a tone map, audibly. 1 if the map changed. For an
+   engine with one tone set for every part, the map picks the set. */
 int scva_engine_set_map(struct scva_engine *e, int map);
 /* Puts one part on one patch. */
 void scva_engine_patch(struct scva_engine *e, int ch, int map, int bank,

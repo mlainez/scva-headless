@@ -1,0 +1,26 @@
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
+
+# The 32-bit bundle: SOUND Canvas VA, and the VSC engine, which only a
+# 32-bit host can load.
+
+<https://github.com/mlainez/scva-headless#scva>
+	a lv2:Plugin ;
+	lv2:binary <scva.so> ;
+	rdfs:seeAlso <scva.ttl> .
+
+<https://github.com/mlainez/scva-headless#ui>
+	a ui:X11UI ;
+	ui:binary <scva_ui.so> ;
+	rdfs:seeAlso <scva.ttl> .
+
+<https://github.com/mlainez/scva-headless#vsc>
+	a lv2:Plugin ;
+	lv2:binary <scva.so> ;
+	rdfs:seeAlso <vsc.ttl> .
+
+<https://github.com/mlainez/scva-headless#vsc_ui>
+	a ui:X11UI ;
+	ui:binary <scva_ui.so> ;
+	rdfs:seeAlso <vsc.ttl> .

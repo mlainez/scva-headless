@@ -34,6 +34,7 @@ struct synth_options {
 /* What a backend can do, so callers can adapt to it. */
 struct synth_caps {
   const char *name;           /* "scva", "vsc" */
+  const char *core_file;      /* its engine's file name: "SCCore.dll" */
   const int *rates;           /* the only rates it renders at, ending in 0;
                                  NULL when it takes any */
   int default_rate;           /* the rate to use when none is asked for; 0

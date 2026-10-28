@@ -11,7 +11,7 @@
 #   SCVA_TEST_VSC_SYS=...  the user's own vsc.sys, for the loader's unit test
 #                          that maps it
 #   SCVA_TEST_VSC_DIR=...  vsc.sys and the vscNN.dat tone sets, and
-#   SCVA_TEST_VSC_PLAY=... virtual_sc's vsc-play, for the VSC backend's tier
+#   SCVA_TEST_VSC_PLAY=... the reference VSC renderer, for the VSC backend's tier
 #
 # Exit status is non-zero if any tier that ran failed.
 set -u
@@ -77,9 +77,9 @@ else
   skip perf "instruction-count budget (set SCVA_TEST_DLL_DIR)"
 fi
 if [ -n "${SCVA_TEST_VSC_DIR:-}" ] && [ -n "${SCVA_TEST_VSC_PLAY:-}" ]; then
-  tier vsc "the VSC backend renders what vsc-play renders" make test-vsc
+  tier vsc "the VSC backend renders what the reference renders" make test-vsc
 else
-  skip vsc "VSC backend against vsc-play (set SCVA_TEST_VSC_DIR and _PLAY)"
+  skip vsc "VSC backend against the reference (set SCVA_TEST_VSC_DIR and _PLAY)"
 fi
 
 echo

@@ -172,11 +172,13 @@ $(BUILD)/scva-winmidi32.exe: $(call objs,win32,$(WINMIDI_MODS) pe_loader scva_ru
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ $^ -lwinmm
 
 # ---- the engine library --------------------------------------------------
-# What the CLAP and LV2 plugins share - opening the core, driving it, the
+# What the CLAP and LV2 plugins share - opening the engine, driving it, the
 # patch lists - archived once per toolchain and linked statically into each
 # plugin. The 64-bit Windows one has no PE loader: LoadLibrary takes that core.
+# The 32-bit ones also carry the VSC engine, which only they can host.
 
-ENGINE_MODS  := scva_engine synth_scva map_policy scva_lists
+ENGINE_MODS  := scva_engine synth_scva synth_registry synth_resampled resample \
+                plugin_names map_policy scva_lists
 ENGINE       := $(BUILD)/engine/linux64/libscvaengine.a
 ENGINE32     := $(BUILD)/engine/linux32/libscvaengine.a
 ENGINE_WIN64 := $(BUILD)/engine/win64/libscvaengine.a
@@ -189,7 +191,7 @@ $(ENGINE): $(call objs,linux64-pic,$(ENGINE_MODS) pe_loader scva_runtime)
 	@rm -f $@
 	$(AR) rcs $@ $^
 
-$(ENGINE32): $(call objs,linux32-pic,$(ENGINE_MODS) pe_loader scva_runtime)
+$(ENGINE32): $(call objs,linux32-pic,$(ENGINE_MODS) pe_loader scva_runtime $(VSC_ENGINE_MODS))
 	@mkdir -p $(@D)
 	@rm -f $@
 	$(AR) rcs $@ $^
@@ -199,7 +201,7 @@ $(ENGINE_WIN64): $(call objs,win64,$(ENGINE_MODS))
 	@rm -f $@
 	$(MINGW_AR) rcs $@ $^
 
-$(ENGINE_WIN32): $(call objs,win32,$(ENGINE_MODS) pe_loader scva_runtime)
+$(ENGINE_WIN32): $(call objs,win32,$(ENGINE_MODS) pe_loader scva_runtime $(VSC_ENGINE_MODS))
 	@mkdir -p $(@D)
 	@rm -f $@
 	$(MINGW32_AR) rcs $@ $^
@@ -257,10 +259,13 @@ $(LV2_BUNDLE)/scva_ui.so: $(call objs,linux64-pic,scva_lv2_ui) $(XUI) $(ENGINE)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(PICFLAGS) -shared -o $@ $^ $(X11)
 
-$(LV2_BUNDLE32)/scva.so: $(call objs,linux32-pic,scva_lv2) $(ENGINE32) lv2/manifest.ttl lv2/scva.ttl
+# The 32-bit bundle also holds the VSC plugin, which only it can host.
+$(LV2_BUNDLE32)/scva.so: $(call objs,linux32-pic,scva_lv2) $(ENGINE32) lv2/manifest32.ttl \
+                         lv2/scva.ttl lv2/vsc.ttl
 	@mkdir -p $(@D)
 	$(CC) -m32 $(CFLAGS) $(PICFLAGS) -shared -o $@ $(filter %.o %.a,$^) -lpthread -lm
-	@cp lv2/manifest.ttl lv2/scva.ttl $(@D)/
+	@cp lv2/manifest32.ttl $(@D)/manifest.ttl
+	@cp lv2/scva.ttl lv2/vsc.ttl $(@D)/
 
 $(LV2_BUNDLE32)/scva_ui.so: $(call objs,linux32-pic,scva_lv2_ui) $(XUI32) $(ENGINE32)
 	@mkdir -p $(@D)
@@ -277,7 +282,7 @@ $(LV2_BUNDLE32)/scva_ui.so: $(call objs,linux32-pic,scva_lv2_ui) $(XUI32) $(ENGI
 UNIT_TESTS := $(patsubst tests/unit/%.c,%,$(wildcard tests/unit/test_*.c))
 UNIT64     := $(addprefix $(BUILD)/test/unit64/,$(UNIT_TESTS))
 UNIT32     := $(addprefix $(BUILD)/test/unit32/,$(UNIT_TESTS))
-UNIT_MODS  := scva_lists map_policy render_loop console live_sched
+UNIT_MODS  := scva_lists map_policy render_loop console live_sched resample
 
 $(OBJ)/test64/%.o: tests/unit/%.c
 	@mkdir -p $(@D)
@@ -446,6 +451,7 @@ test-vsc: $(BUILD)/test/vsc_drive $(BUILD)/test/test_synth_vsc $(BUILD)/scva-ren
 	@$(BUILD)/test/test_synth_vsc
 	@python3 tests/vsc/test_daemon_vsc.py
 	@python3 tests/vsc/test_winmidi_vsc.py
+	@python3 tests/vsc/test_plugins_vsc.py
 	@python3 tests/vsc/run.py
 
 $(BUILD)/test/icount: tests/perf/icount.c

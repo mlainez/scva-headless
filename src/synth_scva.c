@@ -135,6 +135,7 @@ static void render(struct synth *s, float *l, float *r, uint32_t n)
 
 static const struct synth_caps caps = {
   "scva",
+  "SCCore.dll",
   NULL,                       /* any rate: it resamples from 32 kHz itself */
   0,
   1,                          /* TG_ShortMidiIn takes a sample timestamp */

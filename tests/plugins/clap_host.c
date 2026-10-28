@@ -15,16 +15,22 @@
  *                             "processed N STATUS", "L k0 k1 ..." (left
  *                             samples times 256), and "out ID V" for each
  *                             parameter value the plugin reported
+ *   peak                      "peak P", the last process's largest absolute
+ *                             sample either side
  *   flush                     params flush on the main thread, same "out"
  *   callback                  run on_main_thread if the plugin asked; prints
  *                             "callback", then "rescan FLAGS" and
  *                             "notenames changed" as the host is told
  *   load KEY                  preset-load from the plugin's own location
  *   presets                   run preset discovery: "preset NAME|KEY|FEATURE"
+ *   plugins                   "plugin ID|NAME" for each the file offers
  *   notenames                 "note KEY CHANNEL NAME" for each
  *   quit
  *
- *   clap_host PLUGIN.clap < script
+ *   clap_host PLUGIN.clap [INDEX [RATE]] < script
+ *
+ * INDEX picks the file's plugin and its preset provider (default 0), RATE
+ * the sample rate (48000).
  */
 #ifdef _WIN32
 #include <windows.h>
@@ -170,6 +176,8 @@ static bool ix_soundpack(const clap_preset_discovery_indexer_t *i, const clap_pr
 static const void *ix_ext(const clap_preset_discovery_indexer_t *i, const char *id)
 { (void)i; (void)id; return NULL; }
 
+static uint32_t which;               /* the plugin, by index */
+
 static void discover(const clap_plugin_entry_t *entry)
 {
   static const clap_preset_discovery_indexer_t ix = {
@@ -181,7 +189,7 @@ static void discover(const clap_plugin_entry_t *entry)
     entry->get_factory(CLAP_PRESET_DISCOVERY_FACTORY_ID);
   const clap_preset_discovery_provider_t *p;
   if (!f) { printf("no preset factory\n"); return; }
-  p = f->create(f, &ix, f->get_descriptor(f, 0)->id);
+  p = f->get_descriptor(f, which) ? f->create(f, &ix, f->get_descriptor(f, which)->id) : NULL;
   if (!p || !p->init(p)) { printf("provider failed\n"); return; }
   memset(&rx, 0, sizeof rx);
   rx.on_error = rx_error;
@@ -213,7 +221,11 @@ int main(int argc, char **argv)
   void *so;
 #endif
   setvbuf(stdout, NULL, _IONBF, 0);
-  if (argc != 2) { fprintf(stderr, "usage: clap_host PLUGIN.clap\n"); return 2; }
+  if (argc < 2 || argc > 4) {
+    fprintf(stderr, "usage: clap_host PLUGIN.clap [INDEX [RATE]]\n");
+    return 2;
+  }
+  if (argc > 2) which = (uint32_t)atoi(argv[2]);
 #ifdef _WIN32
   so = LoadLibraryA(argv[1]);
   entry = so ? (const clap_plugin_entry_t *)GetProcAddress(so, "clap_entry") : NULL;
@@ -223,10 +235,12 @@ int main(int argc, char **argv)
 #endif
   if (!entry || !entry->init(argv[1])) { printf("cannot load %s\n", argv[1]); return 1; }
   fac = entry->get_factory(CLAP_PLUGIN_FACTORY_ID);
-  plug = fac ? fac->create_plugin(fac, &host, fac->get_plugin_descriptor(fac, 0)->id) : NULL;
+  plug = fac && fac->get_plugin_descriptor(fac, which)
+         ? fac->create_plugin(fac, &host, fac->get_plugin_descriptor(fac, which)->id) : NULL;
   if (!plug || !plug->init(plug)) { printf("cannot create the plugin\n"); return 1; }
   params = plug->get_extension(plug, CLAP_EXT_PARAMS);
-  printf("%s\n", plug->activate(plug, 48000.0, 1, 4096) ? "activated" : "activate failed");
+  printf("%s\n", plug->activate(plug, argc > 3 ? atof(argv[3]) : 48000.0, 1, 4096)
+                   ? "activated" : "activate failed");
   plug->start_processing(plug);
 
   while (fgets(line, sizeof line, stdin)) {
@@ -290,6 +304,19 @@ int main(int argc, char **argv)
       printf("load %s %s\n", rest,
              pl && pl->from_location(plug, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, NULL, rest)
                ? "ok" : "refused");
+    } else if (!strcmp(line, "peak")) {
+      int i;
+      float peak = 0.0f;
+      for (i = 0; i < frames_to_process; ++i) {
+        if (fabsf(out_l[i]) > peak) peak = fabsf(out_l[i]);
+        if (fabsf(out_r[i]) > peak) peak = fabsf(out_r[i]);
+      }
+      printf("peak %.6f\n", peak);
+    } else if (!strcmp(line, "plugins")) {
+      uint32_t i;
+      for (i = 0; i < fac->get_plugin_count(fac); ++i)
+        printf("plugin %s|%s\n", fac->get_plugin_descriptor(fac, i)->id,
+               fac->get_plugin_descriptor(fac, i)->name);
     } else if (!strcmp(line, "presets")) {
       discover(entry);
     } else if (!strcmp(line, "notenames")) {

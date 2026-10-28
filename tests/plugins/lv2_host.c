@@ -9,9 +9,13 @@
  *   run N                        run N frames on the audio thread; prints
  *                                "ran N" then "L k0 k1 ..." with each left
  *                                sample times 256, rounded
+ *   peak                         "peak P", the last run's largest absolute
+ *                                sample either side
  *   quit                         clean up and exit
  *
- *   lv2_host BUNDLE_DIR < script
+ *   lv2_host BUNDLE_DIR [INDEX [RATE]] < script
+ *
+ * INDEX picks the bundle's plugin (default 0), RATE the sample rate (48000).
  *
  * Prints "instantiated" or "instantiate failed" first.
  */
@@ -98,13 +102,17 @@ int main(int argc, char **argv)
   LV2_Descriptor_Function entry;
   pthread_t th;
   void *so;
+  int last_run = 0;
 
-  if (argc != 2) { fprintf(stderr, "usage: lv2_host BUNDLE_DIR\n"); return 2; }
+  if (argc < 2 || argc > 4) {
+    fprintf(stderr, "usage: lv2_host BUNDLE_DIR [INDEX [RATE]]\n");
+    return 2;
+  }
   snprintf(path, sizeof path, "%s/scva.so", argv[1]);
   so = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!so) { printf("dlopen failed: %s\n", dlerror()); return 1; }
   entry = (LV2_Descriptor_Function)dlsym(so, "lv2_descriptor");
-  desc = entry ? entry(0) : NULL;
+  desc = entry ? entry(argc > 2 ? (uint32_t)atoi(argv[2]) : 0) : NULL;
   if (!desc) { printf("no descriptor\n"); return 1; }
   printf("uri %s\n", desc->URI);
 
@@ -112,7 +120,7 @@ int main(int argc, char **argv)
   seq_type = map_uri(NULL, LV2_ATOM__Sequence);
   frames_unit = map_uri(NULL, LV2_ATOM__frameTime);
   snprintf(path, sizeof path, "%s/", argv[1]);        /* hosts pass the slash */
-  inst = desc->instantiate(desc, 48000.0, path, features);
+  inst = desc->instantiate(desc, argc > 3 ? atof(argv[3]) : 48000.0, path, features);
   printf("%s\n", inst ? "instantiated" : "instantiate failed");
   fflush(stdout);
   if (!inst) return 0;
@@ -154,7 +162,15 @@ int main(int argc, char **argv)
       printf("ran %d\nL", n);
       for (i = 0; i < n; ++i) printf(" %ld", lround(out_l[i] * 256.0f));
       printf("\n");
+      last_run = n;
       fflush(stdout);
+    } else if (!strncmp(line, "peak", 4)) {
+      float peak = 0.0f;
+      for (i = 0; i < last_run; ++i) {
+        if (fabsf(out_l[i]) > peak) peak = fabsf(out_l[i]);
+        if (fabsf(out_r[i]) > peak) peak = fabsf(out_r[i]);
+      }
+      printf("peak %.6f\n", peak);
     } else if (!strncmp(line, "quit", 4)) {
       break;
     }

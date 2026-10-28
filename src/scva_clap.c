@@ -13,6 +13,7 @@
  */
 #define _GNU_SOURCE
 #include "scva_engine.h"
+#include "plugin_names.h"
 #include "scva_map.h"
 #include "scva_names.h"
 #include <stdio.h>
@@ -28,10 +29,12 @@
 #endif
 
 #define SCVA_ID "com.github.mlainez.scva-headless"
+#define VSC_ID  "com.github.mlainez.scva-headless.vsc"
 
 struct scva {
    clap_plugin_t plugin;
    const clap_host_t *host;
+   const struct synth_backend *backend;  /* which engine this plugin is */
 
    struct scva_engine *eng;     /* NULL while deactivated */
    char dir[1024];              /* the core's and the name files' */
@@ -126,6 +129,13 @@ static const struct scva_patch *kit_at(const struct scva *s, int k)
    return &s->names.patch[s->lists.kit[s->list_map][clamp_step(k, (int)n - 1)]];
 }
 
+/* The last tone map the Tone Map parameter offers: an engine with one tone
+   set for every part has VSC's three sets, SC-55 to SC-88Pro. */
+static int map_max(const struct scva *s)
+{
+   return s->backend->caps->tone_map_per_part ? SCVA_MAP_8820 : SCVA_MAP_88PRO;
+}
+
 /* Changes are latched here and sent to the engine by process(). */
 static void param_event(struct scva *s, const clap_event_header_t *h)
 {
@@ -133,7 +143,7 @@ static void param_event(struct scva *s, const clap_event_header_t *h)
    if (h->space_id != CLAP_CORE_EVENT_SPACE_ID ||
        h->type != CLAP_EVENT_PARAM_VALUE) return;
    if (e->param_id == SCVA_PARAM_MAP)
-      s->map_want = clamp_step(e->value, SCVA_MAP_8820);
+      s->map_want = clamp_step(e->value, map_max(s));
    else if (e->param_id == SCVA_PARAM_INST && s->lists.ntone_max)
       s->inst_want = clamp_step(e->value, (int)s->lists.ntone_max - 1);
    else if (e->param_id == SCVA_PARAM_DRUM && s->lists.nkit_max)
@@ -219,13 +229,14 @@ static int reset_patch(const struct scva *s, const uint32_t *list, uint32_t n)
    return k < 0 ? 0 : k;
 }
 
-/* Names come from text files beside the core, not from the core, so they load
-   without it. Absent, the plugin still plays; it just offers no presets. */
+/* SOUND Canvas VA's names come from text files beside the core, not from
+   the core, so they load without it; VSC's from its engine. Absent, the
+   plugin still plays; it just offers no presets. */
 static bool plug_init(const clap_plugin_t *p)
 {
    struct scva *s = p->plugin_data;
-   scva_core_dir(g_plugin_dir, s->dir, sizeof s->dir);
-   scva_names_load(&s->names, s->dir);
+   scva_engine_dir(s->backend->caps->core_file, g_plugin_dir, s->dir, sizeof s->dir);
+   plugin_names_load(s->backend, &s->names, s->dir);
    scva_lists_build(&s->lists, &s->names);
    s->list_map = SCVA_MAP_DEFAULT;
    s->inst_want = reset_patch(s, s->lists.tone[s->list_map],
@@ -250,7 +261,7 @@ static bool plug_activate(const clap_plugin_t *p, double rate,
    struct scva *s = p->plugin_data;
    char err[256];
    (void)min; (void)max;
-   s->eng = scva_engine_open(s->dir, rate, err, sizeof err);
+   s->eng = scva_engine_open(s->backend, s->dir, rate, err, sizeof err);
    if (!s->eng) { fprintf(stderr, "scva: %s\n", err); return false; }
    s->inst_sent = s->drum_sent = -1;
    return true;
@@ -276,7 +287,7 @@ static clap_process_status plug_process(const clap_plugin_t *p,
    float *l, *r;
 
    /* The host's audio thread, not the one that opened the engine. */
-   if (!s->eng || !scva_engine_thread()) return CLAP_PROCESS_ERROR;
+   if (!s->eng || !scva_engine_thread(s->eng)) return CLAP_PROCESS_ERROR;
    if (s->sel_pending) apply_selection(s, pr->out_events);
 
    /* While processing, the host sends parameter changes here, not to
@@ -363,7 +374,7 @@ static bool pr_info(const clap_plugin_t *p, uint32_t i,
    info->flags = CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE;
    info->min_value = 0;
    if (i == SCVA_PARAM_MAP) {
-      info->max_value = SCVA_MAP_8820;
+      info->max_value = map_max(s);
       info->default_value = 0;
    } else if (i == SCVA_PARAM_INST) {
       info->max_value = s->lists.ntone_max ? s->lists.ntone_max - 1 : 0;
@@ -398,7 +409,7 @@ static bool pr_text(const clap_plugin_t *p, clap_id id, double v,
    struct scva *s = p->plugin_data;
    const struct scva_patch *pt;
    if (id == SCVA_PARAM_MAP) {
-      snprintf(out, cap, "%s", s_map_names[clamp_step(v, SCVA_MAP_8820)]);
+      snprintf(out, cap, "%s", s_map_names[clamp_step(v, map_max(s))]);
       return true;
    }
    pt = id == SCVA_PARAM_INST ? tone_at(s, clamp_step(v, INT32_MAX)) :
@@ -817,7 +828,7 @@ static bool gui_set_parent(const clap_plugin_t *p, const clap_window_t *win)
       LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP, SCVA_PARAM_INST,
       10, 92, 370, 186, "");
 
-   for (i = 0; i < SCVA_MAPS; ++i)
+   for (i = 0; i <= map_max(s); ++i)
       SendMessageA(s->gui_ctl[SCVA_PARAM_MAP], CB_ADDSTRING, 0,
                    (LPARAM)s_map_names[i]);
    gui_fill(s);
@@ -1063,16 +1074,46 @@ static const clap_plugin_descriptor_t s_descriptor = {
    .features = s_features
 };
 
-static const clap_plugin_t *make_plugin(const clap_host_t *host)
+#if defined(__i386__)
+static const clap_plugin_descriptor_t s_vsc_descriptor = {
+   .clap_version = CLAP_VERSION_INIT,
+   .id = VSC_ID,
+   .name = "SCVA: Virtual Sound Canvas 3.2",
+   .vendor = "scva-headless",
+   .url = "https://github.com/mlainez/scva-headless",
+   .manual_url = "",
+   .support_url = "",
+   .version = "1.0",
+   .description = "Roland Virtual Sound Canvas 3.2's engine, loaded from your "
+                  "own vsc.sys and its tone sets. Set SCVA_DLL_DIR or put them "
+                  "beside the plugin.",
+   .features = s_features
+};
+#endif
+
+/* The plugins this build offers, each an engine. */
+static const struct {
+   const clap_plugin_descriptor_t *desc;
+   const struct synth_backend *backend;
+} s_plugins[] = {
+   { &s_descriptor, &synth_scva },
+#if defined(__i386__)
+   { &s_vsc_descriptor, &synth_vsc },
+#endif
+};
+#define NPLUGINS (sizeof s_plugins / sizeof *s_plugins)
+
+static const clap_plugin_t *make_plugin(const clap_host_t *host, uint32_t which)
 {
    struct scva *s = calloc(1, sizeof *s);
    if (!s) return NULL;
    s->host = host;
+   s->backend = s_plugins[which].backend;
    s->map_want = 0;
 #ifndef _WIN32
    s->xui_timer = CLAP_INVALID_ID;
 #endif
-   s->plugin.desc = &s_descriptor;
+   s->plugin.desc = s_plugins[which].desc;
    s->plugin.plugin_data = s;
    s->plugin.init = plug_init;
    s->plugin.destroy = plug_destroy;
@@ -1087,17 +1128,19 @@ static const clap_plugin_t *make_plugin(const clap_host_t *host)
    return &s->plugin;
 }
 
-static uint32_t fac_count(const clap_plugin_factory_t *f) { (void)f; return 1; }
+static uint32_t fac_count(const clap_plugin_factory_t *f) { (void)f; return NPLUGINS; }
 static const clap_plugin_descriptor_t *
 fac_desc(const clap_plugin_factory_t *f, uint32_t i)
-{ (void)f; return i ? NULL : &s_descriptor; }
+{ (void)f; return i < NPLUGINS ? s_plugins[i].desc : NULL; }
 static const clap_plugin_t *
 fac_create(const clap_plugin_factory_t *f, const clap_host_t *host,
            const char *id)
 {
+   uint32_t i;
    (void)f;
-   if (!id || strcmp(id, SCVA_ID)) return NULL;
-   return make_plugin(host);
+   for (i = 0; id && i < NPLUGINS; ++i)
+      if (!strcmp(id, s_plugins[i].desc->id)) return make_plugin(host, i);
+   return NULL;
 }
 static const clap_plugin_factory_t s_factory = {
    fac_count, fac_desc, fac_create
@@ -1105,25 +1148,31 @@ static const clap_plugin_factory_t s_factory = {
 
 /* ---- preset discovery -------------------------------------------------- */
 
-/* The presets are the tone and drum tables of the user's own SOUND Canvas VA
-   install. They are not files, so the location is LOCATION_PLUGIN and each
-   preset is identified by a load_key the plugin alone has to understand. */
-static const clap_preset_discovery_provider_descriptor_t s_provider_desc = {
-   .clap_version = CLAP_VERSION_INIT,
-   .id = SCVA_ID ".presets",
-   .name = "SOUND Canvas VA tones",
-   .vendor = "scva-headless"
+/* The presets are the tone and drum tables of the user's own install: SOUND
+   Canvas VA's name files, VSC's engine. They are not files, so the location
+   is LOCATION_PLUGIN and each preset is identified by a load_key the plugin
+   alone has to understand. One provider per plugin. */
+static const clap_preset_discovery_provider_descriptor_t s_provider_descs[] = {
+   { CLAP_VERSION_INIT, SCVA_ID ".presets", "SOUND Canvas VA tones", "scva-headless" },
+#if defined(__i386__)
+   { CLAP_VERSION_INIT, VSC_ID ".presets", "Virtual Sound Canvas 3.2 tones", "scva-headless" },
+#endif
 };
 
-static const clap_preset_discovery_indexer_t *s_indexer;
+struct provider {
+   clap_preset_discovery_provider_t p;
+   const clap_preset_discovery_indexer_t *indexer;
+   uint32_t which;                       /* the plugin, in s_plugins */
+};
 
 static bool prov_init(const clap_preset_discovery_provider_t *provider)
 {
    clap_preset_discovery_location_t loc;
-   const clap_preset_discovery_indexer_t *ix = provider->provider_data;
+   const struct provider *pv = provider->provider_data;
+   const clap_preset_discovery_indexer_t *ix = pv->indexer;
    memset(&loc, 0, sizeof loc);
    loc.flags = CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT;
-   loc.name = "SOUND Canvas VA tones";
+   loc.name = s_provider_descs[pv->which].name;
    loc.kind = CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN;
    loc.location = NULL;
    return ix && ix->declare_location(ix, &loc);
@@ -1131,36 +1180,42 @@ static bool prov_init(const clap_preset_discovery_provider_t *provider)
 
 static void prov_destroy(const clap_preset_discovery_provider_t *provider)
 {
-   free((void *)provider);
+   free(provider->provider_data);
 }
 
 static bool prov_get_metadata(const clap_preset_discovery_provider_t *provider,
                               uint32_t kind, const char *location,
                               const clap_preset_discovery_metadata_receiver_t *rx)
 {
+   const struct provider *pv = provider->provider_data;
+   const struct synth_backend *b = s_plugins[pv->which].backend;
    clap_universal_plugin_id_t pid;
    struct scva_names names;
    struct scva_lists lists;
    char dir[1024];
    uint32_t i;
-   int drum, m;
-   (void)provider;
+   int drum, m, top = SCVA_MAP_DEFAULT;
 
    if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location) return false;
-   if (!scva_names_load(&names, scva_core_dir(g_plugin_dir, dir, sizeof dir))) {
+   if (!plugin_names_load(b, &names, scva_engine_dir(b->caps->core_file, g_plugin_dir,
+                                                     dir, sizeof dir))) {
       if (rx->on_error)
-         rx->on_error(rx, 0, "no SOUND Canvas VA tone files beside SCCore.dll");
+         rx->on_error(rx, 0, b == &synth_scva
+                             ? "no SOUND Canvas VA tone files beside SCCore.dll"
+                             : "no tone set beside the engine file");
       return false;
    }
    pid.abi = "clap";
-   pid.id = SCVA_ID;
+   pid.id = s_plugins[pv->which].desc->id;
 
    /* A preset browser shows one list: every map's tones, then every map's
-      kits, the map named in each. Default only repeats SC-8820. */
+      kits, the map named in each. Default only repeats the highest map,
+      which is the last with patches of its own. */
    scva_lists_build(&lists, &names);
+   for (i = 0; i < names.npatch; ++i)
+      if (names.patch[i].map > top) top = names.patch[i].map;
    for (drum = 0; drum < 2; ++drum)
-      for (m = lists.has_maps ? SCVA_MAP_55 : SCVA_MAP_DEFAULT;
-           m <= (lists.has_maps ? SCVA_MAP_8820 : SCVA_MAP_DEFAULT); ++m) {
+      for (m = lists.has_maps ? SCVA_MAP_55 : SCVA_MAP_DEFAULT; m <= top; ++m) {
          const uint32_t *list = drum ? lists.kit[m] : lists.tone[m];
          uint32_t n = drum ? lists.nkit[m] : lists.ntone[m];
          for (i = 0; i < n; ++i) {
@@ -1188,29 +1243,34 @@ static const void *prov_get_extension(const clap_preset_discovery_provider_t *p,
 }
 
 static uint32_t pd_count(const clap_preset_discovery_factory_t *f)
-{ (void)f; return 1; }
+{ (void)f; return NPLUGINS; }
 
 static const clap_preset_discovery_provider_descriptor_t *
 pd_get_descriptor(const clap_preset_discovery_factory_t *f, uint32_t i)
-{ (void)f; return i ? NULL : &s_provider_desc; }
+{ (void)f; return i < NPLUGINS ? &s_provider_descs[i] : NULL; }
 
 static const clap_preset_discovery_provider_t *
 pd_create(const clap_preset_discovery_factory_t *f,
           const clap_preset_discovery_indexer_t *indexer, const char *id)
 {
-   clap_preset_discovery_provider_t *p;
+   struct provider *pv;
+   uint32_t i;
    (void)f;
-   if (!indexer || !id || strcmp(id, s_provider_desc.id)) return NULL;
-   p = calloc(1, sizeof *p);
-   if (!p) return NULL;
-   s_indexer = indexer;
-   p->desc = &s_provider_desc;
-   p->provider_data = (void *)indexer;
-   p->init = prov_init;
-   p->destroy = prov_destroy;
-   p->get_metadata = prov_get_metadata;
-   p->get_extension = prov_get_extension;
-   return p;
+   if (!indexer || !id) return NULL;
+   for (i = 0; i < NPLUGINS; ++i)
+      if (!strcmp(id, s_provider_descs[i].id)) break;
+   if (i == NPLUGINS) return NULL;
+   pv = calloc(1, sizeof *pv);
+   if (!pv) return NULL;
+   pv->indexer = indexer;
+   pv->which = i;
+   pv->p.desc = &s_provider_descs[i];
+   pv->p.provider_data = pv;
+   pv->p.init = prov_init;
+   pv->p.destroy = prov_destroy;
+   pv->p.get_metadata = prov_get_metadata;
+   pv->p.get_extension = prov_get_extension;
+   return &pv->p;
 }
 
 static const clap_preset_discovery_factory_t s_preset_factory = {

@@ -9,6 +9,7 @@
 #define _GNU_SOURCE
 #include "scva_lists.h"
 #include "scva_xui.h"
+#include "plugin_names.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,7 @@
 #include <lv2/ui/ui.h>
 
 #define SCVA_UI_URI "https://github.com/mlainez/scva-headless#ui"
+#define VSC_UI_URI  "https://github.com/mlainez/scva-headless#vsc_ui"
 
 /* the plugin's ports, as in lv2/scva.ttl */
 #define PORT_MAP  3
@@ -101,7 +103,13 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor *d, const char *plugin,
   char here[1024], dir[1024];
   size_t n;
   int i, w, h;
-  (void)d; (void)plugin;
+  const struct synth_backend *b = &synth_scva;
+  (void)plugin;
+#if defined(__i386__)
+  if (!strcmp(d->URI, VSC_UI_URI)) b = &synth_vsc;
+#else
+  (void)d;
+#endif
 
   for (i = 0; features && features[i]; ++i) {
     if (!strcmp(features[i]->URI, LV2_UI__parent)) parent = features[i]->data;
@@ -115,7 +123,7 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor *d, const char *plugin,
   snprintf(here, sizeof here, "%s", bundle ? bundle : "");
   n = strlen(here);
   while (n > 1 && here[n - 1] == '/') here[--n] = '\0';
-  scva_names_load(&u->names, scva_core_dir(here, dir, sizeof dir));
+  plugin_names_load(b, &u->names, scva_engine_dir(b->caps->core_file, here, dir, sizeof dir));
   if (!scva_lists_build(&u->lists, &u->names)) {
     scva_names_free(&u->names);
     free(u);
@@ -179,11 +187,14 @@ static const void *extension_data(const char *uri)
   return NULL;
 }
 
-static const LV2UI_Descriptor descriptor = {
-  SCVA_UI_URI, instantiate, cleanup, port_event, extension_data
+static const LV2UI_Descriptor descriptors[] = {
+  { SCVA_UI_URI, instantiate, cleanup, port_event, extension_data },
+#if defined(__i386__)
+  { VSC_UI_URI, instantiate, cleanup, port_event, extension_data },
+#endif
 };
 
 LV2_SYMBOL_EXPORT const LV2UI_Descriptor *lv2ui_descriptor(uint32_t index)
 {
-  return index == 0 ? &descriptor : NULL;
+  return index < sizeof descriptors / sizeof *descriptors ? &descriptors[index] : NULL;
 }

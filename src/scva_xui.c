@@ -48,6 +48,7 @@ struct scva_xui {
   int map;
   struct xlist list[2];    /* 0 instruments, 1 drum kits */
   int bx[SCVA_MAPS], by, bwid[SCVA_MAPS], bht;  /* the map buttons */
+  int button_map[SCVA_MAPS], nbuttons;          /* the maps they select */
   int drag;                /* list whose scrollbar is held, or -1 */
   int dirty;
 };
@@ -97,8 +98,8 @@ static void layout(struct scva_xui *u)
   u->by = u->pad;
   u->bht = u->lh + 2 * u->pad;
   x += XTextWidth(u->font, lbl, (int)strlen(lbl)) + 2 * u->pad;
-  for (i = 0; i < SCVA_MAPS; ++i) {
-    const char *t = map_name[map_order[i]];
+  for (i = 0; i < u->nbuttons; ++i) {
+    const char *t = map_name[u->button_map[i]];
     u->bwid[i] = XTextWidth(u->font, t, (int)strlen(t)) + 3 * u->pad;
     u->bx[i] = x;
     x += u->bwid[i] + u->pad / 2;
@@ -183,11 +184,11 @@ static void draw(struct scva_xui *u)
   XFillRectangle(u->dpy, u->back, u->gc, 0, 0, (unsigned)u->w, (unsigned)u->h);
 
   text(u, u->pad, u->by + u->pad, "Tone Map", C_TEXT);
-  for (i = 0; i < SCVA_MAPS; ++i) {
-    int on = map_order[i] == u->map;
+  for (i = 0; i < u->nbuttons; ++i) {
+    int on = u->button_map[i] == u->map;
     box(u, u->bx[i], u->by, u->bwid[i], u->bht, on ? C_SEL : C_FACE);
     text(u, u->bx[i] + u->pad + u->pad / 2, u->by + u->pad,
-         map_name[map_order[i]], on ? C_SELTEXT : C_TEXT);
+         map_name[u->button_map[i]], on ? C_SELTEXT : C_TEXT);
   }
   text(u, u->list[0].x, u->list[0].y - u->lh - u->pad / 2,
        "Instrument (part 1)", C_TEXT);
@@ -220,10 +221,10 @@ static void press(struct scva_xui *u, XButtonEvent *e)
 {
   int i, bar = BAR * u->lh / 13;
   if (e->button == Button1)
-    for (i = 0; i < SCVA_MAPS; ++i)
+    for (i = 0; i < u->nbuttons; ++i)
       if (in(e->x, e->y, u->bx[i], u->by, u->bwid[i], u->bht)) {
-        if (map_order[i] != u->map && u->host.set_map)
-          u->host.set_map(u->host.ctx, map_order[i]);
+        if (u->button_map[i] != u->map && u->host.set_map)
+          u->host.set_map(u->host.ctx, u->button_map[i]);
         return;
       }
   for (i = 0; i < 2; ++i) {
@@ -288,6 +289,15 @@ struct scva_xui *scva_xui_open(unsigned long parent,
   u->N = N;
   u->L = L;
   u->host = *host;
+  /* Default, and every map with patches of its own: an engine with fewer
+     maps, as VSC's three tone sets, gets fewer buttons. Without per-map
+     lists there is nothing to tell them apart, so all are offered. */
+  for (i = 0; i < SCVA_MAPS; ++i) {
+    size_t k;
+    int has = map_order[i] == SCVA_MAP_DEFAULT || !L->has_maps;
+    for (k = 0; k < N->npatch && !has; ++k) has = N->patch[k].map == map_order[i];
+    if (has) u->button_map[u->nbuttons++] = map_order[i];
+  }
   u->drag = -1;
   u->asc = u->font->ascent;
   u->lh = u->font->ascent + u->font->descent + 2;

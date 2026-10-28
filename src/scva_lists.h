@@ -9,14 +9,20 @@
 #include <stdint.h>
 #include "scva_names.h"
 
-/* Where SCCore.dll and the patch name files are: $SCVA_DLL_DIR when it holds a
-   core, otherwise fallback, the plugin's own directory. The result is in buf. */
+/* Where an engine's file (SCCore.dll, vsc.sys) and its companions are:
+   $SCVA_DLL_DIR when it holds that file, otherwise fallback, the plugin's own
+   directory. The result is in buf. */
+const char *scva_engine_dir(const char *file, const char *fallback, char *buf,
+                            size_t cap);
+/* The same for SCCore.dll and the patch name files. */
 const char *scva_core_dir(const char *fallback, char *buf, size_t cap);
 
 /* The patches a host offers, per tone map, as indices into scva_names.patch:
    melodic tones and drum kits in the order the files give them. The Default
-   map renders as SC-8820, so its lists are SC-8820's. Without per-map pages,
-   as with the GM fallback, every map gets the one set there is. */
+   map, and any map with no patches of its own, gets the highest map's: the
+   Default map renders as SC-8820 on SOUND Canvas VA, as SC-88Pro on VSC.
+   Without per-map pages, as with the GM fallback, every map gets the one set
+   there is. */
 struct scva_lists {
   uint32_t *tone[SCVA_MAPS], ntone[SCVA_MAPS];
   uint32_t *kit[SCVA_MAPS], nkit[SCVA_MAPS];
