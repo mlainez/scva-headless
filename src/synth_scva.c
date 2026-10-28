@@ -131,11 +131,12 @@ static void render(struct synth *s, float *l, float *r, uint32_t n)
 
 static const struct synth_caps caps = {
   "scva",
-  1,                          /* any rate: it resamples from 32 kHz itself */
+  NULL,                       /* any rate: it resamples from 32 kHz itself */
   1,                          /* TG_ShortMidiIn takes a sample timestamp */
   1                           /* CC32 selects the map, per part */
 };
 
 const struct synth_backend synth_scva = {
-  &caps, open_scva, close_scva, attach_thread, short_msg, long_msg, render
+  &caps, open_scva, close_scva, attach_thread, short_msg, long_msg, render,
+  NULL                        /* names come from the name files */
 };

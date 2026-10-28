@@ -423,13 +423,19 @@ VSC_MODS := synth_vsc vsc_engine pe_loader
 
 $(OBJ)/vsctest32/%.o: tests/vsc/%.c
 	@mkdir -p $(@D)
-	$(CC) -m32 $(CFLAGS) -Isrc $(DEPS) -c -o $@ $<
+	$(CC) -m32 $(CFLAGS) -Isrc -Itests/unit $(DEPS) -c -o $@ $<
 
 $(BUILD)/test/vsc_drive: $(OBJ)/vsctest32/vsc_drive.o $(call objs,linux32,$(VSC_MODS))
 	@mkdir -p $(@D)
 	$(CC) -m32 $(CFLAGS) -o $@ $^ -lpthread -lm
 
-test-vsc: $(BUILD)/test/vsc_drive
+$(BUILD)/test/test_synth_vsc: $(OBJ)/vsctest32/test_synth_vsc.o \
+                              $(call objs,linux32,$(VSC_MODS) synth_scva scva_runtime)
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -o $@ $^ -lpthread -lm
+
+test-vsc: $(BUILD)/test/vsc_drive $(BUILD)/test/test_synth_vsc
+	@$(BUILD)/test/test_synth_vsc
 	@python3 tests/vsc/run.py
 
 $(BUILD)/test/icount: tests/perf/icount.c

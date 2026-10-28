@@ -54,6 +54,12 @@ void vsc_short(struct vsc *v, uint32_t msg);       /* status in the low byte */
 /* A complete SysEx, F0 through F7. Returns 0 if it is longer than the 256
    bytes the driver's interface carries. */
 int  vsc_sysex(struct vsc *v, const unsigned char *msg, size_t len);
+/* The engine's names for the loaded tone set: one program's tone in each of
+   the 128 banks (CC0 variations), or the 128 drum sets. An empty string
+   where there is nothing. 0 if the engine would not say. */
+#define VSC_NAME_LEN 12
+int  vsc_tone_names(struct vsc *v, int program, char names[128][VSC_NAME_LEN + 1]);
+int  vsc_drum_names(struct vsc *v, char names[128][VSC_NAME_LEN + 1]);
 /* Back to power-on state: every part, effect and controller. */
 void vsc_reset(struct vsc *v);
 /* One block of interleaved 16-bit stereo into out. */

@@ -37,6 +37,10 @@ typedef STDCALL void (*fn_RxMidiMsg)(const uint32_t *msg);
 typedef STDCALL void (*fn_RxMidiLongMsg)(const unsigned char *msg);
 typedef STDCALL void (*fn_FillAudioBuffer)(float gain, int16_t *out);
 typedef STDCALL void (*fn_SetSynthConfData)(const void *conf);
+/* 128 names of 12 bytes each, padded with spaces, not terminated: one
+   program's tone in every bank, or every drum set. 0 on success. */
+typedef STDCALL int  (*fn_GetToneNames)(int program, char *out);
+typedef STDCALL int  (*fn_GetRhythmSetNames)(char *out);
 
 /* SynthConfData, the 0x74-byte block CSynth::SetVscConfData passes to ioctl
    0x9C40240C. Each field is applied only if its bit is set in mask; the bit
@@ -85,6 +89,8 @@ struct vsc {
   fn_RxMidiLongMsg RxMidiLongMsg;
   fn_FillAudioBuffer FillAudioBuffer;
   fn_SetSynthConfData SetSynthConfData;
+  fn_GetToneNames GetToneNames;
+  fn_GetRhythmSetNames GetRhythmSetNames;
   struct vsc_config cfg;
   volatile int32_t *serviceInterval;
   volatile int32_t *samplingRate;
@@ -290,6 +296,8 @@ struct vsc *vsc_open(const char *sys_path, const char *dat_path,
   SYM(RxMidiLongMsg, "_RxMidiLongMsg@4");
   SYM(FillAudioBuffer, "_FillAudioBuffer@8");
   SYM(SetSynthConfData, "_SetSynthConfData@4");
+  SYM(GetToneNames, "_GetToneNames@8");
+  SYM(GetRhythmSetNames, "_GetRhythmSetNames@4");
   SYM(serviceInterval, "_serviceInterval");
   SYM(samplingRate, "_samplingRate");
   SYM(workCpu, "_workCpu");
@@ -345,6 +353,43 @@ int vsc_sysex(struct vsc *v, const unsigned char *msg, size_t len)
   cw = fpu_enter();
   v->RxMidiLongMsg(buf);
   fpu_leave(cw);
+  return 1;
+}
+
+/* The engine's 12-byte fields as strings, trailing spaces dropped. */
+static void unpack_names(const char *raw, char names[128][VSC_NAME_LEN + 1])
+{
+  int i, n;
+  for (i = 0; i < 128; ++i) {
+    memcpy(names[i], raw + i * VSC_NAME_LEN, VSC_NAME_LEN);
+    names[i][VSC_NAME_LEN] = '\0';
+    n = (int)strlen(names[i]);
+    while (n > 0 && names[i][n - 1] == ' ') names[i][--n] = '\0';
+  }
+}
+
+int vsc_tone_names(struct vsc *v, int program, char names[128][VSC_NAME_LEN + 1])
+{
+  char raw[128 * VSC_NAME_LEN];
+  uint16_t cw;
+  int failed;
+  if (program < 0 || program > 127) return 0;
+  cw = fpu_enter();
+  failed = v->GetToneNames(program, raw);
+  fpu_leave(cw);
+  if (failed) return 0;
+  unpack_names(raw, names);
+  return 1;
+}
+
+int vsc_drum_names(struct vsc *v, char names[128][VSC_NAME_LEN + 1])
+{
+  char raw[128 * VSC_NAME_LEN];
+  uint16_t cw = fpu_enter();
+  int failed = v->GetRhythmSetNames(raw);
+  fpu_leave(cw);
+  if (failed) return 0;
+  unpack_names(raw, names);
   return 1;
 }
 

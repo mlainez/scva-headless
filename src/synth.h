@@ -33,10 +33,12 @@ struct synth_options {
 
 /* What a backend can do, so callers can adapt to it. */
 struct synth_caps {
-  const char *name;           /* "scva" */
-  int any_rate;               /* renders at whatever rate it is opened at */
+  const char *name;           /* "scva", "vsc" */
+  const int *rates;           /* the only rates it renders at, ending in 0;
+                                 NULL when it takes any */
   int midi_timestamps;        /* MIDI lands on its sample, not its block */
-  int tone_map_per_part;      /* CC32 picks a tone map per part */
+  int tone_map_per_part;      /* CC32 picks a tone map per part; otherwise
+                                 one tone set serves every part */
 };
 
 struct synth_backend {
@@ -54,6 +56,10 @@ struct synth_backend {
   void (*long_msg)(struct synth *s, const uint8_t *msg, size_t len);
   /* n frames of stereo, any n */
   void (*render)(struct synth *s, float *left, float *right, uint32_t n);
+  /* The engine's own name for a tone (bank is CC0, program the program
+     change) or, with drums set, a drum set (by program); NULL where it has
+     none. NULL for a backend whose names come from elsewhere. */
+  const char *(*name)(struct synth *s, int drums, int bank, int program);
 };
 
 static inline void synth_close(struct synth *s) { if (s) s->backend->close(s); }
@@ -62,6 +68,8 @@ static inline void synth_long(struct synth *s, const uint8_t *msg, size_t len)
 { s->backend->long_msg(s, msg, len); }
 static inline void synth_render(struct synth *s, float *l, float *r, uint32_t n)
 { s->backend->render(s, l, r, n); }
+static inline const char *synth_name(struct synth *s, int drums, int bank, int program)
+{ return s->backend->name ? s->backend->name(s, drums, bank, program) : NULL; }
 
 /* synth_short in the shape of a map_policy sink. */
 static inline void synth_sink(void *s, uint32_t msg) { synth_short((struct synth *)s, msg); }
