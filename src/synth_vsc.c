@@ -13,6 +13,8 @@ struct vsc_synth {
   struct synth base;
   struct vsc *engine;
   int16_t *block;             /* one engine block, interleaved */
+  uint32_t used;              /* frames of it already handed out; a full
+                                 block means a new one is rendered next */
 };
 
 /* The tone set beside vsc.sys, for a caller that names none. */
@@ -44,6 +46,7 @@ static struct synth *open_vsc(const struct synth_options *opt, char *err,
   e->base.backend = &synth_vsc;
   e->base.rate = vsc_rate(e->engine);
   e->base.midi_block = vsc_block_frames(e->engine);
+  e->used = (uint32_t)e->base.midi_block;
   e->block = malloc((size_t)e->base.midi_block * 2 * sizeof *e->block);
   if (!e->block) {
     vsc_close(e->engine);
@@ -77,17 +80,26 @@ static void long_msg(struct synth *s, const uint8_t *msg, size_t len)
   vsc_sysex(((struct vsc_synth *)s)->engine, msg, len);
 }
 
-/* n must be a whole number of engine blocks. */
+/* Any n: the engine renders whole blocks, and what one call does not take
+   of a block is the start of the next call's output. MIDI sent between
+   calls therefore lands where the next block starts. */
 static void render(struct synth *s, float *l, float *r, uint32_t n)
 {
   struct vsc_synth *e = (struct vsc_synth *)s;
-  uint32_t block = (uint32_t)e->base.midi_block, k;
-  for (; n >= block; n -= block) {
-    vsc_render(e->engine, e->block);
-    for (k = 0; k < block; ++k) {
+  uint32_t block = (uint32_t)e->base.midi_block;
+  while (n) {
+    uint32_t take, k;
+    if (e->used == block) {
+      vsc_render(e->engine, e->block);
+      e->used = 0;
+    }
+    take = block - e->used < n ? block - e->used : n;
+    for (k = e->used; k < e->used + take; ++k) {
       *l++ = (float)e->block[2 * k] / 32768.0f;
       *r++ = (float)e->block[2 * k + 1] / 32768.0f;
     }
+    e->used += take;
+    n -= take;
   }
 }
 
