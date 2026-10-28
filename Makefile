@@ -291,7 +291,8 @@ $(BUILD)/test/unit32/%: $(OBJ)/test32/%.o $(call objs,linux32,$(UNIT_MODS))
 # links the loader too.
 LOADER_MODS := pe_loader
 PROBE_DIR := $(BUILD)/test/peprobe
-PROBES    := $(PROBE_DIR)/linux64/peprobe.dll $(PROBE_DIR)/linux32/peprobe.dll
+PROBES    := $(foreach w,linux64 linux32,$(PROBE_DIR)/$(w)/peprobe.dll \
+                                       $(PROBE_DIR)/$(w)/peprobe_packed.dll)
 
 $(BUILD)/test/unit64/test_pe_loader: $(OBJ)/test64/test_pe_loader.o \
                                      $(call objs,linux64,$(UNIT_MODS) $(LOADER_MODS))
@@ -369,6 +370,13 @@ $(PROBE_DIR)/%/peprobe.dll: tests/peprobe/peprobe.c $(PROBE_DIR)/%/probe_dep.dll
 	$(call fake_cc,$*) $(FAKE_FLAGS) -o $@ $< $(@D)/probe_dep.dll \
 	   -Wl,--entry,$(call fake_entry,$*) -lgcc
 
+# The same image with its sections 512 bytes apart, as a driver's are, so
+# code, data and bss share pages.
+$(PROBE_DIR)/%/peprobe_packed.dll: tests/peprobe/peprobe.c $(PROBE_DIR)/%/probe_dep.dll
+	$(call fake_cc,$*) $(FAKE_FLAGS) -o $@ $< $(@D)/probe_dep.dll \
+	   -Wl,--entry,$(call fake_entry,$*) -Wl,--section-alignment,0x200 \
+	   -Wl,--file-alignment,0x200 -lgcc
+
 peprobes: $(PROBES)
 
 # Minimal plugin hosts for the tests, one per width.
@@ -408,6 +416,22 @@ test-fake: $(FAKECORES) $(PLUGIN_HOSTS)
 test-core:
 	@tests/core/run.sh
 
+# The VSC backend against virtual_sc's vsc-play: SCVA_TEST_VSC_DIR (vsc.sys
+# and the tone sets), SCVA_TEST_VSC_PLAY and SCVA_TEST_CORPUS. 32-bit only,
+# as vsc.sys is.
+VSC_MODS := synth_vsc vsc_engine pe_loader
+
+$(OBJ)/vsctest32/%.o: tests/vsc/%.c
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -Isrc $(DEPS) -c -o $@ $<
+
+$(BUILD)/test/vsc_drive: $(OBJ)/vsctest32/vsc_drive.o $(call objs,linux32,$(VSC_MODS))
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -o $@ $^ -lpthread -lm
+
+test-vsc: $(BUILD)/test/vsc_drive
+	@python3 tests/vsc/run.py
+
 $(BUILD)/test/icount: tests/perf/icount.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -o $@ $<
@@ -424,4 +448,4 @@ clean:
 
 .PHONY: all linux linux32 daemon32 lv2 lv2-32 clap clap-win32 tones tones32 windows windows32 clean \
         test test-unit test-unit-win test-cli test-fake test-core test-perf fakecores plugin-hosts \
-        peprobes
+        peprobes test-vsc

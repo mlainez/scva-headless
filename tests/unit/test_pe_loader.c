@@ -18,13 +18,15 @@ typedef CDECL_CC int (*void_fn)(void);
 
 static char probe[512];
 
-static const char *probe_path(void)
+static const char *probe_named(const char *file)
 {
   const char *dir = getenv("SCVA_TEST_PEPROBE_DIR");
-  snprintf(probe, sizeof probe, "%s/" WIDTH "/peprobe.dll",
-           dir ? dir : "build/test/peprobe");
+  snprintf(probe, sizeof probe, "%s/" WIDTH "/%s",
+           dir ? dir : "build/test/peprobe", file);
   return probe;
 }
+
+static const char *probe_path(void) { return probe_named("peprobe.dll"); }
 
 static CDECL_CC int doubled(int x) { return 2 * x; }
 
@@ -145,6 +147,19 @@ static struct pe_image *probe_image(void)
   struct pe_image *img = load(pe_resolve_table, hooks, 1, err, sizeof err);
   if (!img) fprintf(stderr, "  %s\n", err);
   return img;
+}
+
+TEST(an_image_whose_sections_share_pages_runs_and_writes_there)
+{
+  struct pe_options opt = options(pe_resolve_table, hooks, 0);
+  char err[256] = "";
+  struct pe_image *img = pe_load(probe_named("peprobe_packed.dll"), &opt, err, sizeof err);
+  CHECK(img != NULL);
+  if (!img) { fprintf(stderr, "  %s\n", err); return; }
+  CHECK_INT(call_int(img, "probe_call", 5), 10);           /* its code runs */
+  CHECK_INT(call_void(img, "probe_entry_ran"), 1);         /* DllMain wrote */
+  CHECK_INT(call_void(img, "probe_read_static"), 0x5678);
+  pe_unload(img);
 }
 
 TEST(an_external_symbol_is_found_by_its_long_name)
@@ -344,6 +359,7 @@ int main(void)
   RUN(the_entry_point_runs_unless_the_caller_says_not_to);
   RUN(a_table_binds_by_name_whatever_the_library);
   RUN(a_missing_file_is_named);
+  RUN(an_image_whose_sections_share_pages_runs_and_writes_there);
   RUN(an_external_symbol_is_found_by_its_long_name);
   RUN(an_external_symbol_is_found_by_a_name_short_enough_to_be_inline);
   RUN(a_file_static_is_found_as_a_static_and_only_as_one);

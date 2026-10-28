@@ -82,6 +82,8 @@ static struct synth *open_scva(const struct synth_options *opt, char *err,
     return NULL;
   }
   e->base.backend = &synth_scva;
+  e->base.rate = opt->rate;
+  e->base.midi_block = 1;
   e->max_block = opt->max_block;
   setup.rate = (float)opt->rate;
   setup.max_block = opt->max_block;

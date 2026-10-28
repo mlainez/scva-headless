@@ -563,12 +563,20 @@ struct pe_image *pe_load(const char *path, const struct pe_options *opt,
   }
 #endif
 
-  /* protections: everything executable-and-readable is simplest and safe here */
-  for (int i = 0; i < fh->nsec; ++i) {
-    size_t len = (sec[i].vsize + 0xfff) & ~(size_t)0xfff;
-    pe_setprot(base + (sec[i].vaddr & ~(size_t)0xfff), len,
-               (sec[i].chars & 0x20000000) != 0,
-               (sec[i].chars & 0x80000000) != 0);
+  /* Protections, page by page. A driver's sections are aligned to as little
+     as 32 bytes, so one page can hold the end of the code and the start of
+     the data: it gets what each of them needs. Pages no section touches
+     keep the reservation's read-write. */
+  for (size_t page = 0; page < oh->imagesz; page += 0x1000) {
+    int any = 0, exec = 0, write = 0;
+    for (int i = 0; i < fh->nsec; ++i) {
+      size_t start = sec[i].vaddr, end = start + sec[i].vsize;
+      if (!sec[i].vsize || end <= page || start >= page + 0x1000) continue;
+      any = 1;
+      exec |= (sec[i].chars & 0x20000000) != 0;
+      write |= (sec[i].chars & 0x80000000) != 0;
+    }
+    if (any) pe_setprot(base + page, 0x1000, exec, write);
   }
   if (opt->spare) pe_setprot(base + oh->imagesz, opt->spare, 1, 0);
 

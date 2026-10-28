@@ -31,6 +31,7 @@ struct scva_engine *scva_engine_open(const char *dir, double rate,
   opt.core = path;
   opt.rate = rate;
   opt.max_block = SCVA_MAXBLOCK;
+  opt.backend_opts = NULL;
   e->synth = synth_scva.open(&opt, err, errlen);
   if (!e->synth) { free(e); return NULL; }
   reset = midi_gs_reset(&len);

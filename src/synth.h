@@ -12,9 +12,14 @@
 
 struct synth_backend;
 
-/* One running engine instance. Backends embed this as their first member. */
+/* One running engine instance. Backends embed this as their first member
+   and fill in the rest when they open it. */
 struct synth {
   const struct synth_backend *backend;
+  double rate;                /* the rate it renders at, which an engine with
+                                 fixed rates may not have been asked for */
+  int midi_block;             /* MIDI lands on multiples of this many frames
+                                 of output; 1 when it lands on any frame */
 };
 
 /* What an instance is opened with. */
@@ -22,6 +27,8 @@ struct synth_options {
   const char *core;           /* the engine's file, as the backend names it */
   double rate;                /* output sample rate */
   int max_block;              /* frames the caller renders at most at once */
+  const void *backend_opts;   /* the backend's own options, NULL for its
+                                 defaults; see the backend's header */
 };
 
 /* What a backend can do, so callers can adapt to it. */
@@ -59,6 +66,9 @@ static inline void synth_render(struct synth *s, float *l, float *r, uint32_t n)
 /* synth_short in the shape of a map_policy sink. */
 static inline void synth_sink(void *s, uint32_t msg) { synth_short((struct synth *)s, msg); }
 
-/* The backends this build has. */
+/* The backends this build has. VSC's engine is 32-bit code. */
 extern const struct synth_backend synth_scva;
+#if defined(__i386__)
+extern const struct synth_backend synth_vsc;
+#endif
 #endif
