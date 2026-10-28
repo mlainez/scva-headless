@@ -17,6 +17,11 @@
 Roland's **SOUND Canvas VA** engine as a file renderer and a MIDI
 device for Linux, and Windows from 98 onwards.
 
+The 32-bit renderers can also play through the engine of Roland's older
+**Virtual Sound Canvas 3.2**, `--engine vsc`: lighter, with the SC-55,
+SC-88 and SC-88Pro tone sets of its CD. See
+[Virtual Sound Canvas 3.2](#virtual-sound-canvas-32).
+
 You supply the required DLL and other optional files from your own installation.
 
 ## Requirements
@@ -55,6 +60,17 @@ Cores that have been tested:
 
 1.0.6, both widths, and 1.1.2 render identically, byte for byte. 1.1.6 and
 1.0.3 differ from them by at most one step in 16-bit output.
+
+For `--engine vsc`, from your own Virtual Sound Canvas 3.2 CD (its Windows NT
+driver), into any directory:
+
+| Filenames | Importance | Notes |
+|---|---|---|
+| vsc.sys | required | the engine: a 32-bit NT kernel driver, run here as plain code |
+| vsc88pro.dat | required | the SC-88Pro tone set, the default |
+| vsc88.dat, vsc55.dat | optional | the SC-88 and SC-55 tone sets, for `--set 88` and `--set 55` |
+
+The tone sets are read from beside `vsc.sys`.
 
 ## Build
 
@@ -127,6 +143,7 @@ pass `--map 88` or you are comparing against the wrong instrument.
                      driver anywhere in the way             (needs ALSA)
     --pcm DEV        force one PCM device, as with the daemon below
     --latency MS     delay before a note is heard, --play only (default 20)
+    --engine NAME    scva | vsc, vsc in 32-bit builds   (default scva)
 
 `--out` and `--play` are not exclusive: give both to render a file and listen
 at the same time. `--play` needs `scva-render`, not `scva-render32` - the
@@ -275,8 +292,7 @@ Start it, and check:
     --reset gs|gm|none                               (default gs)
     --maxblock N     declared maximum block          (default 4096)
     --flat-out       render as fast as possible rather than in real time
-    --init N         TG_initialize argument          (default 0)
-    --cfg A B        TG_XPsetSystemConfig fields     (default 1 1)
+    --engine NAME    scva | vsc, vsc in 32-bit builds   (default scva)
 
 ### Play to the sound card
 
@@ -594,6 +610,9 @@ Roland 32-bit and 64-bit Windows versions. So:
 | ARM, any width | only by emulating x86 - box86 or box64 |
 | macOS | would need a Mach-O loader; not built here |
 
+The Virtual Sound Canvas engine is 32-bit code, so `--engine vsc` is in the
+32-bit renderers only: `scva-render32` and `scva-render32.exe`.
+
 ## 32-part, two-port songs
 
 The core has 16 parts. Roland's demo SMFs are 32-part performances that name
@@ -616,6 +635,74 @@ player you are using is known to honour this file's own port convention, play
 these songs with the renderer's `--play`** (`scva-render32.exe --midi ... --play`
 on Windows, `scva-render --midi ... --play` on Linux), never with a generic
 player.
+
+## Virtual Sound Canvas 3.2
+
+`vsc.sys` is the synthesizer of Roland's Virtual Sound Canvas 3.2, shipped as
+a Windows NT kernel driver. It is loaded here like `SCCore.dll`, without its
+driver half, and needs no Windows: the 32-bit renderers run it on Linux too.
+
+    ./build/scva-render32 --engine vsc --core vsc/vsc.sys --set 88 \
+        --midi song.mid --out song.wav --bits 16
+    build\scva-render32.exe --engine vsc --core vsc\vsc.sys --midi song.mid --play
+
+With `--engine vsc`, `--core` names `vsc.sys`, and these replace `--map`:
+
+    --set 55|88|88pro      tone set, beside vsc.sys       (default 88pro)
+    --poly N               maximum voices, 1-128           (default 64)
+    --volume N             master volume, 0-100            (default 80)
+    --rev-gain G           reverb return gain              (default 1.26)
+    --cho-gain G           chorus return gain              (default 1.26)
+    --delay-gain G         delay return gain               (default 1.26)
+    --cpu auto|mmx|fpu     engine code path                (default auto)
+
+The defaults are VSC 3.2's own. Where it differs from SOUND Canvas VA:
+
+- **Rates**: 11025, 22050 (the default) or 44100 Hz, nothing else. Another
+  `--rate` is refused; nothing resamples for it.
+- **Timing**: the engine takes no timestamps. MIDI lands on its blocks of
+  125, 250 or 500 frames (about 11 ms), each event on the boundary nearest it,
+  as VSC's own player does.
+- **One tone set for every part**, chosen with `--set`: no per-part maps, and
+  `--map` is refused.
+- **16-bit output.** `--bits 32` writes it as float, unchanged.
+- `--init`, `--cfg` and `--maxblock` are SOUND Canvas VA's and do nothing here.
+
+A render with the defaults above, `--bits 16 --tail 2`, is identical byte for
+byte to virtual_sc's `vsc-play` for the same song, rate and tone set, on
+Linux and in the Windows build under wine. The daemon, `scva-winmidi` and the
+plugins drive SOUND Canvas VA only, for now.
+
+## Source layout
+
+| | |
+|---|---|
+| front ends | `scva_native.c` and `scva_render.c` (renderers), `scva_daemon.c`, `scva_winmidi.c`, `scva_lv2.c`, `scva_clap.c` |
+| shared by front ends | `render_loop.c` (a song into engines, block by block), `render_engines.c` (the engines a song plays on), `map_policy.c` (tone maps), `console.c` (the map console), `live_sched.c` (live MIDI timing), `rt_priority.c`, `audio_waveout.c` |
+| engines | `synth.h`, the interface every engine fills in; `synth_registry.c`, the engines a build has and their options; `synth_scva.c` (SOUND Canvas VA, used by the plugins) and `synth_vsc.c` + `vsc_engine.c` (Virtual Sound Canvas) |
+| SOUND Canvas VA | `scva_core_api.h` (its exports), `scva_core.h` (its start-up order), `scva_runtime.c` (the Windows and C runtime calls it imports, and its SSE shims) |
+| platform | `pe_loader.c`: maps a PE image, binds its imports through a resolver the caller gives, patches its code through a hook, finds symbols by export or in its COFF table |
+
+## Tests
+
+    make test-unit test-unit-win test-cli test-fake    # no engine needed
+    SCVA_TEST_DLL_DIR=dll make test-core test-perf      # your SCCore.dll
+    tests/checkpoint.sh                                 # every tier this machine can run
+
+| tier | needs | what |
+|---|---|---|
+| `test-unit` | nothing | module behaviour, 64- and 32-bit, including the PE loader on a test image built here |
+| `test-unit-win` | wine | the same modules as the Windows builds compile them |
+| `test-cli` | wine for the `.exe` | every binary's command line, up to where an engine is needed |
+| `test-fake` | wine, python3 | every tool and plugin against a fake `SCCore.dll` that logs each call |
+| `test-core` | `SCVA_TEST_DLL_DIR` | renders with your core match the recorded audio |
+| `test-perf` | `SCVA_TEST_DLL_DIR` | instructions retired stay within 0.25% of the recorded count |
+| `test-vsc` | `SCVA_TEST_VSC_DIR`, `SCVA_TEST_VSC_PLAY`, `SCVA_TEST_CORPUS` | the VSC engine renders what virtual_sc's `vsc-play` renders, byte for byte |
+
+`SCVA_TEST_VSC_SYS`, a `vsc.sys`, also lets the loader's unit test map the
+real driver. CI runs the tiers that need no engine. What only real hardware,
+real Windows or a DAW can show is in
+[docs/MANUAL-CHECKS.md](docs/MANUAL-CHECKS.md).
 
 ## Driving the engine directly
 

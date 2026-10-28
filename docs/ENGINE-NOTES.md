@@ -252,6 +252,13 @@ of its own, no GUI, no COM; its data is inside the 26.7 MB image, so
 `SCCore.dll` is the only file it needs. The only symbols it looks up at run
 time are the three condition-variable functions.
 
+The loader knows nothing of SCCore. What an image's imports bind to comes
+from a resolver the caller passes, and any rewriting of its code from a hook
+that runs before the code is made read-only. `src/scva_runtime.c` is
+SCCore's: the 50 functions, and the SSE shims below as its hook. Pages get
+the protections of every section on them, which matters for a driver whose
+sections are 32 bytes apart (see the Virtual Sound Canvas below).
+
 - Everything crossing the boundary is `__attribute__((ms_abi))`. GCC emits the
   argument shuffling, the shadow space, and spills XMM6-XMM15, RDI and RSI
   around calls out to glibc. No thunks needed.
@@ -355,10 +362,10 @@ then those two - so it rounds identically and the audio does not change.
 | sites | 6 | 6 |
 
 The SSE1 sum needs 17 bytes, so it cannot sit in either span and each site
-becomes `call rel32` with the remainder as `nop`. The loader reserves one page
-past the image for the stubs, which keeps the call in reach of `rel32`; the
-Windows hosts open the code with `VirtualProtect` and take a page from
-`VirtualAlloc`.
+becomes `call rel32` with the remainder as `nop`. The loader reserves space
+past the image for the patch hook's stubs, which keeps the call in reach of
+`rel32`; the Windows hosts open the code with `VirtualProtect` and take a page
+from `VirtualAlloc`.
 
 Applied when `cpuid` reports no SSE3. `SCVA_SSE3=1` forces it on, `=0` off.
 Renders are byte-for-byte identical with it and without, on both cores,
@@ -466,6 +473,45 @@ underneath that, and no rewriting reaches a Pentium II or a K6.
 unaided. Published under the expected name, the plug-in opens and then
 crashes inside `effOpen` on an authorisation check
 (`auth_strings_*.bin`, `Authorize.nib`). The core API gives the same audio.
+
+## Virtual Sound Canvas 3.2's engine
+
+`vsc.sys`, from the VSC 3.2 CD, is a 32-bit Windows NT kernel driver with the
+whole synthesizer inside. `src/vsc_engine.c` runs it through the same loader:
+
+- **Its driver half is never run.** `DriverEntry` would create a device and
+  route ioctls to `VscDispatch`, which only unpacks each IRP's buffer and calls
+  the engine functions this code calls directly: `tgInit`, `ConfigWaveBuf`,
+  `InitSynth`, `RxMidiMsg`, `RxMidiLongMsg`, `FillAudioBuffer`, `CloseWaveBuf`.
+- **Its functions are found in its COFF symbol table**, which the linker left
+  in; it exports nothing. The values are image-relative addresses, not the
+  section offsets the format specifies (`_tgInit@8` holds `push ebp; mov
+  ebp, esp` only read that way), so `pe_symbol_coff` takes which base to
+  count from.
+- **19 kernel imports**, of which the engine reaches four: the pool allocator,
+  for the tone set, and `KeQueryPerformanceCounter`, for its CPU load
+  limiter. The counter returns 0, which reads as no load, so no voice is ever
+  dropped for time and a render is the same on any machine.
+- **Its CPU check reads CR4**, which faults outside ring 0. The loader's patch
+  hook turns `mov eax, cr4` in `GetCpuKind` into `or eax, -1` in the same
+  three bytes.
+- **Its sections are 32 bytes apart**, so the end of the code and the start of
+  the data share a page. Protecting section by section left that page without
+  execute; pages now take what every section on them needs.
+- **It runs in the caller's x87 state**, 53-bit precision on Windows, 64-bit
+  on Linux; each call switches to Windows' control word and back.
+- **It starts silent** until `SetSynthConfData` fills the voice counts, levels
+  and per-part receive switches that VSC's own API sends after `InitSynth`.
+- **`FillAudioBuffer` offers each block to the driver's queue** of pending
+  write IRPs unless a flag in `waveInfo` is set; with no queue here, it is set
+  before every block.
+- **Fixed rates and blocks**: 11025, 22050 or 44100 Hz, in blocks of 125,
+  250 or 500 frames of 16-bit stereo, with no MIDI timestamps. `synth_vsc.c`
+  hands out any number of frames from those blocks, and `render_loop.c` puts
+  each event on the block boundary nearest it.
+- **Names**: `GetToneNames(program, out)` lists one program's tone in each of
+  the 128 banks, 12 bytes each; `GetRhythmSetNames(out)` the 128 drum sets.
+  The SC-55, SC-88 and SC-88Pro sets have 10, 15 and 26 drum sets.
 
 ## Standing
 

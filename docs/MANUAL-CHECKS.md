@@ -34,6 +34,17 @@ On real hardware (or 86Box), with a 32-bit core.
 | R4 | on a CPU without SSE2 (Athlon XP, Pentium III) | R1 works and reports the SSE2 shim | 0209c9f |
 | R5 | load `scva-win32.clap` in a Win98-capable host (e.g. SAVIHost) | it loads and plays | open: the DLL imports `GetModuleHandleW`, a stub on Win9x (known issue, see below) |
 
+## Virtual Sound Canvas on Windows 98
+
+On real hardware (or 86Box), with `vsc.sys` and a tone set from the VSC 3.2
+CD in one directory.
+
+| # | do | pass when | protects |
+|---|---|---|---|
+| V1 | `scva-render32.exe --engine vsc --core vsc.sys --midi song.mid --out out.wav` | a WAV that plays | the VSC engine under the Win98 loader |
+| V2 | the same with `--play` | it plays through the sound card | waveOut with the engine's own block size |
+| V3 | the same with `--cpu fpu` on a machine without MMX, if one is at hand | it renders | the engine's x87 path |
+
 ## scva-daemon with realtime rights
 
 The tests check the refused path everywhere; the granted path needs a user
