@@ -70,6 +70,7 @@ One host per format is enough (Carla, Reaper, Bitwig, Ardour...).
 | P5 | load the CLAP; browse its presets | every map's tones then kits, named `SC-88 001 Piano 1` | preset discovery |
 | P6 | scale the display to 150% (Windows) and open the CLAP editor | the editor scales and fills the window | 2e59261 |
 | P7 | reopen a saved CLAP project that used a preset | the preset's patch is what plays (see the known issue below) | preset restore |
+| P8 | in a 32-bit host (Carla's 32-bit bridge, SAVIHost x86), load "SCVA: Virtual Sound Canvas 3.2", play, change Tone Set | sound at the host's rate; the editor lists the engine's names; the set change is heard | the VSC plugin, resampled |
 
 ## Known issues the automated tiers report
 

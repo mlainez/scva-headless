@@ -511,7 +511,12 @@ whole synthesizer inside. `src/vsc_engine.c` runs it through the same loader:
   each event on the block boundary nearest it.
 - **Names**: `GetToneNames(program, out)` lists one program's tone in each of
   the 128 banks, 12 bytes each; `GetRhythmSetNames(out)` the 128 drum sets.
-  The SC-55, SC-88 and SC-88Pro sets have 10, 15 and 26 drum sets.
+  The SC-55, SC-88 and SC-88Pro sets have 354, 546 and 902 tones, 10, 15 and
+  26 drum sets.
+- **The sets share their common tones.** A song that uses only tones all
+  three sets have renders byte for byte the same on each; they differ where
+  one set has a variation or kit another lacks (program 0, bank 24 is "Piano
+  + Str." on SC-88Pro, Piano 1 on SC-55).
 
 ## Standing
 

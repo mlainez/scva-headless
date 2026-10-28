@@ -17,9 +17,9 @@
 Roland's **SOUND Canvas VA** engine as a file renderer and a MIDI
 device for Linux, and Windows from 98 onwards.
 
-The 32-bit renderers can also play through the engine of Roland's older
-**Virtual Sound Canvas 3.2**, `--engine vsc`: lighter, with the SC-55,
-SC-88 and SC-88Pro tone sets of its CD. See
+The 32-bit tools and plugins can also play through the engine of Roland's
+older **Virtual Sound Canvas 3.2**: lighter, with the SC-55, SC-88 and
+SC-88Pro tone sets of its CD. See
 [Virtual Sound Canvas 3.2](#virtual-sound-canvas-32).
 
 You supply the required DLL and other optional files from your own installation.
@@ -610,9 +610,9 @@ Roland 32-bit and 64-bit Windows versions. So:
 | ARM, any width | only by emulating x86 - box86 or box64 |
 | macOS | would need a Mach-O loader; not built here |
 
-The Virtual Sound Canvas engine is 32-bit code, so `--engine vsc` is in the
-32-bit tools only: `scva-render32`, `scva-render32.exe`, `scva-daemon32` and
-`scva-winmidi32.exe`.
+The Virtual Sound Canvas engine is 32-bit code, so it is in the 32-bit tools
+and plugins only: `scva-render32`, `scva-render32.exe`, `scva-daemon32`,
+`scva-winmidi32.exe`, `scva32.lv2`, `scva32.clap` and `scva-win32.clap`.
 
 ## 32-part, two-port songs
 
@@ -669,9 +669,8 @@ The defaults are VSC 3.2's own. Where it differs from SOUND Canvas VA:
 - **16-bit output.** `--bits 32` writes it as float, unchanged.
 - `--init`, `--cfg` and `--maxblock` are SOUND Canvas VA's and do nothing here.
 
-A render with the defaults above, `--bits 16 --tail 2`, is identical byte for
-byte to virtual_sc's `vsc-play` for the same song, rate and tone set, on
-Linux and in the Windows build under wine.
+Renders are checked byte for byte against a reference renderer of the same
+engine, on Linux and in the Windows build under wine.
 
 `scva-daemon32` takes `--engine vsc` too, with the same options:
 
@@ -686,15 +685,44 @@ start-up names the set the same way.
 
     build\scva-winmidi32.exe --engine vsc --core vsc\vsc.sys --midi-in loopMIDI
 
-The plugins drive SOUND Canvas VA only, for now.
+### As a plugin
+
+The 32-bit LV2 bundle (`scva32.lv2`) and the 32-bit CLAPs (`scva32.clap`,
+`scva-win32.clap`) hold a second plugin, **SCVA: Virtual Sound Canvas 3.2**,
+beside SCVA. It loads `vsc.sys` and its tone sets from `$SCVA_DLL_DIR`, or
+from beside the bundle or `.clap`. A 64-bit host cannot load it: the engine
+is 32-bit code.
+
+It plays at whatever rate the host runs. Where VSC has no such rate, it
+renders at the nearest one it has above it (44100 Hz for 48000 and up) and
+the plugin resamples, with a windowed sinc that keeps the audible band and
+removes what the new rate cannot carry.
+
+| parameter | values |
+|---|---|
+| Tone Set | Default (SC-88Pro), SC-55, SC-88, SC-88Pro |
+| Instrument | the set's tones, as the engine names them |
+| Drum Kit | the set's kits |
+
+| set | tones | kits |
+|---|---|---|
+| SC-55 | 354 | 10 |
+| SC-88 | 546 | 15 |
+| SC-88Pro | 902 | 26 |
+
+A Tone Set change reopens the engine on the new set and resets it, as VSC
+itself does: a short gap in the sound, and every part back to its power-on
+state. The sets share the samples of the tones they have in common; they
+differ in their variations and drum kits. The names, the editor's lists and
+the CLAP's presets come from the engine itself, so no name files are needed.
 
 ## Source layout
 
 | | |
 |---|---|
 | front ends | `scva_native.c` and `scva_render.c` (renderers), `scva_daemon.c`, `scva_winmidi.c`, `scva_lv2.c`, `scva_clap.c` |
-| shared by front ends | `render_loop.c` (a song into engines, block by block), `render_engines.c` (the engines a song plays on), `live_engine.c` (the live tools' engine and its tone sets), `map_policy.c` (tone maps), `console.c` (the map console), `live_sched.c` (live MIDI timing), `rt_priority.c`, `audio_waveout.c` |
-| engines | `synth.h`, the interface every engine fills in; `synth_registry.c`, the engines a build has and their options; `synth_scva.c` (SOUND Canvas VA, used by the plugins) and `synth_vsc.c` + `vsc_engine.c` (Virtual Sound Canvas) |
+| shared by front ends | `render_loop.c` (a song into engines, block by block), `render_engines.c` (the engines a song plays on), `live_engine.c` (the live tools' engine and its tone sets), `scva_engine.c` (the plugins' engine), `plugin_names.c` (the plugins' patch names, from files or the engine), `map_policy.c` (tone maps), `console.c` (the map console), `live_sched.c` (live MIDI timing), `rt_priority.c`, `audio_waveout.c` |
+| engines | `synth.h`, the interface every engine fills in; `synth_registry.c`, the engines a build has and their options; `synth_scva.c` (SOUND Canvas VA) and `synth_vsc.c` + `vsc_engine.c` (Virtual Sound Canvas); `synth_resampled.c` + `resample.c`, any of them at a rate it does not render at |
 | SOUND Canvas VA | `scva_core_api.h` (its exports), `scva_core.h` (its start-up order), `scva_runtime.c` (the Windows and C runtime calls it imports, and its SSE shims) |
 | platform | `pe_loader.c`: maps a PE image, binds its imports through a resolver the caller gives, patches its code through a hook, finds symbols by export or in its COFF table |
 
@@ -712,7 +740,7 @@ The plugins drive SOUND Canvas VA only, for now.
 | `test-fake` | wine, python3 | every tool and plugin against a fake `SCCore.dll` that logs each call |
 | `test-core` | `SCVA_TEST_DLL_DIR` | renders with your core match the recorded audio |
 | `test-perf` | `SCVA_TEST_DLL_DIR` | instructions retired stay within 0.25% of the recorded count |
-| `test-vsc` | `SCVA_TEST_VSC_DIR`, `SCVA_TEST_VSC_PLAY`, `SCVA_TEST_CORPUS` | the VSC engine renders what virtual_sc's `vsc-play` renders, byte for byte |
+| `test-vsc` | `SCVA_TEST_VSC_DIR`, `SCVA_TEST_VSC_PLAY` (a reference renderer), `SCVA_TEST_CORPUS` | the VSC engine renders what the reference renders, byte for byte |
 
 `SCVA_TEST_VSC_SYS`, a `vsc.sys`, also lets the loader's unit test map the
 real driver. CI runs the tiers that need no engine. What only real hardware,
