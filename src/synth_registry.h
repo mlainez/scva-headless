@@ -23,6 +23,11 @@ const char *synth_engine_names(void);
 int synth_parse_option(const struct synth_backend *b, void *opts, int argc,
                        char **argv, int *i, char *err, size_t errlen);
 
+/* Applies b's option flag with value. 0, with the reason in err, if b has
+   no such option or the value is wrong. */
+int synth_apply_option(const struct synth_backend *b, void *opts, const char *flag,
+                       const char *value, char *err, size_t errlen);
+
 /* 1 if b renders at rate. 0 otherwise, with the rates it has in err:
    nothing resamples for it. */
 int synth_check_rate(const struct synth_backend *b, double rate, char *err,

@@ -30,12 +30,25 @@ int console_line(const struct console *c, char *line)
 
   if (sscanf(line, "%d %n", &ch, &off) == 1 && off > 0 && line[off] &&
       ch >= 1 && ch <= 16 && (want = scva_map_value(line + off)) >= 0) {
+    if (c->set_all) {
+      c->print(c->ctx, "this engine has one tone set for every part: type a "
+                       "map alone\n");
+      return 0;
+    }
     map_policy_set(c->maps, ch - 1, want);
     sprintf(buf, "channel %d -> map %d\n", ch, want);
     c->print(c->ctx, buf);
     return 0;
   }
   if ((want = scva_map_value(line)) >= 0) {
+    if (c->set_all) {
+      char err[128];
+      if (!c->set_all(c->set_ctx, want, err, sizeof err)) {
+        c->print(c->ctx, err);
+        c->print(c->ctx, "\n");
+        return 0;
+      }
+    }
     map_policy_set(c->maps, -1, want);
     sprintf(buf, "all parts -> map %d\n", want);
     c->print(c->ctx, buf);

@@ -24,6 +24,7 @@ static int injects(const struct map_policy *p, int ch)
   case MAP_LIVE:   return 1;
   case MAP_RENDER: return p->map_of[ch] != SCVA_MAP_DEFAULT;
   case MAP_PLUGIN: return p->set && p->map_of[ch] != SCVA_MAP_DEFAULT;
+  case MAP_NONE:   return 0;
   }
   return 0;
 }
@@ -55,6 +56,11 @@ int map_policy_set(struct map_policy *p, int ch, int map)
     if (same) return 0;
   }
   p->set = 1;
+  if (p->mode == MAP_NONE) {
+    for (c = 0; c < 16; ++c)
+      if (ch < 0 || c == ch) p->map_of[c] = (unsigned char)map;
+    return 1;
+  }
   if (ch >= 0) { put(p, ch & 0x0f, map); return 1; }
   for (c = 0; c < 16; ++c) put(p, c, map);
   return 1;

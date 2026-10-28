@@ -171,13 +171,15 @@ static int gain(const char *value, float *out)
 
 #define REFUSE(...) do { snprintf(err, errlen, __VA_ARGS__); return 0; } while (0)
 
+/* Also takes the map names a console types: Default is VSC's own set. */
 static int apply_set(void *opts, const char *v, char *err, size_t errlen)
 {
   struct synth_vsc_options *o = opts;
-  if (!strcmp(v, "55")) o->tones = "vsc55.dat";
+  if (!strcmp(v, "default")) o->tones = "vsc88pro.dat";
+  else if (!strcmp(v, "55")) o->tones = "vsc55.dat";
   else if (!strcmp(v, "88")) o->tones = "vsc88.dat";
   else if (!strcmp(v, "88pro")) o->tones = "vsc88pro.dat";
-  else REFUSE("--set takes 55, 88 or 88pro");
+  else REFUSE("VSC has the 55, 88 and 88pro tone sets");
   return 1;
 }
 
@@ -244,7 +246,8 @@ static const struct synth_caps caps = {
   rates,
   22050,                      /* VSC 3.2's own */
   0,                          /* MIDI lands on the next block */
-  0                           /* one tone set for every part */
+  0,                          /* one tone set for every part */
+  "--set"
 };
 
 const struct synth_backend synth_vsc = {

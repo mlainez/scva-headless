@@ -116,7 +116,7 @@ for r in scva-render scva-render32 scva-render.exe scva-render32.exe; do
 
   begin "$r: --engine vsc checks its own options' values"
   run "$r" --engine vsc --core vsc.sys --midi song.mid --out out.wav --set 99
-  exit_is 2; says 88pro
+  exit_is 2; says 55; says 88pro
   run "$r" --engine vsc --core vsc.sys --midi song.mid --out out.wav --poly 0
   exit_is 2; says 128
   run "$r" --engine vsc --core vsc.sys --midi song.mid --out out.wav --cpu sse9

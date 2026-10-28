@@ -54,6 +54,7 @@ with rtprio (e.g. in the `audio` or `pipewire` group with limits set).
 |---|---|---|---|
 | D1 | start `scva-daemon` | stderr says `realtime priority 6`, `chrt -p <pid>` shows SCHED_FIFO 6 | the realtime setup |
 | D2 | play through a real sound card for 5 minutes | `0 dropouts` when stopping | latency at the default 20 ms |
+| D3 | `scva-daemon32 --engine vsc --core vsc.sys`, play a song into it, type `55` | it plays, and the instruments change to the SC-55 set | the VSC engine live; its set changes |
 
 ## Plugins in a DAW
 

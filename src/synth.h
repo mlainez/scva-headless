@@ -41,6 +41,8 @@ struct synth_caps {
   int midi_timestamps;        /* MIDI lands on its sample, not its block */
   int tone_map_per_part;      /* CC32 picks a tone map per part; otherwise
                                  one tone set serves every part */
+  const char *set_option;     /* the option choosing that one tone set,
+                                 which takes a map name; NULL if none */
 };
 
 /* One command-line option a backend takes, so that front ends offer it

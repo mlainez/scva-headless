@@ -6,7 +6,7 @@
  * engine: every short message goes through map_policy_short(), and the map is
  * changed with map_policy_set().
  *
- * The three modes are the three ways the tools use a map:
+ * The modes are the ways the tools use a map:
  *
  *   MAP_RENDER  a fixed map for the whole file. CC32 goes before each
  *               program change unless the map is Default, which is the
@@ -19,6 +19,9 @@
  *               injected until a map other than Default is set, and setting
  *               the map it already has sends nothing, since hosts re-send
  *               their parameters constantly.
+ *   MAP_NONE    an engine without tone maps, whose sounds are chosen some
+ *               other way. Nothing is injected or re-sent; setting a map
+ *               only records it, for a console to show.
  *
  * A wire CC32 is never treated as a map change in any mode: it passes
  * through like any other controller.
@@ -27,7 +30,7 @@
 #define MAP_POLICY_H
 #include <stdint.h>
 
-enum map_mode { MAP_RENDER, MAP_LIVE, MAP_PLUGIN };
+enum map_mode { MAP_RENDER, MAP_LIVE, MAP_PLUGIN, MAP_NONE };
 
 /* Where the policy's messages go: a short message, packed status-first. */
 typedef void (*map_sink_fn)(void *ctx, uint32_t msg);

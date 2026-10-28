@@ -19,13 +19,28 @@ static void discard(void *ctx, uint32_t msg) { (void)ctx; (void)msg; }
 
 static struct map_policy maps;
 
-/* Runs one line on a console that trims trim, every part on map 0 before. */
-static int type(const char *trim, const char *text)
+/* What an engine with one tone set for every part was asked for. */
+static int set_asked, set_refuses;
+
+static int set_all(void *ctx, int map, char *err, size_t errlen)
+{
+  (void)ctx;
+  set_asked = map;
+  if (set_refuses) { snprintf(err, errlen, "no set for map %d", map); return 0; }
+  return 1;
+}
+
+/* Runs one line on a console that trims trim, every part on map 0 before;
+   whole selects an engine with one tone set for every part. */
+static int type_on(int whole, const char *trim, const char *text)
 {
   struct console c;
   char line[256];
-  map_policy_init(&maps, MAP_LIVE, SCVA_MAP_DEFAULT, discard, NULL);
+  map_policy_init(&maps, whole ? MAP_NONE : MAP_LIVE, SCVA_MAP_DEFAULT, discard, NULL);
   c.maps = &maps;
+  c.set_all = whole ? set_all : NULL;
+  c.set_ctx = NULL;
+  set_asked = -1;
   c.trim = trim;
   c.print = print;
   c.ctx = NULL;
@@ -33,6 +48,8 @@ static int type(const char *trim, const char *text)
   snprintf(line, sizeof line, "%s", text);
   return console_line(&c, line);
 }
+
+static int type(const char *trim, const char *text) { return type_on(0, trim, text); }
 
 static int parts_on(int map)
 {
@@ -97,6 +114,34 @@ TEST(characters_the_front_end_does_not_name_are_kept)
   CHECK(strstr(reply, "type a map") != NULL);
 }
 
+TEST(with_one_set_for_every_part_a_map_switches_the_engine)
+{
+  set_refuses = 0;
+  CHECK_INT(type_on(1, " ", "88"), 0);
+  CHECK_INT(set_asked, SCVA_MAP_88);
+  CHECK_INT(parts_on(SCVA_MAP_88), 16);
+  CHECK_STR(reply, "all parts -> map 2\n");
+}
+
+TEST(with_one_set_for_every_part_a_single_part_is_refused)
+{
+  set_refuses = 0;
+  CHECK_INT(type_on(1, " ", "10 55"), 0);
+  CHECK_INT(set_asked, -1);
+  CHECK_INT(parts_on(SCVA_MAP_DEFAULT), 16);
+  CHECK(strstr(reply, "every part") != NULL);
+}
+
+TEST(a_map_the_engine_has_no_set_for_is_refused_with_its_reason)
+{
+  set_refuses = 1;
+  CHECK_INT(type_on(1, " ", "8820"), 0);
+  CHECK_INT(set_asked, SCVA_MAP_8820);
+  CHECK_INT(parts_on(SCVA_MAP_DEFAULT), 16);
+  CHECK_STR(reply, "no set for map 4\n");
+  set_refuses = 0;
+}
+
 int main(void)
 {
   RUN(a_map_name_moves_every_part);
@@ -106,5 +151,8 @@ int main(void)
   RUN(anything_else_gets_the_help_and_changes_nothing);
   RUN(trailing_characters_the_front_end_names_are_ignored);
   RUN(characters_the_front_end_does_not_name_are_kept);
+  RUN(with_one_set_for_every_part_a_map_switches_the_engine);
+  RUN(with_one_set_for_every_part_a_single_part_is_refused);
+  RUN(a_map_the_engine_has_no_set_for_is_refused_with_its_reason);
   return test_summary();
 }

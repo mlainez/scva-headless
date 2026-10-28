@@ -193,6 +193,19 @@ TEST(a_program_sent_around_the_policy_is_the_one_re_sent_on_a_map_change)
   CHECK(resends(&w, 0, SCVA_MAP_55, 81));
 }
 
+TEST(an_engine_without_tone_maps_hears_only_what_was_sent)
+{
+  struct wire w;
+  struct map_policy p = start(MAP_NONE, SCVA_MAP_DEFAULT, &w);
+  map_policy_short(&p, pc(3, 10));
+  CHECK_INT(map_policy_set(&p, -1, SCVA_MAP_88), 1);
+  map_policy_short(&p, pc(3, 11));
+  CHECK_INT(w.n, 2);
+  CHECK_INT(w.msg[0], pc(3, 10));
+  CHECK_INT(w.msg[1], pc(3, 11));
+  CHECK_INT(map_policy_map(&p, 3), SCVA_MAP_88);   /* recorded, for a console */
+}
+
 int main(void)
 {
   RUN(messages_other_than_program_changes_pass_through_untouched);
@@ -208,5 +221,6 @@ int main(void)
   RUN(a_plugin_host_repeating_its_map_sends_nothing);
   RUN(a_plugin_on_a_chosen_map_puts_it_before_program_changes_but_not_on_default);
   RUN(a_program_sent_around_the_policy_is_the_one_re_sent_on_a_map_change);
+  RUN(an_engine_without_tone_maps_hears_only_what_was_sent);
   return test_summary();
 }

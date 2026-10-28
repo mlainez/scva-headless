@@ -125,7 +125,8 @@ RENDER_MODS     := scva_native map_policy render_loop render_engines synth_regis
                    synth_scva pe_loader scva_runtime
 # The engines only a 32-bit build can host.
 VSC_ENGINE_MODS := synth_vsc vsc_engine
-DAEMON_MODS     := scva_daemon map_policy console rt_priority pe_loader scva_runtime
+DAEMON_MODS     := scva_daemon map_policy console rt_priority synth_registry synth_scva \
+                   pe_loader scva_runtime
 WIN_RENDER_MODS := scva_render map_policy audio_waveout render_loop render_engines \
                    synth_registry synth_scva
 WINMIDI_MODS    := scva_winmidi map_policy audio_waveout console rt_priority live_sched
@@ -139,7 +140,7 @@ $(BUILD)/scva-render32: $(call objs,linux32,$(RENDER_MODS) $(VSC_ENGINE_MODS))
 $(BUILD)/scva-daemon: $(call objs,linux64,$(DAEMON_MODS))
 	$(CC) $(CFLAGS) -o $@ $^ $(ALSA) -lpthread -lm
 
-$(BUILD)/scva-daemon32: $(call objs,linux32,$(DAEMON_MODS))
+$(BUILD)/scva-daemon32: $(call objs,linux32,$(DAEMON_MODS) $(VSC_ENGINE_MODS))
 	$(CC) -m32 $(CFLAGS) -o $@ $^ $(ALSA32) -lpthread -lm
 
 $(BUILD)/scva-tones: $(call objs,linux64,scva_tones)
@@ -441,6 +442,7 @@ $(BUILD)/test/test_synth_vsc: $(OBJ)/vsctest32/test_synth_vsc.o \
 
 test-vsc: $(BUILD)/test/vsc_drive $(BUILD)/test/test_synth_vsc $(BUILD)/scva-render32
 	@$(BUILD)/test/test_synth_vsc
+	@python3 tests/vsc/test_daemon_vsc.py
 	@python3 tests/vsc/run.py
 
 $(BUILD)/test/icount: tests/perf/icount.c

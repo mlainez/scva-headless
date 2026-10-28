@@ -52,6 +52,16 @@ int synth_parse_option(const struct synth_backend *b, void *opts, int argc,
   return 0;
 }
 
+int synth_apply_option(const struct synth_backend *b, void *opts, const char *flag,
+                       const char *value, char *err, size_t errlen)
+{
+  const struct synth_option *o;
+  for (o = b->options; o && o->flag; ++o)
+    if (!strcmp(o->flag, flag)) return o->apply(opts, value, err, errlen);
+  snprintf(err, errlen, "--engine %s has no %s", b->caps->name, flag);
+  return 0;
+}
+
 int synth_check_rate(const struct synth_backend *b, double rate, char *err,
                      size_t errlen)
 {

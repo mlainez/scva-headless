@@ -12,13 +12,21 @@
  */
 #ifndef CONSOLE_H
 #define CONSOLE_H
+#include <stddef.h>
 #include "map_policy.h"
 
 /* Writes one piece of the reply. */
 typedef void (*console_print_fn)(void *ctx, const char *text);
 
+/* For an engine with one tone set for every part: puts all of them on map
+   the way that engine changes sets. 0, with the reason in err, if it has
+   nothing for that map. */
+typedef int (*console_set_all_fn)(void *ctx, int map, char *err, size_t errlen);
+
 struct console {
   struct map_policy *maps;
+  console_set_all_fn set_all;   /* NULL: maps are per part, through maps */
+  void *set_ctx;
   const char *trim;             /* trailing characters to ignore */
   console_print_fn print;
   void *ctx;

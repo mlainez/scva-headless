@@ -205,6 +205,8 @@ static int console_command(char *line, struct map_policy *maps)
 {
   struct console c;
   c.maps = maps;
+  c.set_all = NULL;
+  c.set_ctx = NULL;
   c.trim = " ";
   c.print = print_stdout;
   c.ctx = NULL;

@@ -78,7 +78,7 @@ static struct synth *open_scva(const struct synth_options *opt, char *err,
   missing = scva_core_bind(&e->api, scva_core_lookup_pe, e->img, SCVA_CORE_LIVE);
 #endif
   if (missing) {
-    snprintf(err, errlen, "the core is missing exports");
+    snprintf(err, errlen, "the core has no %s", missing);
     unload(e);
     return NULL;
   }
@@ -135,7 +135,8 @@ static const struct synth_caps caps = {
   NULL,                       /* any rate: it resamples from 32 kHz itself */
   0,
   1,                          /* TG_ShortMidiIn takes a sample timestamp */
-  1                           /* CC32 selects the map, per part */
+  1,                          /* CC32 selects the map, per part */
+  NULL
 };
 
 const struct synth_backend synth_scva = {

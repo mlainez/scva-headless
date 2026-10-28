@@ -670,8 +670,17 @@ The defaults are VSC 3.2's own. Where it differs from SOUND Canvas VA:
 
 A render with the defaults above, `--bits 16 --tail 2`, is identical byte for
 byte to virtual_sc's `vsc-play` for the same song, rate and tone set, on
-Linux and in the Windows build under wine. The daemon, `scva-winmidi` and the
-plugins drive SOUND Canvas VA only, for now.
+Linux and in the Windows build under wine.
+
+`scva-daemon32` takes `--engine vsc` too, with the same options:
+
+    ./build/scva-daemon32 --engine vsc --core vsc/vsc.sys --set 88
+
+A map typed at its console or sent with `--send` (`55`, `88`, `88pro`)
+changes the one tone set: the engine is reopened on the new set and reset, as
+VSC itself does. A map for one part alone, or `8820`, is refused. `--map` at
+start-up names the set the same way. `scva-winmidi` and the plugins drive
+SOUND Canvas VA only, for now.
 
 ## Source layout
 
