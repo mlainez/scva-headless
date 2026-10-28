@@ -2,14 +2,30 @@
  *
  * Finding and opening an ALSA PCM playback device that will take float32
  * stereo, shared by scva-daemon and scva-render's --play so both pick a
- * card the same way.
+ * card the same way. With SCVA_ALSA_DLOPEN, ALSA is found at run time
+ * (alsa_dl.h) instead of linked.
  */
 #ifndef SCVA_PCM_H
 #define SCVA_PCM_H
+#ifdef SCVA_ALSA_DLOPEN
+#include "alsa_dl.h"
+#else
 #include <alsa/asoundlib.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Whether ALSA is there to play through. 0, with the reason in err, if not. */
+static inline int pcm_ready(char *err, size_t errlen)
+{
+#ifdef SCVA_ALSA_DLOPEN
+  return alsa_dl_load(err, errlen);
+#else
+  (void)err; (void)errlen;
+  return 1;
+#endif
+}
 
 /* Opens a device and configures it in one go, since a device that opens but
    will not take float32 stereo is no more use than one that does not open. */

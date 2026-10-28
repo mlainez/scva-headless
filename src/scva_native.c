@@ -16,9 +16,7 @@
 #include "scva_runtime.h"
 #include "midi_song.h"
 #include "core_path.h"
-#ifdef SCVA_HAVE_PCM
 #include "scva_pcm.h"
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,11 +51,9 @@ struct sink {
   int realtime;                      /* hold to the wall clock */
   double rate;
   uint64_t start_ms;
-#ifdef SCVA_HAVE_PCM
   snd_pcm_t *pcm;
   float *inter;
   long underruns;
-#endif
 };
 
 /* TG_Process generates on demand, so --flat-out is correct and faster */
@@ -82,11 +78,8 @@ static int deliver(void *ctx, const float *left, const float *right, int n,
     if (o->dump && frame + (uint64_t)k < (uint64_t)o->dump)
       printf("  [%5u] L %.9g  R %.9g\n", (uint32_t)frame + k, left[k], right[k]);
     if (o->wav) put_frame(o->wav, left[k], right[k], o->bits);
-#ifdef SCVA_HAVE_PCM
     if (o->inter) { o->inter[2 * k] = left[k]; o->inter[2 * k + 1] = right[k]; }
-#endif
   }
-#ifdef SCVA_HAVE_PCM
   if (o->pcm) {
     snd_pcm_sframes_t w = snd_pcm_writei(o->pcm, o->inter, (snd_pcm_uframes_t)n);
     if (w < 0) {
@@ -94,7 +87,6 @@ static int deliver(void *ctx, const float *left, const float *right, int n,
       if (snd_pcm_recover(o->pcm, (int)w, 1) < 0) return 0;
     }
   }
-#endif
   return 1;
 }
 
@@ -250,11 +242,9 @@ int main(int argc, char **argv)
   int initarg = 0;
   int cfga = 1, cfgb = 1;
   int play = 0;                      /* --play: straight to the sound card */
-#ifdef SCVA_HAVE_PCM
   const char *pcm_name = NULL;       /* --pcm DEV, otherwise auto-detected */
   const char *pcm_opened = NULL;
   unsigned int latency_us = 20000;
-#endif
 
   /* The engine first: the rest of the command line may be its options. */
   for (i = 1; i + 1 < argc; ++i)
@@ -294,11 +284,9 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--cfg") && i + 2 < argc) { cfga = atoi(argv[++i]); cfgb = atoi(argv[++i]); }
     else if (!strcmp(argv[i], "--flat-out")) realtime = 0;
     else if (!strcmp(argv[i], "--play")) play = 1;
-#ifdef SCVA_HAVE_PCM
     else if (!strcmp(argv[i], "--pcm") && i + 1 < argc) pcm_name = argv[++i];
     else if (!strcmp(argv[i], "--latency") && i + 1 < argc)
       latency_us = (unsigned)atoi(argv[++i]) * 1000u;
-#endif
     else if ((took = synth_parse_option(engine, engine_opts, argc, argv, &i,
                                         err, sizeof err)) < 0) {
       fprintf(stderr, "%s\n", err);
@@ -310,14 +298,12 @@ int main(int argc, char **argv)
     fprintf(stderr, "need --midi, and --out FILE or --play\n");
     return 2;
   }
-#ifndef SCVA_HAVE_PCM
-  if (play) {
-    fprintf(stderr, "this build has no --play: it was built without ALSA "
-                    "(scva-render32 usually has none). Use --out and play "
-                    "the file, or build scva-render instead.\n");
-    return 2;
+  if (play && !pcm_ready(err, sizeof err)) {
+    fprintf(stderr, "--play needs ALSA's libasound.so.2 for this program's "
+                    "width, which is not installed: %s\n"
+                    "Use --out and play the file instead.\n", err);
+    return 1;
   }
-#endif
   mapval = scva_map_value(mapname);
   if (mapval < 0) {
     fprintf(stderr, "--map wants default, 55, 88, 88pro or 8820\n");
@@ -373,7 +359,6 @@ int main(int argc, char **argv)
   o.bits = bits;
   o.dump = dump;
   o.rate = rate;
-#ifdef SCVA_HAVE_PCM
   if (play) {
     o.inter = calloc((size_t)block * 2, sizeof *o.inter);
     if (!o.inter) { fprintf(stderr, "out of memory\n"); return 1; }
@@ -391,9 +376,6 @@ int main(int argc, char **argv)
        --out alone and would only fight it here. */
     realtime = 0;
   }
-#else
-  (void)block;
-#endif
   if (out) {
     o.wav = fopen(out, "wb");
     if (!o.wav) { fprintf(stderr, "cannot write %s\n", out); return 1; }
@@ -420,16 +402,12 @@ int main(int argc, char **argv)
          res.sent);
   if ((i = e.voices(&e)) >= 0) printf(", voices %d", i);
   printf("\n");
-#ifdef SCVA_HAVE_PCM
   if (o.underruns)
     printf("%ld dropout%s on the PCM device - raise --latency\n",
            o.underruns, o.underruns == 1 ? "" : "s");
-#endif
   fflush(stdout);
-#ifdef SCVA_HAVE_PCM
   if (o.pcm) snd_pcm_close(o.pcm);
   free(o.inter);
-#endif
   e.close(&e);
   free(engine_opts);
   return 0;

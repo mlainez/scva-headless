@@ -105,11 +105,11 @@ $(OBJ)/win32/%.o: src/%.c
 	@mkdir -p $(@D)
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) $(XDEFS) $(DEPS) -c -o $@ $<
 
-# scva-render --play needs ALSA. scva-render32 does not link it - it exists
-# for a 32-bit SCCore.dll and for box86 on 32-bit ARM, both places a 32-bit
-# alsa-lib is unlikely to be installed, the same reason daemon32 is kept out
-# of linux32 - so --play is a --out-and-play-the-file error there instead.
-$(OBJ)/linux64/scva_native.o: XDEFS := -DSCVA_HAVE_PCM
+# The renderers' --play finds ALSA at run time (alsa_dl.h) rather than linking
+# it: scva-render32 is for a 32-bit SCCore.dll and for box86 on 32-bit ARM,
+# where a 32-bit alsa-lib is often missing, and it still builds and renders
+# to a file there; --play works wherever libasound.so.2 is installed.
+$(OBJ)/linux64/scva_native.o $(OBJ)/linux32/scva_native.o: XDEFS := -DSCVA_ALSA_DLOPEN
 $(OBJ)/linux64-pic/scva_clap.o $(OBJ)/linux32-pic/scva_clap.o \
 $(OBJ)/win64/scva_clap.o $(OBJ)/win32/scva_clap.o: XDEFS := -I$(CLAP_DIR)
 
@@ -133,10 +133,10 @@ WINMIDI_MODS    := scva_winmidi map_policy audio_waveout console rt_priority liv
                    live_engine synth_registry synth_scva
 
 $(BUILD)/scva-render: $(call objs,linux64,$(RENDER_MODS))
-	$(CC) $(CFLAGS) -o $@ $^ $(ALSA) -lpthread -lm
+	$(CC) $(CFLAGS) -o $@ $^ -ldl -lpthread -lm
 
 $(BUILD)/scva-render32: $(call objs,linux32,$(RENDER_MODS) $(VSC_ENGINE_MODS))
-	$(CC) -m32 $(CFLAGS) -o $@ $^ -lpthread -lm
+	$(CC) -m32 $(CFLAGS) -o $@ $^ -ldl -lpthread -lm
 
 $(BUILD)/scva-daemon: $(call objs,linux64,$(DAEMON_MODS))
 	$(CC) $(CFLAGS) -o $@ $^ $(ALSA) -lpthread -lm

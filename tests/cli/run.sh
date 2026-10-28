@@ -65,19 +65,13 @@ for r in scva-render scva-render32 scva-render.exe scva-render32.exe; do
   end
 done
 
-if have scva-render32; then
-  begin "scva-render32: --play is refused, it is built without ALSA"
-  run scva-render32 --midi song.mid --play
-  exit_is 2; says --out
-  end
-fi
-
-if have scva-render; then
-  begin "scva-render: --play is a real output, it only stops at the missing core"
-  run scva-render --midi song.mid --play
+for r in scva-render scva-render32; do
+  have "$r" || continue
+  begin "$r: --play is a real output, it only stops at the missing core"
+  run "$r" --midi song.mid --play
   exit_is 1; says SCCore.dll
   end
-fi
+done
 
 # ---- --engine, every renderer -------------------------------------------
 for r in scva-render scva-render32 scva-render.exe scva-render32.exe; do
