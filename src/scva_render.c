@@ -81,6 +81,7 @@ static HMODULE load_second_core(const char *core, char *made, size_t madelen)
 struct sink {
   FILE *wav;
   int bits;
+  int dump;                          /* print this many first samples */
   int realtime;                      /* hold to the wall clock */
   double rate;
   DWORD start_ms;
@@ -114,6 +115,8 @@ static int deliver(void *ctx, const float *left, const float *right, int n,
   int k;
   if (!frame) { printf("first process returned\n"); fflush(stdout); }
   for (k = 0; k < n; ++k) {
+    if (o->dump && frame + (uint64_t)k < (uint64_t)o->dump)
+      printf("  [%5u] L %.9g  R %.9g\n", (uint32_t)frame + k, left[k], right[k]);
     if (o->play) {
       o->out.pcm[o->wb][2 * k]     = to_s16(left[k]);
       o->out.pcm[o->wb][2 * k + 1] = to_s16(right[k]);
@@ -183,8 +186,9 @@ static int core_load(const char *core)
    first faults on a null pointer - so the order is fixed: initialize, then
    rate and block size, then activate. */
 static int core_open(struct render_engines *e, const char *core, int nports,
-                     double rate, int maxblock, const char *reset, int mapval,
-                     const char *mapname, const char *argv0)
+                     double rate, int maxblock, int initarg, int cfga, int cfgb,
+                     const char *reset, int mapval, const char *mapname,
+                     const char *argv0)
 {
   struct scva_core_api *a = &core_api[0], *b = &core_api[1];
   const char *missing;
@@ -226,11 +230,11 @@ static int core_open(struct render_engines *e, const char *core, int nports,
     int k;
     setup.rate = (float)rate;
     setup.max_block = maxblock;
-    setup.init_arg = 0;
-    setup.config.a = 1;
-    setup.config.b = 1;
+    setup.init_arg = initarg;
+    setup.config.a = cfga;
+    setup.config.b = cfgb;
     scva_core_start(a, &setup, &report);
-    printf("initialize -> %d\n", report.initialized);
+    printf("initialize(%d) -> %d\n", initarg, report.initialized);
     printf("rate %.0f, max block %d (rate set both sides)\n", rate, maxblock);
     printf("set_config(1,1) -> %d\n", report.config_set);
     printf("config now: %d, %d\n", report.config.a, report.config.b);
@@ -276,7 +280,11 @@ static void usage(void)
                   "  --bits 16   integer PCM every player accepts\n"
                   "  --bits 32   float, the engine's own format (default)\n"
                   "  --play      straight to the sound card, no file and\n"
-                  "              no MIDI driver anywhere in the way\n");
+                  "              no MIDI driver anywhere in the way\n"
+                  "  --pcm DEV   an output device, by number or part of its\n"
+                  "              name; otherwise the system's choice\n"
+                  "  --latency MS  audio buffered ahead with --play "
+                  "(default 200)\n");
   if (synth_backends[1]) {
     fprintf(stderr, "  --engine %s  the engine (default %s)\n",
             synth_engine_names(), synth_backends[0]->caps->name);
@@ -310,6 +318,11 @@ int main(int argc, char **argv)
   int play = 0;                      /* --play: to the sound card, no file */
   int i, block;
   int realtime = 1;
+  int dump = 0;
+  int initarg = 0;
+  int cfga = 1, cfgb = 1;
+  const char *pcm_name = NULL;       /* --pcm DEV, otherwise WAVE_MAPPER */
+  int latency_ms = 200;
 
   /* The engine first: the rest of the command line may be its options. */
   for (i = 1; i + 1 < argc; ++i)
@@ -344,8 +357,13 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "--reset") && i + 1 < argc) reset = argv[++i];
     else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
     else if (!strcmp(argv[i], "--maxblock") && i + 1 < argc) maxblock = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--dump") && i + 1 < argc) dump = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--init") && i + 1 < argc) initarg = (int)strtol(argv[++i], NULL, 0);
+    else if (!strcmp(argv[i], "--cfg") && i + 2 < argc) { cfga = atoi(argv[++i]); cfgb = atoi(argv[++i]); }
     else if (!strcmp(argv[i], "--flat-out")) realtime = 0;
     else if (!strcmp(argv[i], "--play")) play = 1;
+    else if (!strcmp(argv[i], "--pcm") && i + 1 < argc) pcm_name = argv[++i];
+    else if (!strcmp(argv[i], "--latency") && i + 1 < argc) latency_ms = atoi(argv[++i]);
     else if ((took = synth_parse_option(engine, engine_opts, argc, argv, &i,
                                         err, sizeof err)) < 0) {
       fprintf(stderr, "%s\n", err);
@@ -387,8 +405,8 @@ int main(int argc, char **argv)
   if (!bytes || !parse(&s, bytes, n)) { fprintf(stderr, "not a MIDI file this can play\n"); return 1; }
 
   if (engine == &synth_scva) {
-    if (!core_open(&e, core, song_ports(&s), rate, maxblock, reset, mapval, mapname,
-                   argv[0]))
+    if (!core_open(&e, core, song_ports(&s), rate, maxblock, initarg, cfga, cfgb,
+                   reset, mapval, mapname, argv[0]))
       return 1;
   } else {
     struct synth_options opt;
@@ -410,6 +428,7 @@ int main(int argc, char **argv)
 
   memset(&o, 0, sizeof o);
   o.bits = bits;
+  o.dump = dump;
   o.realtime = realtime;
   o.rate = rate;
   if (play) {
@@ -417,12 +436,19 @@ int main(int argc, char **argv)
        rather than route a file through a driver and a virtual cable, the
        renderer reads it and puts the audio out itself. waveOut in 16-bit
        stereo is what every Windows sound device accepts. */
-    int nbuf = (int)((double)200.0 * rate / 1000.0 / block);   /* ~200 ms ahead */
+    int nbuf = (int)((double)latency_ms * rate / 1000.0 / block);
+    UINT dev;
     if (nbuf < 4) nbuf = 4;
     if (nbuf > 64) nbuf = 64;
-    switch (waveout_open(&o.out, (unsigned)rate, nbuf, block)) {
+    if (!waveout_find(pcm_name, &dev)) {
+      fprintf(stderr, "no audio device matching '%s'\n", pcm_name);
+      return 1;
+    }
+    switch (waveout_open(&o.out, dev, (unsigned)rate, nbuf, block)) {
     case WAVEOUT_NO_DEVICE:
-      fprintf(stderr, "cannot open an audio device at %.0f Hz\n", rate);
+      fprintf(stderr, "cannot open an audio device at %.0f Hz", rate);
+      if (pcm_name) fprintf(stderr, " ('%s')", pcm_name);
+      fprintf(stderr, "\n");
       return 1;
     case WAVEOUT_NO_MEMORY:
       fprintf(stderr, "out of memory\n");

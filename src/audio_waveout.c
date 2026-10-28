@@ -6,7 +6,30 @@
 #include <stdlib.h>
 #include <string.h>
 
-int waveout_open(struct waveout *w, unsigned int rate, int nbuf, int frames)
+int waveout_find(const char *want, UINT *dev)
+{
+  UINT n = waveOutGetNumDevs(), i;
+  char *end;
+  long k;
+  if (!want) { *dev = WAVE_MAPPER; return 1; }
+  k = strtol(want, &end, 10);
+  if (end != want && !*end) {
+    *dev = (UINT)k;
+    return k >= 0 && (UINT)k < n;
+  }
+  for (i = 0; i < n; ++i) {
+    WAVEOUTCAPSA c;
+    if (waveOutGetDevCapsA(i, &c, sizeof c) == MMSYSERR_NOERROR &&
+        strstr(c.szPname, want)) {
+      *dev = i;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+int waveout_open(struct waveout *w, UINT dev, unsigned int rate, int nbuf,
+                 int frames)
 {
   WAVEFORMATEX wf;
   int b;
@@ -22,7 +45,7 @@ int waveout_open(struct waveout *w, unsigned int rate, int nbuf, int frames)
   wf.wBitsPerSample = 16;
   wf.nBlockAlign = (WORD)(wf.nChannels * wf.wBitsPerSample / 8);
   wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
-  if (waveOutOpen(&w->h, WAVE_MAPPER, &wf, (DWORD_PTR)w->ev, 0,
+  if (waveOutOpen(&w->h, dev, &wf, (DWORD_PTR)w->ev, 0,
                   CALLBACK_EVENT) != MMSYSERR_NOERROR)
     return WAVEOUT_NO_DEVICE;
   w->hdr = calloc((size_t)nbuf, sizeof *w->hdr);

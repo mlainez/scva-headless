@@ -390,7 +390,7 @@ int main(int argc, char **argv)
   }
 
   /* ---- audio out ---- */
-  switch (waveout_open(&out, rate, nbuf, block)) {
+  switch (waveout_open(&out, WAVE_MAPPER, rate, nbuf, block)) {
   case WAVEOUT_NO_DEVICE:
     fprintf(stderr, "scva-winmidi: cannot open an audio device at %u Hz\n",
             rate);

@@ -28,7 +28,7 @@ You supply the required DLL and other optional files from your own installation.
 
 | to build | needs |
 |---|---|
-| Linux binaries | a C compiler, `alsa-lib` |
+| Linux binaries | a C compiler, `alsa-lib` (the renderers load it only for `--play`) |
 | 32-bit Linux binaries | `libc6-dev-i386`; `daemon32` also a 32-bit `alsa-lib` |
 | LV2 | `lv2-dev`, `libX11` (32-bit: `libX11.so.6` for i386) |
 | CLAP | the [CLAP headers](https://github.com/free-audio/clap); Linux: `libX11` |
@@ -139,17 +139,17 @@ pass `--map 88` or you are comparing against the wrong instrument.
     --flat-out       render as fast as possible rather than in real time
     --init N         TG_initialize argument          (default 0)
     --cfg A B        TG_XPsetSystemConfig fields     (default 1 1)
+    --dump N         print the first N samples
     --play           straight to the sound card, no file and no MIDI
-                     driver anywhere in the way             (needs ALSA)
+                     driver anywhere in the way
     --pcm DEV        force one PCM device, as with the daemon below
     --latency MS     delay before a note is heard, --play only (default 20)
     --engine NAME    scva | vsc, vsc in 32-bit builds   (default scva)
 
 `--out` and `--play` are not exclusive: give both to render a file and listen
-at the same time. `--play` needs `scva-render`, not `scva-render32` - the
-32-bit build stays free of the 32-bit ALSA dependency it would otherwise
-force on `linux32`/box86 builds that never asked for it, so it errors out
-instead of failing to link.
+at the same time. Both renderers load ALSA's `libasound.so.2` only for
+`--play`, so they build and render without ALSA; `scva-render32 --play` needs
+the 32-bit library, and says so when it is missing.
 
 ### Run it as a MIDI device
 
@@ -292,7 +292,17 @@ Start it, and check:
     --reset gs|gm|none                               (default gs)
     --maxblock N     declared maximum block          (default 4096)
     --flat-out       render as fast as possible rather than in real time
+    --init N         TG_initialize argument          (default 0)
+    --cfg A B        TG_XPsetSystemConfig fields     (default 1 1)
+    --dump N         print the first N samples
+    --play           straight to the sound card, as below
+    --pcm DEV        output device, its number or any part of its name
+                     (default: the system's choice)
+    --latency MS     audio buffered ahead, --play only (default 200)
     --engine NAME    scva | vsc, vsc in 32-bit builds   (default scva)
+
+The options are the Linux renderers'; only `--pcm` names a waveOut device
+rather than an ALSA one, and `--latency` defaults higher for older machines.
 
 ### Play to the sound card
 
@@ -604,7 +614,7 @@ Roland 32-bit and 64-bit Windows versions. So:
 | | |
 |---|---|
 | Linux x86-64 | LV2, CLAP, renderer, `--play`, daemon |
-| Linux i386 | LV2, CLAP, renderer without `--play`, daemon |
+| Linux i386 | LV2, CLAP, renderer, `--play`, daemon |
 | Windows x86-64 | CLAP, renderer, `--play`, MIDI device via a virtual cable |
 | Windows x86, 98 and up | CLAP, renderer, `--play`, MIDI device via a virtual cable |
 | ARM, any width | only by emulating x86 - box86 or box64 |

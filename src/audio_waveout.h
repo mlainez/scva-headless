@@ -19,9 +19,14 @@ struct waveout {
 #define WAVEOUT_NO_DEVICE (-1)
 #define WAVEOUT_NO_MEMORY (-2)
 
-/* Opens the default device at rate with nbuf buffers of frames each, all
-   free. 0, or one of the errors above. */
-int waveout_open(struct waveout *w, unsigned int rate, int nbuf, int frames);
+/* Sets *dev to the device want names: its number, or any part of its name;
+   WAVE_MAPPER, the system's choice, for NULL. 0 if none matches. */
+int waveout_find(const char *want, UINT *dev);
+
+/* Opens device dev (waveout_find) at rate with nbuf buffers of frames each,
+   all free. 0, or one of the errors above. */
+int waveout_open(struct waveout *w, UINT dev, unsigned int rate, int nbuf,
+                 int frames);
 
 static inline int waveout_is_free(const struct waveout *w, int b)
 {

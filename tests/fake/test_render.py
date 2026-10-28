@@ -258,7 +258,7 @@ def wrong_width(c, tool, other):
     c.expect(want in r.text, f"a message saying it hosts {want} cores: {r.text.strip()[-200:]}")
 
 
-# ---- native-only options ---------------------------------------------------------------
+# ---- options every renderer takes ---------------------------------------------------------------
 
 def init_and_cfg(c, tool):
     r = render(tool, "timing.mid", "--init", "0x10", "--cfg", "0", "1")
@@ -334,6 +334,15 @@ def play_without_device(c, tool):
     c.expect(not any(x.fn == "TG_Process" for x in r.calls), "nothing rendered")
 
 
+def play_unknown_device(c, tool):
+    """A --pcm that matches no device is an error, not a quiet fall back to
+    the system's choice."""
+    r = play(tool, "timing.mid", "--pcm", "no-such-device-xyz")
+    c.expect(r.status == 1, f"exit 1, got {r.status}")
+    c.expect("no audio device matching 'no-such-device-xyz'" in r.text, f"the reason: {r.text.strip()[-200:]}")
+    c.expect(not any(x.fn == "TG_Process" for x in r.calls), "nothing rendered")
+
+
 def main():
     tools = {t.name: t for t in harness.RENDERERS}
     for t in harness.RENDERERS:
@@ -367,10 +376,11 @@ def main():
                                             "win64": "win32", "win32": "win64"}[t.fake], "SCCore.dll")
         if not t.windows or "32" in t.name:
             case(f"{t.name}: refuses a core of the other width", wrong_width, t, other)
-        if not t.windows:
-            case(f"{t.name}: --init and --cfg reach the engine", init_and_cfg, t)
-            case(f"{t.name}: --dump prints the first frames", dump_option, t)
+        case(f"{t.name}: --init and --cfg reach the engine", init_and_cfg, t)
+        case(f"{t.name}: --dump prints the first frames", dump_option, t)
         if t.windows:
+            case(f"{t.name}: --play --pcm names a device that is not there",
+                 play_unknown_device, t)
             if no_audio_device(t):
                 case(f"{t.name}: --play without a sound device says so and fails",
                      play_without_device, t)
