@@ -252,6 +252,35 @@ for w in scva-winmidi.exe scva-winmidi32.exe; do
   end
 done
 
+# ---- --engine in the live tools ------------------------------------------
+for t in scva-daemon scva-daemon32 scva-winmidi.exe scva-winmidi32.exe; do
+  have "$t" || continue
+
+  begin "$t: an unknown --engine is refused and the ones it has are named"
+  run "$t" --engine nonesuch
+  exit_is 2; says scva
+  end
+
+  case "$t" in
+    *32*)
+      begin "$t: its help shows --engine and the VSC engine's own options"
+      run "$t" --help
+      exit_is 0; says --engine; says vsc; says --set; says --poly
+      end
+
+      begin "$t: --engine vsc needs its engine file"
+      run "$t" --engine vsc
+      exit_is 2; says --core
+      end
+
+      begin "$t: --engine vsc checks its own options' values"
+      run "$t" --engine vsc --core vsc.sys --volume 101
+      exit_is 2; says 100
+      end
+      ;;
+  esac
+done
+
 # ---- scva-tones, both widths ----------------------------------------------
 synthetic=$scratch/names
 mkdir -p "$synthetic"

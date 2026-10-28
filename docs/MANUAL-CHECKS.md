@@ -44,6 +44,7 @@ CD in one directory.
 | V1 | `scva-render32.exe --engine vsc --core vsc.sys --midi song.mid --out out.wav` | a WAV that plays | the VSC engine under the Win98 loader |
 | V2 | the same with `--play` | it plays through the sound card | waveOut with the engine's own block size |
 | V3 | the same with `--cpu fpu` on a machine without MMX, if one is at hand | it renders | the engine's x87 path |
+| V4 | `scva-winmidi32.exe --engine vsc --core vsc.sys` with a MIDI input, then type `55` | it plays, and the instruments change to the SC-55 set | the VSC engine live on Windows |
 
 ## scva-daemon with realtime rights
 

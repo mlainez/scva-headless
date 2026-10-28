@@ -41,21 +41,13 @@
 #include "rt_priority.h"
 #include "audio_waveout.h"
 #include "core_path.h"
-#if defined(__i386__)
-/* The 32-bit core imports MSVCR100 and declares a subsystem newer than
-   Windows 98, so the system loader refuses it there. src/pe_loader.c maps it
-   and supplies that runtime itself, applying the SSE shims on the way. */
-#define SCVA_OWN_LOADER 1
-#include "pe_loader.h"
-#include "scva_runtime.h"
-#else
-#define SCVA_SHIM_HOST_APPLY 1     /* the system loader path applies them */
-#include "sse3_shim.h"
-#endif
+#include "scva_core_api.h"
+#include "live_engine.h"
+#include "synth_registry.h"
 
-#include "scva_core.h"
-
-static struct scva_core_api engine;
+/* The engine: SOUND Canvas VA's core by default (synth_scva.c loads it the
+   way each Windows width needs), or another one this build has. */
+static struct live_engine eng;
 
 /* The MIDI callback runs on its own thread, so messages are queued rather
    than pushed into the engine from under it. */
@@ -201,12 +193,10 @@ static void print_stdout(void *ctx, const char *text)
 
 /* One typed line, on scva-daemon's console (console.h). Returns 1 when it
    asked to stop. */
-static int console_command(char *line, struct map_policy *maps)
+static int console_command(char *line, struct live_engine *l)
 {
   struct console c;
-  c.maps = maps;
-  c.set_all = NULL;
-  c.set_ctx = NULL;
+  live_engine_console(l, &c);
   c.trim = " ";
   c.print = print_stdout;
   c.ctx = NULL;
@@ -221,7 +211,7 @@ static int console_command(char *line, struct map_policy *maps)
    the loop; the worst case for noticing a keystroke is one iteration, the
    same as the 100 ms this loop can already wait for a wave buffer to free.
    Returns 1 when it was told to stop. */
-static int poll_console(struct map_policy *maps)
+static int poll_console(struct live_engine *l)
 {
   static char line[256];
   static size_t len = 0;
@@ -231,7 +221,7 @@ static int poll_console(struct map_policy *maps)
       putchar('\n');
       line[len] = '\0';
       len = 0;
-      if (console_command(line, maps)) return 1;
+      if (console_command(line, l)) return 1;
     } else if (c == '\b' || c == 127) {
       if (len > 0) { --len; printf("\b \b"); }
     } else if (len + 1 < sizeof line) {
@@ -242,6 +232,30 @@ static int poll_console(struct map_policy *maps)
   return 0;
 }
 
+static void usage(void)
+{
+  int i;
+  fprintf(stderr,
+    "usage: scva-winmidi [--midi-in NAME|INDEX] [--core DLL]\n"
+    "                    [--rate HZ] [--block N] [--latency MS]\n"
+    "                    [--map " SCVA_MAP_USAGE "] [--name NAME]\n"
+    "\n"
+    "  --list             the MIDI inputs this machine has\n"
+    "  --midi-in          index, or any part of the name\n"
+    "  --name             window title, so several of these running\n"
+    "                     at once can be told apart (default SCVA)\n");
+  if (synth_backends[1]) {
+    fprintf(stderr, "  --engine %s  the engine (default %s)\n",
+            synth_engine_names(), synth_backends[0]->caps->name);
+    for (i = 1; synth_backends[i]; ++i) {
+      fprintf(stderr, "with --engine %s, --core is its engine file, a map typed at\n"
+                      "the console chooses its one tone set, and:\n",
+              synth_backends[i]->caps->name);
+      synth_print_options(synth_backends[i], stderr);
+    }
+  }
+}
+
 int main(int argc, char **argv)
 {
   const char *core = NULL, *want_in = NULL, *mapname = "default";
@@ -250,17 +264,10 @@ int main(int argc, char **argv)
                                         of these running at once can be told
                                         apart */
   unsigned int rate = 48000;
-  int block = 256, latency_ms = 40, mapval = 0, i;
-  struct map_policy maps;           /* one map per part, from the console */
-#ifdef SCVA_OWN_LOADER
-  struct pe_image *lib;
-  char peerr[256];
-  scva_core_lookup_fn lookup = scva_core_lookup_pe;
-#else
-  HMODULE lib;
-  scva_core_lookup_fn lookup = scva_core_lookup_module;
-#endif
-  const char *missing;
+  int block = 256, latency_ms = 40, mapval = 0, i, rate_given = 0;
+  const struct synth_backend *engine = synth_backends[0];
+  void *engine_opts = NULL;
+  char corebuf[MAX_PATH], err[256];
   HMIDIIN hin = NULL;
   struct waveout out;
   float *left, *right;
@@ -269,25 +276,42 @@ int main(int argc, char **argv)
   DWORD midi_t0;                    /* timeGetTime() at midiInStart */
   struct live_sched sched;
 
+  /* The engine first: the rest of the command line may be its options. */
+  for (i = 1; i + 1 < argc; ++i)
+    if (!strcmp(argv[i], "--engine")) {
+      engine = synth_find(argv[i + 1]);
+      if (!engine) {
+        fprintf(stderr, "scva-winmidi: --engine takes %s\n", synth_engine_names());
+        return 2;
+      }
+    }
+  if (engine->opts_size) {
+    engine_opts = calloc(1, engine->opts_size);
+    if (!engine_opts) { fprintf(stderr, "scva-winmidi: out of memory\n"); return 1; }
+    engine->opts_init(engine_opts);
+  }
+
   for (i = 1; i < argc; ++i) {
+    int took;
     if (!strcmp(argv[i], "--core") && i + 1 < argc) core = argv[++i];
+    else if (!strcmp(argv[i], "--engine") && i + 1 < argc) ++i;
     else if (!strcmp(argv[i], "--midi-in") && i + 1 < argc) want_in = argv[++i];
-    else if (!strcmp(argv[i], "--rate") && i + 1 < argc) rate = (unsigned)atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--rate") && i + 1 < argc) {
+      rate = (unsigned)atoi(argv[++i]);
+      rate_given = 1;
+    }
     else if (!strcmp(argv[i], "--block") && i + 1 < argc) block = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--latency") && i + 1 < argc) latency_ms = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--map") && i + 1 < argc) mapname = argv[++i];
     else if (!strcmp(argv[i], "--name") && i + 1 < argc) name = argv[++i];
     else if (!strcmp(argv[i], "--list")) { list_inputs(); return 0; }
-    else {
-      fprintf(stderr,
-        "usage: scva-winmidi [--midi-in NAME|INDEX] [--core DLL]\n"
-        "                    [--rate HZ] [--block N] [--latency MS]\n"
-        "                    [--map " SCVA_MAP_USAGE "] [--name NAME]\n"
-        "\n"
-        "  --list             the MIDI inputs this machine has\n"
-        "  --midi-in          index, or any part of the name\n"
-        "  --name             window title, so several of these running\n"
-        "                     at once can be told apart (default SCVA)\n");
+    else if ((took = synth_parse_option(engine, engine_opts, argc, argv, &i,
+                                        err, sizeof err)) < 0) {
+      fprintf(stderr, "scva-winmidi: %s\n", err);
+      return 2;
+    }
+    else if (!took) {
+      usage();
       return (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) ? 0 : 2;
     }
   }
@@ -297,56 +321,41 @@ int main(int argc, char **argv)
     fprintf(stderr, "scva-winmidi: --map wants " SCVA_MAP_USAGE "\n");
     return 2;
   }
-  map_policy_init(&maps, MAP_LIVE, mapval, scva_core_sink, &engine);
   if (block < SCVA_MIN_BLOCK) {
     if (block > 0)
       fprintf(stderr, "scva-winmidi: --block %d is below the engine's "
                       "minimum, using %d\n", block, SCVA_MIN_BLOCK);
     block = SCVA_MIN_BLOCK;
   }
+  /* ---- the engine ---- */
+  if (engine == &synth_scva) {
+    snprintf(corebuf, sizeof corebuf, "%s", scva_core_path(core));
+  } else if (core) {
+    snprintf(corebuf, sizeof corebuf, "%s", core);
+  } else {
+    fprintf(stderr, "scva-winmidi: --engine %s needs --core, its engine file\n",
+            engine->caps->name);
+    return 2;
+  }
+  {
+    int status;
+    if (!live_engine_open(&eng, engine, corebuf, rate, rate_given, block, engine_opts,
+                          mapval, mapname, &status, err, sizeof err)) {
+      if (status == 1 && engine == &synth_scva)
+        fprintf(stderr, "scva-winmidi: %s\n"
+                        "  looked for %s; pass --core or set SCVA_DLL_DIR\n",
+                err, corebuf);
+      else
+        fprintf(stderr, "scva-winmidi: %s\n", err);
+      return status;
+    }
+  }
+  rate = (unsigned)eng.synth->rate;
   nbuf = (int)((double)latency_ms * rate / 1000.0 / block);
   if (nbuf < 2) nbuf = 2;
   if (nbuf > 32) nbuf = 32;
   live_sched_init(&sched, (double)rate, (unsigned)latency_ms,
                   (uint64_t)nbuf * block);
-
-  /* ---- the engine ---- */
-  {
-    const char *path = scva_core_path(core);
-#ifdef SCVA_OWN_LOADER
-    lib = scva_core_map(path, peerr, sizeof peerr);
-    if (!lib) {
-      fprintf(stderr, "scva-winmidi: cannot load %s: %s\n"
-                      "  pass --core or set SCVA_DLL_DIR\n", path, peerr);
-      return 1;
-    }
-#else
-    lib = LoadLibraryA(path);
-    if (!lib) {
-      fprintf(stderr, "scva-winmidi: cannot load %s\n"
-                      "  pass --core or set SCVA_DLL_DIR\n", path);
-      return 1;
-    }
-    {
-      int n = scva_sse3_apply(lib);
-      if (n) printf("scva-winmidi: SSE3 shim, %d sites patched\n", n);
-    }
-#endif
-  }
-  if ((missing = scva_core_bind(&engine, lookup, (void *)lib, SCVA_CORE_LIVE))) {
-    fprintf(stderr, "scva-winmidi: the core has no %s\n", missing);
-    return 1;
-  }
-  {
-    struct scva_core_setup setup;
-    setup.rate = (float)rate;
-    setup.max_block = block;
-    setup.init_arg = 0;
-    setup.config.a = 1;
-    setup.config.b = 1;
-    scva_core_start(&engine, &setup, NULL);
-  }
-  scva_core_gs_reset(&engine);
 
   /* ---- MIDI in ---- */
   InitializeCriticalSection(&q_lock);
@@ -404,7 +413,7 @@ int main(int argc, char **argv)
     int did = 0;
     uint64_t played;
     int have_played;
-    if (poll_console(&maps)) break;
+    if (poll_console(&eng)) break;
     for (b = 0; b < NSYSBUF; ++b)
       if (InterlockedExchange(&sys_returned[b], 0))
         midiInAddBuffer(hin, &sys_hdr[b], sizeof sys_hdr[b]);
@@ -424,15 +433,15 @@ int main(int argc, char **argv)
       rendered += block;
       while (queue_get_due(&m, rendered, &sched)) {
         if (m.b[0] == 0xf0) {
-          engine.long_midi(m.b, 0);
+          synth_long(eng.synth, m.b, (size_t)m.len);
         } else {
           unsigned int msg = m.b[0];
           if (m.len > 1) msg |= (unsigned int)m.b[1] << 8;
           if (m.len > 2) msg |= (unsigned int)m.b[2] << 16;
-          map_policy_short(&maps, msg);
+          map_policy_short(&eng.maps, msg);
         }
       }
-      engine.process(left, right, block);
+      synth_render(eng.synth, left, right, (uint32_t)block);
       for (k = 0; k < block; ++k) {
         float l = left[k], r = right[k];
         if (l > 1.0f) l = 1.0f; else if (l < -1.0f) l = -1.0f;
@@ -447,6 +456,7 @@ int main(int argc, char **argv)
   }
   printf("scva-winmidi[%s]: stopping\n", name);
   timeEndPeriod(1);
-  engine.deactivate();
+  live_engine_close(&eng);
+  free(engine_opts);
   return 0;
 }

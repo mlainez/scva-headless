@@ -20,6 +20,8 @@
 
 #ifdef SCVA_LOADLIBRARY
 #include <windows.h>
+#define SCVA_SHIM_HOST_APPLY 1     /* the system loader path applies them */
+#include "sse3_shim.h"
 #else
 #include "pe_loader.h"
 #include "scva_runtime.h"
@@ -71,6 +73,7 @@ static struct synth *open_scva(const struct synth_options *opt, char *err,
     free(e);
     return NULL;
   }
+  scva_sse3_apply(e->lib);
   missing = scva_core_bind(&e->api, scva_core_lookup_module, (void *)e->lib, SCVA_CORE_LIVE);
 #else
   e->img = scva_core_map(opt->core, err, errlen);

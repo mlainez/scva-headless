@@ -611,7 +611,8 @@ Roland 32-bit and 64-bit Windows versions. So:
 | macOS | would need a Mach-O loader; not built here |
 
 The Virtual Sound Canvas engine is 32-bit code, so `--engine vsc` is in the
-32-bit renderers only: `scva-render32` and `scva-render32.exe`.
+32-bit tools only: `scva-render32`, `scva-render32.exe`, `scva-daemon32` and
+`scva-winmidi32.exe`.
 
 ## 32-part, two-port songs
 
@@ -679,15 +680,20 @@ Linux and in the Windows build under wine.
 A map typed at its console or sent with `--send` (`55`, `88`, `88pro`)
 changes the one tone set: the engine is reopened on the new set and reset, as
 VSC itself does. A map for one part alone, or `8820`, is refused. `--map` at
-start-up names the set the same way. `scva-winmidi` and the plugins drive
-SOUND Canvas VA only, for now.
+start-up names the set the same way.
+
+`scva-winmidi32.exe` takes `--engine vsc` the same way, its console too:
+
+    build\scva-winmidi32.exe --engine vsc --core vsc\vsc.sys --midi-in loopMIDI
+
+The plugins drive SOUND Canvas VA only, for now.
 
 ## Source layout
 
 | | |
 |---|---|
 | front ends | `scva_native.c` and `scva_render.c` (renderers), `scva_daemon.c`, `scva_winmidi.c`, `scva_lv2.c`, `scva_clap.c` |
-| shared by front ends | `render_loop.c` (a song into engines, block by block), `render_engines.c` (the engines a song plays on), `map_policy.c` (tone maps), `console.c` (the map console), `live_sched.c` (live MIDI timing), `rt_priority.c`, `audio_waveout.c` |
+| shared by front ends | `render_loop.c` (a song into engines, block by block), `render_engines.c` (the engines a song plays on), `live_engine.c` (the live tools' engine and its tone sets), `map_policy.c` (tone maps), `console.c` (the map console), `live_sched.c` (live MIDI timing), `rt_priority.c`, `audio_waveout.c` |
 | engines | `synth.h`, the interface every engine fills in; `synth_registry.c`, the engines a build has and their options; `synth_scva.c` (SOUND Canvas VA, used by the plugins) and `synth_vsc.c` + `vsc_engine.c` (Virtual Sound Canvas) |
 | SOUND Canvas VA | `scva_core_api.h` (its exports), `scva_core.h` (its start-up order), `scva_runtime.c` (the Windows and C runtime calls it imports, and its SSE shims) |
 | platform | `pe_loader.c`: maps a PE image, binds its imports through a resolver the caller gives, patches its code through a hook, finds symbols by export or in its COFF table |

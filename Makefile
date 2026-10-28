@@ -125,11 +125,12 @@ RENDER_MODS     := scva_native map_policy render_loop render_engines synth_regis
                    synth_scva pe_loader scva_runtime
 # The engines only a 32-bit build can host.
 VSC_ENGINE_MODS := synth_vsc vsc_engine
-DAEMON_MODS     := scva_daemon map_policy console rt_priority synth_registry synth_scva \
-                   pe_loader scva_runtime
+DAEMON_MODS     := scva_daemon map_policy console rt_priority live_engine synth_registry \
+                   synth_scva pe_loader scva_runtime
 WIN_RENDER_MODS := scva_render map_policy audio_waveout render_loop render_engines \
                    synth_registry synth_scva
-WINMIDI_MODS    := scva_winmidi map_policy audio_waveout console rt_priority live_sched
+WINMIDI_MODS    := scva_winmidi map_policy audio_waveout console rt_priority live_sched \
+                   live_engine synth_registry synth_scva
 
 $(BUILD)/scva-render: $(call objs,linux64,$(RENDER_MODS))
 	$(CC) $(CFLAGS) -o $@ $^ $(ALSA) -lpthread -lm
@@ -166,7 +167,8 @@ $(BUILD)/scva-render32.exe: $(call objs,win32,$(WIN_RENDER_MODS) pe_loader scva_
                                               $(VSC_ENGINE_MODS))
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ $^ -lwinmm
 
-$(BUILD)/scva-winmidi32.exe: $(call objs,win32,$(WINMIDI_MODS) pe_loader scva_runtime)
+$(BUILD)/scva-winmidi32.exe: $(call objs,win32,$(WINMIDI_MODS) pe_loader scva_runtime \
+                                               $(VSC_ENGINE_MODS))
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ $^ -lwinmm
 
 # ---- the engine library --------------------------------------------------
@@ -443,6 +445,7 @@ $(BUILD)/test/test_synth_vsc: $(OBJ)/vsctest32/test_synth_vsc.o \
 test-vsc: $(BUILD)/test/vsc_drive $(BUILD)/test/test_synth_vsc $(BUILD)/scva-render32
 	@$(BUILD)/test/test_synth_vsc
 	@python3 tests/vsc/test_daemon_vsc.py
+	@python3 tests/vsc/test_winmidi_vsc.py
 	@python3 tests/vsc/run.py
 
 $(BUILD)/test/icount: tests/perf/icount.c

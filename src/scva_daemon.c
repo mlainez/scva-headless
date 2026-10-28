@@ -33,7 +33,7 @@
 #include "rt_priority.h"
 #include "scva_pcm.h"
 #include "scva_core_api.h"
-#include "midi_reset.h"
+#include "live_engine.h"
 #include "synth_registry.h"
 
 
@@ -112,54 +112,11 @@ static void print_fd(void *fd, const char *text)
   dprintf(*(int *)fd, "%s", text);
 }
 
-/* The engine, and what it was opened with, so that an engine with one tone
-   set for every part can be reopened on another. */
-struct live {
-  const struct synth_backend *backend;
-  struct synth_options opt;
-  void *opts;
-  struct synth *synth;
-  struct map_policy maps;
-};
-
-static void gs_reset(struct synth *s)
-{
-  size_t len;
-  const unsigned char *msg = midi_gs_reset(&len);
-  synth_long(s, msg, len);
-}
-
-/* A new tone set is a new engine, reset, as VSC itself changes sets. The
-   one playing stays if the new one will not open. */
-static int live_set_all(void *ctx, int map, char *err, size_t errlen)
-{
-  static const char *const names[] = { "default", "55", "88", "88pro", "8820" };
-  struct live *l = ctx;
-  struct synth *s;
-  const char *option = l->backend->caps->set_option;
-  int was = map_policy_map(&l->maps, 0);
-  if (!synth_apply_option(l->backend, l->opts, option, names[map], err, errlen))
-    return 0;
-  s = l->backend->open(&l->opt, err, errlen);
-  if (!s) {
-    char ignored[64];
-    synth_apply_option(l->backend, l->opts, option, names[was], ignored, sizeof ignored);
-    return 0;
-  }
-  synth_close(l->synth);
-  l->synth = s;
-  gs_reset(s);
-  map_policy_init(&l->maps, MAP_NONE, map, synth_sink, s);
-  return 1;
-}
-
 /* One typed line, replied to on out. Returns 1 when it asked to stop. */
-static int console_command(char *line, struct live *l, int out)
+static int console_command(char *line, struct live_engine *l, int out)
 {
   struct console c;
-  c.maps = &l->maps;
-  c.set_all = l->backend->caps->tone_map_per_part ? NULL : live_set_all;
-  c.set_ctx = l;
+  live_engine_console(l, &c);
   c.trim = "\r ";               /* a socket client may send CRLF */
   c.print = print_fd;
   c.ctx = &out;
@@ -212,7 +169,9 @@ int main(int argc, char **argv)
   int mapval = 0, block = 256, i, rate_given = 0;
   /* The engine, and one map per part, changed only by the console and
      --send. */
-  struct live l;
+  const struct synth_backend *engine = synth_backends[0];
+  void *engine_opts = NULL;
+  struct live_engine l;
   char corebuf[4096], err[256];
 
   snd_seq_t *seq = NULL;
@@ -228,21 +187,19 @@ int main(int argc, char **argv)
   const char *send_text = NULL;
   int ctl_fd = -1, ctl_slot = -1;
 
-  memset(&l, 0, sizeof l);
-  l.backend = synth_backends[0];
   /* The engine first: the rest of the command line may be its options. */
   for (i = 1; i + 1 < argc; ++i)
     if (!strcmp(argv[i], "--engine")) {
-      l.backend = synth_find(argv[i + 1]);
-      if (!l.backend) {
+      engine = synth_find(argv[i + 1]);
+      if (!engine) {
         fprintf(stderr, "scva-daemon: --engine takes %s\n", synth_engine_names());
         return 2;
       }
     }
-  if (l.backend->opts_size) {
-    l.opts = calloc(1, l.backend->opts_size);
-    if (!l.opts) { fprintf(stderr, "scva-daemon: out of memory\n"); return 1; }
-    l.backend->opts_init(l.opts);
+  if (engine->opts_size) {
+    engine_opts = calloc(1, engine->opts_size);
+    if (!engine_opts) { fprintf(stderr, "scva-daemon: out of memory\n"); return 1; }
+    engine->opts_init(engine_opts);
   }
 
   for (i = 1; i < argc; ++i) {
@@ -278,7 +235,7 @@ int main(int argc, char **argv)
       }
       return 0;
     }
-    else if ((took = synth_parse_option(l.backend, l.opts, argc, argv, &i,
+    else if ((took = synth_parse_option(engine, engine_opts, argc, argv, &i,
                                         err, sizeof err)) < 0) {
       fprintf(stderr, "scva-daemon: %s\n", err);
       return 2;
@@ -305,46 +262,29 @@ int main(int argc, char **argv)
   }
 
   /* --- the engine, in this process -------------------------------------- */
-  if (l.backend == &synth_scva) {
+  if (engine == &synth_scva) {
     snprintf(corebuf, sizeof corebuf, "%s", scva_core_path(core));
-  } else {
-    const struct synth_caps *caps = l.backend->caps;
-    if (!core) {
-      fprintf(stderr, "scva-daemon: --engine %s needs --core, its engine file\n",
-              caps->name);
-      return 2;
-    }
+  } else if (core) {
     snprintf(corebuf, sizeof corebuf, "%s", core);
-    if (!rate_given && caps->default_rate) rate = (unsigned)caps->default_rate;
-    if (!synth_check_rate(l.backend, rate, err, sizeof err)) {
-      fprintf(stderr, "scva-daemon: %s\n", err);
-      return 2;
-    }
-    /* --map names the one tone set, as a map typed at the console does */
-    if (mapval && !caps->tone_map_per_part &&
-        !synth_apply_option(l.backend, l.opts, caps->set_option, mapname, err, sizeof err)) {
-      fprintf(stderr, "scva-daemon: %s\n", err);
-      return 2;
-    }
+  } else {
+    fprintf(stderr, "scva-daemon: --engine %s needs --core, its engine file\n",
+            engine->caps->name);
+    return 2;
   }
-  l.opt.core = corebuf;
-  l.opt.rate = rate;
-  l.opt.max_block = block;
-  l.opt.backend_opts = l.opts;
-  l.synth = l.backend->open(&l.opt, err, sizeof err);
-  if (!l.synth) {
-    if (l.backend == &synth_scva)
-      fprintf(stderr, "scva-daemon: %s\n"
-                      "  looked for '%s'; pass --core or set $SCVA_DLL_DIR\n",
-              err, corebuf);
-    else
-      fprintf(stderr, "scva-daemon: %s\n", err);
-    return 1;
+  {
+    int status;
+    if (!live_engine_open(&l, engine, corebuf, rate, rate_given, block, engine_opts,
+                          mapval, mapname, &status, err, sizeof err)) {
+      if (status == 1 && engine == &synth_scva)
+        fprintf(stderr, "scva-daemon: %s\n"
+                        "  looked for '%s'; pass --core or set $SCVA_DLL_DIR\n",
+                err, corebuf);
+      else
+        fprintf(stderr, "scva-daemon: %s\n", err);
+      return status;
+    }
   }
   rate = (unsigned)l.synth->rate;
-  gs_reset(l.synth);
-  map_policy_init(&l.maps, l.backend->caps->tone_map_per_part ? MAP_LIVE : MAP_NONE,
-                  mapval, synth_sink, l.synth);
 
   /* --- the ALSA sequencer port ------------------------------------------ */
   if (snd_seq_open(&seq, "default", SND_SEQ_OPEN_INPUT, 0) < 0) {
@@ -536,8 +476,8 @@ done:
   free(inter);
   if (coder) snd_midi_event_free(coder);
   if (ctl_fd >= 0) { close(ctl_fd); unlink(ctl_path); }
-  synth_close(l.synth);
-  free(l.opts);
+  live_engine_close(&l);
+  free(engine_opts);
   if (pcm) snd_pcm_close(pcm);
   if (seq) snd_seq_close(seq);
   return rc;
