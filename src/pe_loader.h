@@ -45,8 +45,6 @@ struct pe_image {
    function. NULL when there is nothing to bind it to. */
 typedef void *(*pe_resolve_fn)(void *ctx, const char *dll, const char *name);
 
-struct pe_image;
-
 /* The image's code as a patch hook sees it, still writable. */
 struct pe_code {
   unsigned char *start;
