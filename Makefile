@@ -328,6 +328,19 @@ $(BUILD)/test/unit32/test_pe_loader: $(OBJ)/test32/test_pe_loader.o \
 	@mkdir -p $(@D)
 	$(CC) -m32 $(CFLAGS) -o $@ $^ -lpthread -lm
 
+# The runtime's test calls what the core is bound to.
+RUNTIME_MODS := pe_loader scva_runtime
+
+$(BUILD)/test/unit64/test_runtime: $(OBJ)/test64/test_runtime.o \
+                                   $(call objs,linux64,$(UNIT_MODS) $(RUNTIME_MODS))
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread -lm
+
+$(BUILD)/test/unit32/test_runtime: $(OBJ)/test32/test_runtime.o \
+                                   $(call objs,linux32,$(UNIT_MODS) $(RUNTIME_MODS))
+	@mkdir -p $(@D)
+	$(CC) -m32 $(CFLAGS) -o $@ $^ -lpthread -lm
+
 test-unit: $(UNIT64) $(UNIT32) $(PROBES)
 	@tests/run-unit.sh $(UNIT64) $(UNIT32)
 
@@ -337,7 +350,7 @@ test-unit: $(UNIT64) $(UNIT32) $(PROBES)
 UNIT_WIN      := test_console test_live_sched test_map test_map_policy test_midi_song test_render_loop
 UNIT_WIN_MODS := map_policy render_loop console live_sched
 UNIT_WIN64    := $(addprefix $(BUILD)/test/win64/,$(addsuffix .exe,$(UNIT_WIN)))
-UNIT_WIN32    := $(addprefix $(BUILD)/test/win32/,$(addsuffix .exe,$(UNIT_WIN)))
+UNIT_WIN32    := $(addprefix $(BUILD)/test/win32/,$(addsuffix .exe,$(UNIT_WIN) test_runtime))
 
 $(OBJ)/testwin64/%.o: tests/unit/%.c
 	@mkdir -p $(@D)
@@ -352,6 +365,11 @@ $(BUILD)/test/win64/%.exe: $(OBJ)/testwin64/%.o $(call objs,win64,$(UNIT_WIN_MOD
 	$(MINGW) $(WINFLAGS) -o $@ $^
 
 $(BUILD)/test/win32/%.exe: $(OBJ)/testwin32/%.o $(call objs,win32,$(UNIT_WIN_MODS))
+	@mkdir -p $(@D)
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ $^
+
+$(BUILD)/test/win32/test_runtime.exe: $(OBJ)/testwin32/test_runtime.o \
+                                      $(call objs,win32,$(RUNTIME_MODS))
 	@mkdir -p $(@D)
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ $^
 

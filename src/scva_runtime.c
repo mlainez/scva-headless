@@ -262,7 +262,28 @@ static CDECL_CC void *ms_onexit(void *f) { return f; }
 static CDECL_CC void  ms_lock(int n) { (void)n; }
 static CDECL_CC void  ms_unlock(int n) { (void)n; }
 static CDECL_CC void *ms_malloc_crt(size_t n) { return calloc(1, n ? n : 1); }
-static CDECL_CC double ms_libm_sse2_pow(double x, double y) { return pow(x, y); }
+/* MSVC's SSE2 libm entry points take their arguments in xmm0 and xmm1,
+   return in xmm0 and leave the x87 stack as they found it. movlps moves the
+   same 64 bits as movsd and is SSE1, all a core needs once the SSE2 shim has
+   been over it. */
+static double scva_pow_stack(double x, double y) __asm__("scva_pow_stack");
+static __attribute__((used, noinline)) double scva_pow_stack(double x, double y)
+{ return pow(x, y); }
+__attribute__((naked)) static void ms_libm_sse2_pow(void)
+{
+  __asm__("push %ebp\n\t"
+          "mov %esp, %ebp\n\t"
+          "and $-16, %esp\n\t"
+          "sub $16, %esp\n\t"
+          "movlps %xmm0, (%esp)\n\t"
+          "movlps %xmm1, 8(%esp)\n\t"
+          "call scva_pow_stack\n\t"
+          "fstpl (%esp)\n\t"
+          "movlps (%esp), %xmm0\n\t"
+          "mov %ebp, %esp\n\t"
+          "pop %ebp\n\t"
+          "ret");
+}
 static CDECL_CC int   ms_vsprintf(char *b, const char *f, va_list ap)
 { return vsprintf(b, f, ap); }
 static CDECL_CC void *ms_operator_new(size_t n) { return calloc(1, n ? n : 1); }
