@@ -312,6 +312,9 @@ does want `__libm_sse2_pow`, `EncodePointer`/`DecodePointer`, the `_lock` and
 `_onexit` CRT internals, and `operator new`/`operator delete` by their mangled
 names.
 
+`__libm_sse2_pow` is not cdecl: x arrives in `xmm0`, y in `xmm1`, the result
+goes back in `xmm0`, and the x87 stack is left as it was.
+
 ## What the cores ask of the C runtime
 
 | core | C runtime | imports |
