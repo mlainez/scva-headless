@@ -70,13 +70,13 @@ One host per format is enough (Carla, Reaper, Bitwig, Ardour...).
 | P5 | load the CLAP; browse its presets | every map's tones then kits, named `SC-88 001 Piano 1` | preset discovery |
 | P6 | scale the display to 150% (Windows) and open the CLAP editor | the editor scales and fills the window | 2e59261 |
 | P7 | reopen a saved CLAP project that used a preset | the preset's patch is what plays (see the known issue below) | preset restore |
-| P8 | in a 32-bit host (Carla's 32-bit bridge, SAVIHost x86), load "SCVA: Virtual Sound Canvas 3.2", play, change Tone Set | sound at the host's rate; the editor lists the engine's names; the set change is heard | the VSC plugin, resampled |
+| P8 | in a 32-bit host, load "SCVA: Virtual Sound Canvas 3.2" (`scva32.clap` in Carla's 32-bit bridge, `scva-vsc-win32.clap` in SAVIHost x86), play, change Tone Set | sound at the host's rate; the editor lists the engine's names; the set change is heard | the VSC plugin, resampled |
 
 ## Known issues the automated tiers report
 
 These print as "known issue" instead of failing, so they stay visible.
 
-- **scva-win32.clap imports `GetModuleHandleW`**, from the mingw-w64 DLL
+- **scva-win32.clap and scva-vsc-win32.clap import `GetModuleHandleW`**, from the mingw-w64 DLL
   startup code. It is a stub on Windows 98; R5 decides whether it matters.
 - **A CLAP preset loaded before the first `process()` is overridden** by the
   Instrument parameter's own choice in that same call. A host restoring a

@@ -31,6 +31,16 @@
 #define SCVA_ID "com.github.mlainez.scva-headless"
 #define VSC_ID  "com.github.mlainez.scva-headless.vsc"
 
+/* The plugins a file holds: SCVA, and in 32-bit builds VSC beside it.
+   SCVA_CLAP_ONLY_SCVA and SCVA_CLAP_ONLY_VSC build a file with one of them,
+   for hosts that refuse a file with several, as SAVIHost does. */
+#if !defined(SCVA_CLAP_ONLY_VSC)
+#define WITH_SCVA
+#endif
+#if defined(__i386__) && !defined(SCVA_CLAP_ONLY_SCVA)
+#define WITH_VSC
+#endif
+
 struct scva {
    clap_plugin_t plugin;
    const clap_host_t *host;
@@ -1060,6 +1070,7 @@ static const char *const s_features[] = {
    CLAP_PLUGIN_FEATURE_STEREO, NULL
 };
 
+#ifdef WITH_SCVA
 static const clap_plugin_descriptor_t s_descriptor = {
    .clap_version = CLAP_VERSION_INIT,
    .id = SCVA_ID,
@@ -1073,8 +1084,9 @@ static const clap_plugin_descriptor_t s_descriptor = {
                   "SCCore.dll. Set SCVA_DLL_DIR or put it beside the plugin.",
    .features = s_features
 };
+#endif
 
-#if defined(__i386__)
+#ifdef WITH_VSC
 static const clap_plugin_descriptor_t s_vsc_descriptor = {
    .clap_version = CLAP_VERSION_INIT,
    .id = VSC_ID,
@@ -1096,8 +1108,10 @@ static const struct {
    const clap_plugin_descriptor_t *desc;
    const struct synth_backend *backend;
 } s_plugins[] = {
+#ifdef WITH_SCVA
    { &s_descriptor, &synth_scva },
-#if defined(__i386__)
+#endif
+#ifdef WITH_VSC
    { &s_vsc_descriptor, &synth_vsc },
 #endif
 };
@@ -1153,8 +1167,10 @@ static const clap_plugin_factory_t s_factory = {
    is LOCATION_PLUGIN and each preset is identified by a load_key the plugin
    alone has to understand. One provider per plugin. */
 static const clap_preset_discovery_provider_descriptor_t s_provider_descs[] = {
+#ifdef WITH_SCVA
    { CLAP_VERSION_INIT, SCVA_ID ".presets", "SOUND Canvas VA tones", "scva-headless" },
-#if defined(__i386__)
+#endif
+#ifdef WITH_VSC
    { CLAP_VERSION_INIT, VSC_ID ".presets", "Virtual Sound Canvas 3.2 tones", "scva-headless" },
 #endif
 };

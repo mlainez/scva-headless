@@ -62,7 +62,7 @@ linux32: $(LINUX32_BINS)
 lv2: $(LV2_BUNDLE)/scva.so $(LV2_BUNDLE)/scva_ui.so
 lv2-32: $(LV2_BUNDLE32)/scva.so $(LV2_BUNDLE32)/scva_ui.so
 clap: $(BUILD)/scva.clap $(BUILD)/scva-win64.clap
-clap-win32: $(BUILD)/scva-win32.clap
+clap-win32: $(BUILD)/scva-win32.clap $(BUILD)/scva-vsc-win32.clap
 tones: $(BUILD)/scva-tones
 tones32: $(BUILD)/scva-tones32
 # separate from linux32: it needs a 32-bit alsa-lib, which a multilib
@@ -111,7 +111,15 @@ $(OBJ)/win32/%.o: src/%.c
 # to a file there; --play works wherever libasound.so.2 is installed.
 $(OBJ)/linux64/scva_native.o $(OBJ)/linux32/scva_native.o: XDEFS := -DSCVA_ALSA_DLOPEN
 $(OBJ)/linux64-pic/scva_clap.o $(OBJ)/linux32-pic/scva_clap.o \
-$(OBJ)/win64/scva_clap.o $(OBJ)/win32/scva_clap.o: XDEFS := -I$(CLAP_DIR)
+$(OBJ)/win64/scva_clap.o: XDEFS := -I$(CLAP_DIR)
+
+# One plugin per 32-bit Windows .clap: SAVIHost, the host these are tested
+# in on Windows 98, refuses a file whose factory counts more than one.
+$(OBJ)/win32/scva_clap.o: XDEFS := -I$(CLAP_DIR) -DSCVA_CLAP_ONLY_SCVA
+$(OBJ)/win32/scva_clap_vsc.o: XDEFS := -I$(CLAP_DIR) -DSCVA_CLAP_ONLY_VSC
+$(OBJ)/win32/scva_clap_vsc.o: src/scva_clap.c
+	@mkdir -p $(@D)
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) $(XDEFS) $(DEPS) -c -o $@ $<
 
 -include $(wildcard $(OBJ)/*/*.d)
 
@@ -243,6 +251,9 @@ $(BUILD)/scva-win64.clap: $(call objs,win64,scva_clap) $(ENGINE_WIN64)
 # Built like scva-render32.exe, and for the same reason: the plugin maps the
 # core with src/pe_loader.c, so it runs on Windows 98 and needs no MSVCR100.
 $(BUILD)/scva-win32.clap: $(call objs,win32,scva_clap) $(ENGINE_WIN32)
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -shared -o $@ $^ -lgdi32
+
+$(BUILD)/scva-vsc-win32.clap: $(call objs,win32,scva_clap_vsc) $(ENGINE_WIN32)
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -shared -o $@ $^ -lgdi32
 
 # ---- the LV2 plugin ------------------------------------------------------
