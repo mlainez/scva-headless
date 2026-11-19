@@ -338,27 +338,20 @@ done
 # Properties users depend on that no run here can observe: which Windows
 # will load a binary, and what a plugin exposes to its host.
 
-pe_objdump() {
-  case "$1" in
-    *32*) echo i686-w64-mingw32-objdump ;;
-    *)    echo x86_64-w64-mingw32-objdump ;;
-  esac
-}
+# Read from the files themselves: what objdump prints changes between
+# binutils releases.
+pe() { python3 tests/cli/pe_info.py "$BUILD/$1" "$2"; }
 
-pe_field()   { $(pe_objdump "$1") -p "$BUILD/$1" | awk -v k="$2" '$1 == k {print $2}'; }
-pe_imports() { $(pe_objdump "$1") -p "$BUILD/$1" | sed -n 's/^\t\{0,1\}[ 0-9a-f]*[ \t]\{1,\}[0-9]\{1,\}[ \t]\{1,\}\([A-Za-z_][A-Za-z0-9_]*\)$/\1/p'; }
-pe_dlls()    { $(pe_objdump "$1") -p "$BUILD/$1" | sed -n 's/^\tDLL Name: //p' | tr 'A-Z' 'a-z' | sort -u | tr '\n' ' '; }
-
-if have_tool i686-w64-mingw32-objdump "Windows 98 artifact checks"; then
+if have_tool python3 "Windows 98 artifact checks"; then
   for f in scva-render32.exe scva-winmidi32.exe scva-win32.clap scva-vsc-win32.clap; do
     have "$f" || continue
     begin "$f: Windows 98 will load it (subsystem 4.0)"
-    [ "$(pe_field "$f" MajorSubsystemVersion).$(pe_field "$f" MinorSubsystemVersion)" = 4.0 ] \
-      || no "subsystem 4.0"
+    [ "$(pe "$f" subsystem)" = 4.0 ] || no "subsystem 4.0"
     end
 
     begin "$f: it needs nothing Windows 98 lacks"
-    dlls=$(pe_dlls "$f")
+    dlls=$(pe "$f" dlls)
+    [ -n "$dlls" ] || no "an import table"
     for want in $dlls; do
       case "$want" in
         kernel32.dll|msvcrt.dll|winmm.dll|user32.dll|gdi32.dll) ;;
@@ -367,7 +360,7 @@ if have_tool i686-w64-mingw32-objdump "Windows 98 artifact checks"; then
     done
     # These exist on Windows 98 only as stubs that fail.
     for stub in GetModuleHandleW MultiByteToWideChar WideCharToMultiByte; do
-      pe_imports "$f" | grep -qx "$stub" || continue
+      pe "$f" imports | grep -qx "$stub" || continue
       # Known: mingw-w64's DLL startup code imports GetModuleHandleW into
       # every DLL it links; this project's own code does not call it.
       # Whether Windows 98 minds is an open question (docs/MANUAL-CHECKS).
@@ -385,12 +378,11 @@ if have_tool i686-w64-mingw32-objdump "Windows 98 artifact checks"; then
   done
 fi
 
-if have_tool x86_64-w64-mingw32-objdump "Windows x64 artifact checks"; then
+if have_tool python3 "Windows x64 artifact checks"; then
   for f in scva-render.exe scva-winmidi.exe; do
     have "$f" || continue
     begin "$f: it targets Windows XP x64 (subsystem 5.2)"
-    [ "$(pe_field "$f" MajorSubsystemVersion).$(pe_field "$f" MinorSubsystemVersion)" = 5.2 ] \
-      || no "subsystem 5.2"
+    [ "$(pe "$f" subsystem)" = 5.2 ] || no "subsystem 5.2"
     end
   done
 fi
@@ -400,10 +392,10 @@ fi
 # but losing any of these calls loses it.
 for f in scva-winmidi.exe scva-winmidi32.exe; do
   have "$f" || continue
-  have_tool "$(pe_objdump "$f")" "$f imports" || continue
+  have_tool python3 "$f imports" || continue
   begin "$f: it raises its priority, sets 1 ms timers and re-queues SysEx buffers"
   for want in SetPriorityClass SetThreadPriority timeBeginPeriod midiInAddBuffer waveOutGetPosition; do
-    pe_imports "$f" | grep -qx "$want" || no "an import of $want"
+    pe "$f" imports | grep -qx "$want" || no "an import of $want"
   done
   end
 done
@@ -437,9 +429,9 @@ done
 
 for f in scva-win64.clap scva-win32.clap scva-vsc-win32.clap; do
   have "$f" || continue
-  have_tool "$(pe_objdump "$f")" "$f exports" || continue
+  have_tool python3 "$f exports" || continue
   begin "$f: it exports only clap_entry"
-  exported=$($(pe_objdump "$f") -p "$BUILD/$f" | sed -n '/\[Ordinal\/Name Pointer\] Table/,/^$/p' | awk 'NF >= 2 {print $NF}' | grep -v Table | tr '\n' ' ')
+  exported=$(pe "$f" exports | tr '\n' ' ')
   [ "$exported" = "clap_entry " ] || no "only clap_entry, found: $exported"
   end
 done
