@@ -84,7 +84,8 @@ The tone sets are read from beside `vsc.sys`.
 | `make windows32` | `scva-render32.exe`, `scva-winmidi32.exe` | 32-bit |
 | `make lv2`, `make lv2-32` | `scva.lv2`, `scva32.lv2` | 64-bit, 32-bit |
 | `make clap` | `scva.clap`, `scva-win64.clap` | 64-bit |
-| `make clap-32`, `make clap-win32` | `scva32.clap`, `scva-win32.clap` | 32-bit |
+| `make clap-32` | `scva32.clap` | 32-bit |
+| `make clap-win32` | `scva-win32.clap`, `scva-vsc-win32.clap` | 32-bit |
 | `make tones`, `make tones32` | `scva-tones`, `scva-tones32` | 64-bit, 32-bit |
 
 A binary's width must match the core's: a 64-bit `SCCore.dll` needs the
@@ -105,7 +106,8 @@ Every push to main replaces the `latest` pre-release on GitHub:
 | `scva-clap-linux-x86_64.tar.gz`, `scva-clap-linux-i386.tar.gz` | `scva.clap`, `scva32.clap` |
 | `scva-windows-x86_64.zip` | `scva-render.exe`, `scva-winmidi.exe` |
 | `scva-windows98-x86.zip` | `scva-render32.exe`, `scva-winmidi32.exe` |
-| `scva-clap-windows-x86_64.zip`, `scva-clap-windows-x86.zip` | `scva-win64.clap`, `scva-win32.clap` |
+| `scva-clap-windows-x86_64.zip` | `scva-win64.clap` |
+| `scva-clap-windows-x86.zip` | `scva-win32.clap`, `scva-vsc-win32.clap` |
 
 None of them contains Roland's files.
 
@@ -622,7 +624,7 @@ Roland 32-bit and 64-bit Windows versions. So:
 
 The Virtual Sound Canvas engine is 32-bit code, so it is in the 32-bit tools
 and plugins only: `scva-render32`, `scva-render32.exe`, `scva-daemon32`,
-`scva-winmidi32.exe`, `scva32.lv2`, `scva32.clap` and `scva-win32.clap`.
+`scva-winmidi32.exe`, `scva32.lv2`, `scva32.clap` and `scva-vsc-win32.clap`.
 
 ## 32-part, two-port songs
 
@@ -697,9 +699,18 @@ start-up names the set the same way.
 
 ### As a plugin
 
-The 32-bit LV2 bundle (`scva32.lv2`) and the 32-bit CLAPs (`scva32.clap`,
-`scva-win32.clap`) hold a second plugin, **SCVA: Virtual Sound Canvas 3.2**,
-beside SCVA. It loads `vsc.sys` and its tone sets from `$SCVA_DLL_DIR`, or
+The plugin is **SCVA: Virtual Sound Canvas 3.2**.
+
+| file | holds |
+|---|---|
+| `scva32.lv2`, `scva32.clap` | SCVA and the VSC plugin |
+| `scva-win32.clap` | SCVA |
+| `scva-vsc-win32.clap` | the VSC plugin |
+
+On 32-bit Windows each `.clap` holds one plugin: SAVIHost refuses a file
+with several.
+
+The VSC plugin loads `vsc.sys` and its tone sets from `$SCVA_DLL_DIR`, or
 from beside the bundle or `.clap`. A 64-bit host cannot load it: the engine
 is 32-bit code.
 

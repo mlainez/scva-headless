@@ -51,9 +51,9 @@ class Host:
         return hashlib.md5(self.samples.encode()).hexdigest()
 
 
-def plays_at(kind, plugin, rate):
+def plays_at(kind, plugin, rate, index=1):
     def check(c):
-        h = Host(kind, plugin, 1, rate, ["run 4096", "peak", "midi 0 90 3c 64", "run 4096", "peak",
+        h = Host(kind, plugin, index, rate, ["run 4096", "peak", "midi 0 90 3c 64", "run 4096", "peak",
                                          "run 4096", "peak"])
         c.expect(len(h.peaks) == 3, f"three blocks: {h.out[-300:]}")
         if len(h.peaks) == 3:
@@ -154,10 +154,11 @@ if __name__ == "__main__":
         ]
     if have("scva.clap") and have("test/clap_host64"):
         tests.append(("scva.clap, 64-bit, does not offer it", offers("clap", "scva.clap", 0, VSC_CLAP, False)))
-    if have("scva-win32.clap") and have("test/clap_host_win32.exe") and shutil.which("wine"):
+    if have("scva-vsc-win32.clap") and have("test/clap_host_win32.exe") and shutil.which("wine"):
         tests += [
-            ("scva-win32.clap offers the VSC plugin", offers("wine", "scva-win32.clap", 1, VSC_CLAP, True)),
-            ("scva-win32.clap VSC plays at 48000 Hz, resampled", plays_at("wine", "scva-win32.clap", 48000)),
+            ("scva-vsc-win32.clap offers the VSC plugin", offers("wine", "scva-vsc-win32.clap", 0, VSC_CLAP, True)),
+            ("scva-vsc-win32.clap VSC plays at 48000 Hz, resampled",
+             plays_at("wine", "scva-vsc-win32.clap", 48000, 0)),
         ]
     if not tests:
         skip("the VSC plugins", "no 32-bit plugin and test host built")

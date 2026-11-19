@@ -350,7 +350,7 @@ pe_imports() { $(pe_objdump "$1") -p "$BUILD/$1" | sed -n 's/^\t\{0,1\}[ 0-9a-f]
 pe_dlls()    { $(pe_objdump "$1") -p "$BUILD/$1" | sed -n 's/^\tDLL Name: //p' | tr 'A-Z' 'a-z' | sort -u | tr '\n' ' '; }
 
 if have_tool i686-w64-mingw32-objdump "Windows 98 artifact checks"; then
-  for f in scva-render32.exe scva-winmidi32.exe scva-win32.clap; do
+  for f in scva-render32.exe scva-winmidi32.exe scva-win32.clap scva-vsc-win32.clap; do
     have "$f" || continue
     begin "$f: Windows 98 will load it (subsystem 4.0)"
     [ "$(pe_field "$f" MajorSubsystemVersion).$(pe_field "$f" MinorSubsystemVersion)" = 4.0 ] \
@@ -371,11 +371,11 @@ if have_tool i686-w64-mingw32-objdump "Windows 98 artifact checks"; then
       # Known: mingw-w64's DLL startup code imports GetModuleHandleW into
       # every DLL it links; this project's own code does not call it.
       # Whether Windows 98 minds is an open question (docs/MANUAL-CHECKS).
-      if [ "$f:$stub" = scva-win32.clap:GetModuleHandleW ]; then
+      case "$f:$stub" in *.clap:GetModuleHandleW)
         echo "     known issue: $f imports $stub (from the mingw-w64 DLL startup code)"
         known_win98_stub=1
-        continue
-      fi
+        continue ;;
+      esac
       no "no import of $stub"
     done
     end
@@ -435,7 +435,7 @@ for f in scva.clap scva32.clap scva.lv2/scva.so scva.lv2/scva_ui.so \
   end
 done
 
-for f in scva-win64.clap scva-win32.clap; do
+for f in scva-win64.clap scva-win32.clap scva-vsc-win32.clap; do
   have "$f" || continue
   have_tool "$(pe_objdump "$f")" "$f exports" || continue
   begin "$f: it exports only clap_entry"

@@ -261,6 +261,21 @@ def gm_fallback(c, v):
     c.expect(presets and presets[0] == "001 Acoustic Grand Piano|0.0.0.t|instrument", f"got {presets[:1]}")
 
 
+# SAVIHost refuses a file whose factory counts more than one plugin, so the
+# 32-bit Windows file, the one for Windows 98, holds SCVA alone.
+SCVA_ID = "com.github.mlainez.scva-headless"
+PLUGINS = {"scva32.clap": [SCVA_ID, SCVA_ID + ".vsc"]}
+
+
+def plugins_in_the_file(c, v):
+    s = Session(v, "plugins")
+    if not ok(c, s):
+        return
+    got = [l.split("|")[0] for l in s.all("plugin ")]
+    want = PLUGINS.get(v[0], [SCVA_ID])
+    c.expect(got == want, f"{want}, got {got}")
+
+
 def stop(c, v):
     s = Session(v, "process 64")
     if not ok(c, s):
@@ -279,6 +294,7 @@ def main():
             skip(f"{clap} host", "not built (make plugin-hosts)")
             continue
         for name, fn in (
+            ("holds the plugins its hosts take", plugins_in_the_file),
             ("offers Tone Map, Instrument and Drum Kit", parameters),
             ("names parameter values and reads them back", parameter_texts),
             ("renders the engine's output on the host's audio thread", renders_on_audio_thread),
