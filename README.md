@@ -448,17 +448,22 @@ With `--engine vsc` the floor is lower:
 
 | | needs | floor |
 |---|---|---|
-| the 32-bit binaries | i686 (`cmov`) | Pentium Pro, Pentium II, Celeron, Athlon |
+| the 32-bit binaries | i586, x87 | Pentium |
 | `vsc.sys` | x87; MMX and SSE only when present | Pentium |
 
-Tested under emulation on a Pentium II (MMX, no SSE) with `--cpu auto` and
-`--cpu fpu`. Pentium MMX, K6 and older stop at the binaries, not the engine.
+So a Pentium, Pentium MMX, K6 or Cyrix 6x86 should run VSC; Roland's own
+minimum for VSC 3.x is a Pentium MMX at 166 MHz. The few i686 instructions
+left in the binaries come from mingw's runtime and are reached only by SCCore.
 
-Windows 95 is untested.
+Windows 95 is untested. The 32-bit binaries import nothing Windows 95 lacks
+except `msvcrt.dll`, which comes with IE4, OSR2.5 or the VC++ 6 runtime.
+Windows 95 never enables SSE, so SCCore cannot run there, and VSC needs
+`--cpu mmx` or `--cpu fpu` on a CPU that has SSE.
 
-**Tested on Windows 98 SE, Athlon XP**, 947 and 6 shim sites applied:
-rendering to a file, `--play`, and live MIDI through Hubi's LoopBack at
-`--block 1024 --latency 200`.
+| engine | tested on real hardware | tested otherwise |
+|---|---|---|
+| SCCore | **Windows 98 SE, Athlon XP**, 947 and 6 shim sites applied: rendering to a file, `--play`, and live MIDI through Hubi's LoopBack at `--block 1024 --latency 200` | |
+| VSC | **not yet** | wine; the Linux build under emulation on a Pentium II, with `--cpu auto` and `--cpu fpu`; the binaries checked for instructions a Pentium lacks |
 
 #### Windows XP
 
@@ -713,7 +718,9 @@ The defaults are VSC 3.2's own. Where it differs from SOUND Canvas VA:
 - `--init`, `--cfg` and `--maxblock` are SOUND Canvas VA's and do nothing here.
 
 Renders are checked byte for byte against a reference renderer of the same
-engine, on Linux and in the Windows build under wine.
+engine, on Linux and in the Windows build under wine. The VSC engine has not
+been tested on real hardware yet; see [Windows 98](#windows-98) for the CPU
+floor it should have.
 
 `scva-daemon32` takes `--engine vsc` too, with the same options:
 

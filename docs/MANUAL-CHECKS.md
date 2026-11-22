@@ -37,7 +37,7 @@ On real hardware (or 86Box), with a 32-bit core.
 ## Virtual Sound Canvas on Windows 98
 
 On real hardware (or 86Box), with `vsc.sys` and a tone set from the VSC 3.2
-CD in one directory.
+CD in one directory. None of these has been run on real hardware yet.
 
 | # | do | pass when | protects |
 |---|---|---|---|
@@ -45,6 +45,8 @@ CD in one directory.
 | V2 | the same with `--play` | it plays through the sound card | waveOut with the engine's own block size |
 | V3 | the same with `--cpu fpu` on a machine without MMX, if one is at hand | it renders | the engine's x87 path |
 | V4 | `scva-winmidi32.exe --engine vsc --core vsc.sys` with a MIDI input, then type `55` | it plays, and the instruments change to the SC-55 set | the VSC engine live on Windows |
+| V5 | V1 and V4 on a Pentium MMX or K6 | it renders, and plays live without dropouts | the i586 build; the VSC floor |
+| V6 | V1 with 3.23's `vsc.sys`, from Roland's VSC323U updater | the same WAV as with 3.2's | `tgInit` called with `ebx` kept |
 
 ## scva-daemon with realtime rights
 

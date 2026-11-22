@@ -479,8 +479,9 @@ crashes inside `effOpen` on an authorisation check
 
 ## Virtual Sound Canvas 3.2's engine
 
-`vsc.sys`, from the VSC 3.2 CD, is a 32-bit Windows NT kernel driver with the
-whole synthesizer inside. `src/vsc_engine.c` runs it through the same loader:
+`vsc.sys`, from the VSC 3.2 CD or Roland's 3.23 updater, is a 32-bit Windows
+NT kernel driver with the whole synthesizer inside. `src/vsc_engine.c` runs it
+through the same loader:
 
 - **Its driver half is never run.** `DriverEntry` would create a device and
   route ioctls to `VscDispatch`, which only unpacks each IRP's buffer and calls
@@ -498,6 +499,14 @@ whole synthesizer inside. `src/vsc_engine.c` runs it through the same loader:
 - **Its CPU check reads CR4**, which faults outside ring 0. The loader's patch
   hook turns `mov eax, cr4` in `GetCpuKind` into `or eax, -1` in the same
   three bytes.
+- **3.23's `GetCpuKind` does not save `ebx`** around its `cpuid`; 3.2's saves
+  `ebx`, `esi` and `edi`. `tgInit` calls it, so `tgInit` is called through a
+  stub that keeps all three. Everything else this code relies on - symbols,
+  `SynthConfData`, the `waveInfo` flag - is the same in both, and they render
+  byte for byte alike with 3.2's tone sets.
+- **Its code needs a Pentium.** It picks x87, MMX or SSE with `cpuid`, after
+  checking that `cpuid` exists, and holds no P6-only instruction (the few
+  `cmov`/`fcmov` byte patterns are in its lookup tables) and no `rdtsc`.
 - **Its sections are 32 bytes apart**, so the end of the code and the start of
   the data share a page. Protecting section by section left that page without
   execute; pages now take what every section on them needs.
@@ -520,6 +529,20 @@ whole synthesizer inside. `src/vsc_engine.c` runs it through the same loader:
   three sets have renders byte for byte the same on each; they differ where
   one set has a variation or kit another lacks (program 0, bank 24 is "Piano
   + Str." on SC-88Pro, Piano 1 on SC-55).
+
+### Releases
+
+| release | engine | usable |
+|---|---|---|
+| VSC-88Me (1997, Windows 95) | `VSC.vxd` only | no |
+| VSC 3.2, VSC-88H3A CD (2000) | `vsc.sys` for NT, `VSC.vxd` for 9x | `vsc.sys` |
+| VSC 3.23 updater (2001) | `vsc.sys` for NT, `VSC.vxd` for 9x | `vsc.sys` |
+
+A `VSC.vxd` is an LE file with no symbol table and one export, its device
+descriptor; using one would take an LE loader, Win9x VxD services and every
+entry point found by hand. VSC-88Me's shares none of 3.2's functions or
+tables, and its tone sets have another format (`Roland VSC55`, not `Roland
+VSC T-2`).
 
 ## Standing
 
