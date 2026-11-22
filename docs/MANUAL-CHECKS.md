@@ -47,6 +47,7 @@ CD in one directory. None of these has been run on real hardware yet.
 | V4 | `scva-winmidi32.exe --engine vsc --core vsc.sys` with a MIDI input, then type `55` | it plays, and the instruments change to the SC-55 set | the VSC engine live on Windows |
 | V5 | V1 and V4 on a Pentium MMX or K6 | it renders, and plays live without dropouts | the i586 build; the VSC floor |
 | V6 | V1 with 3.23's `vsc.sys`, from Roland's VSC323U updater | the same WAV as with 3.2's | `tgInit` called with `ebx` kept |
+| V7 | V1 on Windows 95 with a Pentium III or Athlon XP, `--cpu auto` | it renders, the same WAV as `--cpu mmx` | the SSE probe: the OS does not save SSE state there |
 
 ## scva-daemon with realtime rights
 

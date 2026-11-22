@@ -20,6 +20,7 @@
  * stubs of the right shape that are never called.
  */
 #include "vsc_engine.h"
+#include "cpu_probe.h"
 #include "pe_loader.h"
 #include "win9x.h"
 #include <stdio.h>
@@ -212,8 +213,9 @@ static void *symbol(const struct pe_image *img, const char *name)
 }
 
 /* The CPU check reads CR4 to see whether the OS saves SSE state, which
-   faults outside ring 0. The host OS always does, so the read becomes an
-   all-ones result: or eax,-1 in the same three bytes. */
+   faults outside ring 0. The read becomes the answer, found by running an SSE
+   instruction: or eax,-1 when it runs, xor eax,eax; nop when it faults, as on
+   Windows 95. The engine then takes its MMX or x87 path. */
 static int patch_cr4(void *ctx, struct pe_image *img,
                      const struct pe_patch_area *area, char *err, size_t errlen)
 {
@@ -224,7 +226,8 @@ static int patch_cr4(void *ctx, struct pe_image *img,
   for (i = 0; i < 0x100; ++i)
     if (fn[i] == 0x0f && fn[i + 1] == 0x20 && fn[i + 2] == 0xe0) { hit = fn + i; ++count; }
   if (count != 1) { snprintf(err, errlen, "CR4 read not found where expected"); return 0; }
-  hit[0] = 0x83; hit[1] = 0xc8; hit[2] = 0xff;
+  if (cpu_os_runs_sse()) { hit[0] = 0x83; hit[1] = 0xc8; hit[2] = 0xff; }
+  else                   { hit[0] = 0x31; hit[1] = 0xc0; hit[2] = 0x90; }
   return 1;
 }
 

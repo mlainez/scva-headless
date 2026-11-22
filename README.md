@@ -457,8 +457,8 @@ left in the binaries come from mingw's runtime and are reached only by SCCore.
 
 Windows 95 is untested. The 32-bit binaries import nothing Windows 95 lacks
 except `msvcrt.dll`, which comes with IE4, OSR2.5 or the VC++ 6 runtime.
-Windows 95 never enables SSE, so SCCore cannot run there, and VSC needs
-`--cpu mmx` or `--cpu fpu` on a CPU that has SSE.
+Windows 95 never enables SSE, so SCCore cannot run there; VSC finds that out
+as it loads and takes its MMX or x87 path.
 
 | engine | tested on real hardware | tested otherwise |
 |---|---|---|

@@ -496,9 +496,12 @@ through the same loader:
   for the tone set, and `KeQueryPerformanceCounter`, for its CPU load
   limiter. The counter returns 0, which reads as no load, so no voice is ever
   dropped for time and a render is the same on any machine.
-- **Its CPU check reads CR4**, which faults outside ring 0. The loader's patch
-  hook turns `mov eax, cr4` in `GetCpuKind` into `or eax, -1` in the same
-  three bytes.
+- **Its CPU check reads CR4**, which faults outside ring 0, to learn whether
+  the OS saves SSE state. The loader's patch hook replaces `mov eax, cr4` in
+  `GetCpuKind`, in the same three bytes, with the answer: `or eax, -1` if an
+  SSE instruction runs, `xor eax, eax; nop` if it faults, as on Windows 95,
+  which never saves SSE state. `cpu_probe.c` tries the instruction under a
+  structured exception handler; Linux always saves the state.
 - **3.23's `GetCpuKind` does not save `ebx`** around its `cpuid`; 3.2's saves
   `ebx`, `esi` and `edi`. `tgInit` calls it, so `tgInit` is called through a
   stub that keeps all three. Everything else this code relies on - symbols,

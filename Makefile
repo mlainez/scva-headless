@@ -135,7 +135,7 @@ $(OBJ)/win32/scva_clap_vsc.o: src/scva_clap.c
 RENDER_MODS     := scva_native map_policy render_loop render_engines synth_registry \
                    synth_scva pe_loader scva_runtime
 # The engines only a 32-bit build can host.
-VSC_ENGINE_MODS := synth_vsc vsc_engine
+VSC_ENGINE_MODS := synth_vsc vsc_engine cpu_probe
 DAEMON_MODS     := scva_daemon map_policy console rt_priority live_engine synth_registry \
                    synth_scva pe_loader scva_runtime
 WIN_RENDER_MODS := scva_render map_policy audio_waveout render_loop render_engines \
@@ -296,7 +296,7 @@ $(LV2_BUNDLE32)/scva_ui.so: $(call objs,linux32-pic,scva_lv2_ui) $(XUI32) $(ENGI
 UNIT_TESTS := $(patsubst tests/unit/%.c,%,$(wildcard tests/unit/test_*.c))
 UNIT64     := $(addprefix $(BUILD)/test/unit64/,$(UNIT_TESTS))
 UNIT32     := $(addprefix $(BUILD)/test/unit32/,$(UNIT_TESTS))
-UNIT_MODS  := scva_lists map_policy render_loop console live_sched resample
+UNIT_MODS  := scva_lists map_policy render_loop console live_sched resample cpu_probe
 
 $(OBJ)/test64/%.o: tests/unit/%.c
 	@mkdir -p $(@D)
@@ -353,7 +353,8 @@ test-unit: $(UNIT64) $(UNIT32) $(PROBES)
 UNIT_WIN      := test_console test_live_sched test_map test_map_policy test_midi_song test_render_loop
 UNIT_WIN_MODS := map_policy render_loop console live_sched
 UNIT_WIN64    := $(addprefix $(BUILD)/test/win64/,$(addsuffix .exe,$(UNIT_WIN)))
-UNIT_WIN32    := $(addprefix $(BUILD)/test/win32/,$(addsuffix .exe,$(UNIT_WIN) test_runtime))
+UNIT_WIN32    := $(addprefix $(BUILD)/test/win32/,$(addsuffix .exe,$(UNIT_WIN) test_runtime \
+                                                                 test_cpu_probe))
 
 $(OBJ)/testwin64/%.o: tests/unit/%.c
 	@mkdir -p $(@D)
@@ -373,6 +374,11 @@ $(BUILD)/test/win32/%.exe: $(OBJ)/testwin32/%.o $(call objs,win32,$(UNIT_WIN_MOD
 
 $(BUILD)/test/win32/test_runtime.exe: $(OBJ)/testwin32/test_runtime.o \
                                       $(call objs,win32,$(RUNTIME_MODS))
+	@mkdir -p $(@D)
+	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ $^
+
+$(BUILD)/test/win32/test_cpu_probe.exe: $(OBJ)/testwin32/test_cpu_probe.o \
+                                        $(call objs,win32,cpu_probe)
 	@mkdir -p $(@D)
 	$(MINGW32) $(WINFLAGS) $(WIN98FLAGS) -o $@ $^
 
@@ -464,7 +470,7 @@ test-core:
 # The VSC backend against virtual_sc's vsc-play: SCVA_TEST_VSC_DIR (vsc.sys
 # and the tone sets), SCVA_TEST_VSC_PLAY and SCVA_TEST_CORPUS. 32-bit only,
 # as vsc.sys is.
-VSC_MODS := synth_vsc vsc_engine pe_loader
+VSC_MODS := synth_vsc vsc_engine cpu_probe pe_loader
 
 $(OBJ)/vsctest32/%.o: tests/vsc/%.c
 	@mkdir -p $(@D)
