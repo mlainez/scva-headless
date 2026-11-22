@@ -72,6 +72,26 @@ driver), into any directory:
 
 The tone sets are read from beside `vsc.sys`.
 
+Windows 9x is supported: `vsc.sys` needs no NT, it is loaded as plain code
+on every system. The CD's installer copies it only on NT, though; on 9x it
+installs `VSC.vxd` instead, which cannot be used as `--core`. Take `vsc.sys`
+from `_user1.cab` on the CD and the tone sets from `data1.cab`:
+
+    unshield x /path/to/cd/_user1.cab
+    unshield -g WaveSet x /path/to/cd/data1.cab
+
+Files that have been tested, from the VSC-88H3A CD (Windows & Macintosh):
+
+| File | sha1 | md5 |
+|---|---|---|
+| vsc.sys | c393b218f254899015a0132ad009baa9bb2b8b26 | ba2a4e26b1a5467ac0b8073460075cf2 |
+| vsc88pro.dat | 767e0c60c169d3b76854dfd7ceeab53bc6e19c9b | e49e69015be1a68e595323ec667c46f3 |
+| vsc88.dat | d58f7fc3ab802b836979d882a358c37af97a808f | 10a892a8f481f25b7da47798882273f2 |
+| vsc55.dat | 340ecfee5d97f44874f396270ce12b06385f9e49 | df7a9489e36cbb72a30be3b2b2eabcf4 |
+
+Other releases of VSC 3.2 ship a different `vsc.sys` and tone sets; the
+loader depends on this build's symbols and layout, and they are not supported.
+
 ## Build
 
 | target | builds | core |
