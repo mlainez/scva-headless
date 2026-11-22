@@ -36,11 +36,14 @@ WINXPFLAGS := -Wl,--major-subsystem-version=5 -Wl,--minor-subsystem-version=2
 # loader accepts, and msvcrt's own stdio is used instead of mingw's, whose
 # printf drags in GetModuleHandleW and the MultiByteToWideChar pair - all three
 # are stubs on Win9x. Nothing here prints anything C89 cannot express.
-# -mno-sse keeps our own floating point on the x87, so these binaries need
-# nothing newer than a Pentium Pro; what the machine must have is decided by
-# the core, and src/sse3_shim.h lowers that.
+# -march=i586 and -mno-sse keep our own code on Pentium instructions and the
+# x87. The mingw runtime is prebuilt for i686, but its i686-only routines (pow,
+# ldexp, the pseudo-relocation fixups) are reached only through SCCore, which
+# needs SSE anyway, or never run. What the machine must have is decided by the
+# engine: SSE1 for SCCore, once src/sse3_shim.h has lowered it, and a Pentium
+# for vsc.sys.
 WIN98FLAGS := -D_WIN32_WINNT=0x0400 -DWINVER=0x0400 -D__USE_MINGW_ANSI_STDIO=0 \
-              -march=i686 -mno-sse -mfpmath=387 \
+              -march=i586 -mno-sse -mfpmath=387 \
               -Wl,--major-subsystem-version=4 -Wl,--minor-subsystem-version=0
 ALSA_CFLAGS := $(shell pkg-config --cflags alsa 2>/dev/null)
 ALSA        := $(shell pkg-config --libs alsa 2>/dev/null || echo -lasound)
