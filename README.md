@@ -444,6 +444,16 @@ putting the floor at **SSE1: a Pentium III or an Athlon XP**. A plain Athlon,
 K6 or Pentium II has no SSE and will not run it. See
 [docs/ENGINE-NOTES.md](docs/ENGINE-NOTES.md).
 
+With `--engine vsc` the floor is lower:
+
+| | needs | floor |
+|---|---|---|
+| the 32-bit binaries | i686 (`cmov`) | Pentium Pro, Pentium II, Celeron, Athlon |
+| `vsc.sys` | x87; MMX and SSE only when present | Pentium |
+
+Tested under emulation on a Pentium II (MMX, no SSE) with `--cpu auto` and
+`--cpu fpu`. Pentium MMX, K6 and older stop at the binaries, not the engine.
+
 Windows 95 is untested.
 
 **Tested on Windows 98 SE, Athlon XP**, 947 and 6 shim sites applied:
