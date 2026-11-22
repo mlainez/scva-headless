@@ -120,6 +120,26 @@ static void fpu_leave(uint16_t old)
   __asm__ volatile("fldcw %0" : : "m"(old));
 }
 
+/* tgInit runs GetCpuKind, which in VSC 3.23 executes cpuid without saving
+   ebx. The callee-saved registers are kept here around the call. */
+static int call_tgInit(fn_tgInit f, int flag, int rate)
+{
+  int r;
+  __asm__ volatile("push %%ebx\n\t"
+                   "push %%esi\n\t"
+                   "push %%edi\n\t"
+                   "push %3\n\t"
+                   "push %2\n\t"
+                   "call *%1\n\t"
+                   "pop %%edi\n\t"
+                   "pop %%esi\n\t"
+                   "pop %%ebx"
+                   : "=a"(r)
+                   : "r"(f), "r"(flag), "r"(rate)
+                   : "ecx", "edx", "memory", "cc");
+  return r;
+}
+
 /* ------------------------------------------------------- kernel imports */
 
 static STDCALL void *k_ExAllocatePoolWithTag(int type, uint32_t n, uint32_t tag)
@@ -314,7 +334,7 @@ struct vsc *vsc_open(const char *sys_path, const char *dat_path,
   if (datn < 0x34 || memcmp(dat, "Roland VSC T-2", 14)) FAIL("%s is not a VSC tone set", dat_path);
 
   cw = fpu_enter();
-  v->tgInit(0, rate);
+  call_tgInit(v->tgInit, 0, rate);
   ok = v->ConfigWaveBuf(dat, (int)datn);
   if (ok) {
     v->InitSynth();
